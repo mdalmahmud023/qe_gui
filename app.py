@@ -1,4 +1,5 @@
 import io
+import os
 import re
 from pathlib import Path
 
@@ -282,7 +283,9 @@ def generate_qe_input_file(
     QE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
     input_data = build_qe_input_data(qe_parameters)
-    profile = EspressoProfile(command="pw.x", pseudo_dir=Path(pseudo_dir))
+    pseudo_dir_path = Path(pseudo_dir)
+    relative_pseudo_dir = Path(os.path.relpath(pseudo_dir_path, QE_RUNS_DIR))
+    profile = EspressoProfile(command="pw.x", pseudo_dir=relative_pseudo_dir)
     calculator = Espresso(
         directory=QE_RUNS_DIR,
         profile=profile,
@@ -407,6 +410,14 @@ def render_pseudopotentials_section(atoms) -> None:
 
     if resolve_clicked:
         clear_generated_qe_input_state()
+        progress_status = st.empty()
+        progress_bar = st.progress(0)
+
+        def update_resolution_progress(fraction: float, message: str) -> None:
+            percent = max(0, min(100, int(round(fraction * 100))))
+            progress_bar.progress(percent)
+            progress_status.info(f"{message} ({percent}%)")
+
         try:
             resolution_result = resolve_sssp_pseudopotentials(
                 atoms,
@@ -414,18 +425,25 @@ def render_pseudopotentials_section(atoms) -> None:
                 functional=current_settings["functional"],
                 mode=current_settings["mode"],
                 use_cache=use_cache,
+                progress_callback=update_resolution_progress,
             )
         except PseudopotentialResolutionError as exc:
+            progress_bar.empty()
+            progress_status.empty()
             set_resolution_status(
                 state="error",
                 message=f"Failed to resolve pseudopotentials: {exc}",
             )
         except Exception as exc:
+            progress_bar.empty()
+            progress_status.empty()
             set_resolution_status(
                 state="error",
                 message=f"Unexpected error while resolving pseudopotentials: {exc}",
             )
         else:
+            progress_bar.empty()
+            progress_status.empty()
             st.session_state[PSEUDO_DIR_STATE_KEY] = resolution_result["pseudo_dir"]
             st.session_state[PSEUDO_RESOLVED_MAP_STATE_KEY] = resolution_result["ase_pseudopotentials"]
             st.session_state[PSEUDO_RESOLVED_ROWS_STATE_KEY] = resolution_result["table_rows"]

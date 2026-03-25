@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import tarfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -82,22 +83,42 @@ def get_sssp_record_base_url(version: str) -> str:
     return f"https://archive.materialscloud.org/records/{slug}/files"
 
 
-def download_file(url: str, destination: Path) -> Path:
+def download_file(
+    url: str,
+    destination: Path,
+    *,
+    progress_callback: Callable[[float, str], None] | None = None,
+    label: str | None = None,
+) -> Path:
     """Download a remote file atomically to the requested destination path."""
     destination.parent.mkdir(parents=True, exist_ok=True)
 
     temp_path: Path | None = None
+    display_label = label or f"Downloading {destination.name}"
     try:
         with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
             response.raise_for_status()
+            total_bytes = int(response.headers.get("content-length", "0") or 0)
+            bytes_downloaded = 0
+            _emit_progress(progress_callback, 0.0, f"{display_label}...")
             with NamedTemporaryFile(delete=False, dir=destination.parent, prefix=f"{destination.name}.") as tmp:
                 temp_path = Path(tmp.name)
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         tmp.write(chunk)
+                        bytes_downloaded += len(chunk)
+                        if total_bytes > 0:
+                            downloaded_mb = bytes_downloaded / (1024 * 1024)
+                            total_mb = total_bytes / (1024 * 1024)
+                            _emit_progress(
+                                progress_callback,
+                                bytes_downloaded / total_bytes,
+                                f"{display_label}: {downloaded_mb:.1f} / {total_mb:.1f} MB",
+                            )
         if temp_path is None:
             raise PseudopotentialResolutionError(f"Failed to create a temporary file for '{destination}'.")
         temp_path.replace(destination)
+        _emit_progress(progress_callback, 1.0, f"{display_label}: complete")
     except (OSError, requests.RequestException) as exc:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
@@ -200,6 +221,7 @@ def resolve_sssp_pseudopotentials(
     mode: str,
     use_cache: bool,
     cache_root: Path | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, Any]:
     """Resolve, cache, and validate SSSP pseudopotentials for the given structure."""
     _validate_sssp_selection(version, functional, mode)
@@ -221,12 +243,15 @@ def resolve_sssp_pseudopotentials(
     archive_url = _build_download_url(get_sssp_archive_filename(version, functional, mode), version=version)
 
     warnings: list[str] = []
+    _emit_progress(progress_callback, 0.02, "Preparing SSSP resolution...")
     manifest = _ensure_manifest(
         manifest_path=manifest_path,
         manifest_url=manifest_url,
         use_cache=use_cache,
         warnings=warnings,
+        progress_callback=_make_scaled_progress_callback(progress_callback, 0.05, 0.15),
     )
+    _emit_progress(progress_callback, 0.18, "Resolving required elements from the manifest...")
     resolved_entries = resolve_manifest_entries(manifest, elements)
     resolved_entries = _ensure_resolved_local_paths(
         resolved_entries=resolved_entries,
@@ -235,10 +260,12 @@ def resolve_sssp_pseudopotentials(
         extract_dir=extract_dir,
         use_cache=use_cache,
         warnings=warnings,
+        progress_callback=progress_callback,
     )
 
     ase_map = build_ase_pseudopotentials_map(resolved_entries)
-    pseudo_dir = str(extract_dir.resolve())
+    _emit_progress(progress_callback, 0.96, "Writing local pseudopotential map...")
+    pseudo_dir = str(extract_dir)
     table_rows = [
         {
             "element": element,
@@ -264,6 +291,7 @@ def resolve_sssp_pseudopotentials(
         "resolved_entries": resolved_entries,
     }
     resolved_map_path.write_text(json.dumps(serialized_result, indent=2, sort_keys=True))
+    _emit_progress(progress_callback, 1.0, "Pseudopotential resolution complete.")
 
     return {
         "settings": serialized_result["settings"],
@@ -318,19 +346,32 @@ def _ensure_manifest(
     manifest_url: str,
     use_cache: bool,
     warnings: list[str],
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     if not use_cache and manifest_path.exists():
         manifest_path.unlink()
 
     if not manifest_path.exists():
-        download_file(manifest_url, manifest_path)
+        download_file(
+            manifest_url,
+            manifest_path,
+            progress_callback=progress_callback,
+            label="Downloading manifest",
+        )
+    else:
+        _emit_progress(progress_callback, 1.0, "Using cached manifest.")
 
     try:
         return load_sssp_manifest(manifest_path)
     except PseudopotentialResolutionError:
         warnings.append("Cached manifest was invalid. Re-downloading the SSSP manifest.")
         manifest_path.unlink(missing_ok=True)
-        download_file(manifest_url, manifest_path)
+        download_file(
+            manifest_url,
+            manifest_path,
+            progress_callback=progress_callback,
+            label="Re-downloading manifest",
+        )
         return load_sssp_manifest(manifest_path)
 
 
@@ -339,11 +380,19 @@ def _ensure_archive_downloaded(
     archive_path: Path,
     archive_url: str,
     force_download: bool,
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> Path:
     if force_download and archive_path.exists():
         archive_path.unlink()
     if not archive_path.exists():
-        download_file(archive_url, archive_path)
+        download_file(
+            archive_url,
+            archive_path,
+            progress_callback=progress_callback,
+            label="Downloading SSSP archive",
+        )
+    else:
+        _emit_progress(progress_callback, 1.0, "Using cached archive.")
     return archive_path
 
 
@@ -355,20 +404,29 @@ def _ensure_resolved_local_paths(
     extract_dir: Path,
     use_cache: bool,
     warnings: list[str],
+    progress_callback: Callable[[float, str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
     attempted_repair = False
     force_download = not use_cache
 
     while True:
+        archive_download_progress = _make_scaled_progress_callback(progress_callback, 0.20, 0.75)
+        extract_progress = _make_scaled_progress_callback(progress_callback, 0.76, 0.93)
         _ensure_archive_downloaded(
             archive_path=archive_path,
             archive_url=archive_url,
             force_download=force_download,
+            progress_callback=archive_download_progress,
         )
         force_download = False
 
         try:
-            _extract_archive(archive_path, extract_dir, force=attempted_repair or not use_cache)
+            _extract_archive(
+                archive_path,
+                extract_dir,
+                force=attempted_repair or not use_cache,
+                progress_callback=extract_progress,
+            )
         except PseudopotentialResolutionError as exc:
             if attempted_repair:
                 raise exc
@@ -385,10 +443,11 @@ def _ensure_resolved_local_paths(
             if upf_path is None:
                 missing_elements.append(element)
                 continue
-            entry_with_path["local_path"] = str(upf_path.resolve())
+            entry_with_path["local_path"] = str(upf_path)
             updated_entries[element] = entry_with_path
 
         if not missing_elements:
+            _emit_progress(progress_callback, 0.95, "Validated extracted UPF files.")
             return updated_entries
 
         if attempted_repair:
@@ -404,13 +463,20 @@ def _ensure_resolved_local_paths(
         force_download = True
 
 
-def _extract_archive(archive_path: Path, extract_dir: Path, *, force: bool) -> Path:
+def _extract_archive(
+    archive_path: Path,
+    extract_dir: Path,
+    *,
+    force: bool,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> Path:
     sentinel_path = extract_dir.parent / ".extract_complete"
     if force:
         shutil.rmtree(extract_dir, ignore_errors=True)
         sentinel_path.unlink(missing_ok=True)
 
     if extract_dir.exists() and sentinel_path.exists():
+        _emit_progress(progress_callback, 1.0, "Using cached extracted UPF files.")
         return extract_dir
 
     shutil.rmtree(extract_dir, ignore_errors=True)
@@ -419,7 +485,7 @@ def _extract_archive(archive_path: Path, extract_dir: Path, *, force: bool) -> P
 
     try:
         with tarfile.open(archive_path, "r:gz") as archive:
-            _safe_extract_all(archive, extract_dir)
+            _safe_extract_all(archive, extract_dir, progress_callback=progress_callback)
     except (tarfile.TarError, OSError) as exc:
         shutil.rmtree(extract_dir, ignore_errors=True)
         sentinel_path.unlink(missing_ok=True)
@@ -431,9 +497,16 @@ def _extract_archive(archive_path: Path, extract_dir: Path, *, force: bool) -> P
     return extract_dir
 
 
-def _safe_extract_all(archive: tarfile.TarFile, destination: Path) -> None:
+def _safe_extract_all(
+    archive: tarfile.TarFile,
+    destination: Path,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> None:
     destination_resolved = destination.resolve()
-    for member in archive.getmembers():
+    members = archive.getmembers()
+    member_count = max(len(members), 1)
+    _emit_progress(progress_callback, 0.0, "Extracting SSSP archive...")
+    for index, member in enumerate(members, start=1):
         member_path = (destination / member.name).resolve()
         try:
             member_path.relative_to(destination_resolved)
@@ -441,4 +514,35 @@ def _safe_extract_all(archive: tarfile.TarFile, destination: Path) -> None:
             raise PseudopotentialResolutionError(
                 f"Archive '{archive.name}' contains an unsafe path '{member.name}'."
             ) from exc
-    archive.extractall(destination, filter="data")
+        archive.extract(member, destination, filter="data")
+        _emit_progress(
+            progress_callback,
+            index / member_count,
+            f"Extracting SSSP archive: {index} / {member_count} files",
+        )
+
+
+def _emit_progress(
+    progress_callback: Callable[[float, str], None] | None,
+    fraction: float,
+    message: str,
+) -> None:
+    if progress_callback is None:
+        return
+    clamped_fraction = max(0.0, min(1.0, fraction))
+    progress_callback(clamped_fraction, message)
+
+
+def _make_scaled_progress_callback(
+    progress_callback: Callable[[float, str], None] | None,
+    start: float,
+    end: float,
+) -> Callable[[float, str], None] | None:
+    if progress_callback is None:
+        return None
+
+    def scaled_callback(fraction: float, message: str) -> None:
+        clamped_fraction = max(0.0, min(1.0, fraction))
+        progress_callback(start + ((end - start) * clamped_fraction), message)
+
+    return scaled_callback
