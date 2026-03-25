@@ -8,8 +8,11 @@ The current version can:
 - store the parsed ASE `Atoms` object in Streamlit session state
 - show basic structure metadata in the sidebar
 - render the parsed structure in 3D with `py3Dmol`
+- detect unique chemical elements from the uploaded structure
+- resolve recommended SSSP pseudopotentials from versioned Materials Cloud manifests and archives
+- cache extracted `.UPF` files locally under `qe_runs/pseudopotentials/sssp/`
 - collect basic Quantum ESPRESSO input parameters in a form
-- generate preview Quantum ESPRESSO input files in `qe_runs/`
+- generate runnable Quantum ESPRESSO input files in `qe_runs/` once pseudopotentials are resolved
 
 ## Requirements
 
@@ -70,18 +73,27 @@ Open that URL in your browser, then upload a `.cif` file from the sidebar.
    - atom count
    - unit cell parameters
 5. Confirm the main area shows the interactive 3D structure viewer.
-6. Confirm the QE input form appears below the viewer.
-7. Change a few values and click `Generate Input File`.
-8. Confirm a success message appears and a preview warning is shown.
-9. Confirm the generated QE input text appears in a code block.
-10. Confirm `qe_runs/espresso.pwi` and `qe_runs/pw.in` are created.
+6. Confirm the `Pseudopotentials` section appears below the viewer and shows the detected elements.
+7. Click `Resolve Pseudopotentials`.
+8. Confirm the selected SSSP manifest and archive are cached under `qe_runs/pseudopotentials/sssp/1.3.0/...`.
+9. Confirm a success message and resolved pseudopotential table appear.
+10. Confirm the QE input form appears below the pseudopotential section.
+11. Change a few values and click `Generate Input File`.
+12. Confirm a success message appears and the generated QE input text appears in a code block.
+13. Confirm `qe_runs/espresso.pwi` and `qe_runs/pw.in` are created.
 
 ## Useful Checks
 
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py
+python3 -m py_compile app.py pseudopotentials.py
+```
+
+Unit tests:
+
+```bash
+python3 -m unittest discover -s tests
 ```
 
 Headless startup check:
@@ -93,6 +105,7 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 ## Current Files
 
 - `app.py`: Streamlit app entrypoint
+- `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
 - `requirements.txt`: Python dependencies
 - `HISTORY.md`: running project history and AI context handoff
 
@@ -101,5 +114,5 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 - The app currently loads the first structure block from a CIF file.
 - The parsed structure is stored in `st.session_state`, which preserves it across normal Streamlit reruns within the same session.
 - A hard browser refresh still resets Streamlit session state.
-- The QE parameter form stores values in session state and generates preview QE input files through ASE.
-- The generated input is preview-only until real pseudopotential filenames are supplied.
+- The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
+- QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination.

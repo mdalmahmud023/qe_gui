@@ -1,3 +1,4 @@
 streamlit
 ase
 py3Dmol
+requests

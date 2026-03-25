@@ -8,7 +8,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Project name: QE Studio
 - Goal: build a web-based GUI for Quantum ESPRESSO using Python, Streamlit, and ASE
-- Current stage: structure visualization and preview QE input generation
+- Current stage: structure visualization, SSSP pseudopotential resolution, and runnable QE input generation
 
 ## Current State
 
@@ -22,7 +22,8 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Parsed ASE `Atoms` objects are stored in `st.session_state`.
 - The main area renders the structure with `py3Dmol`.
 - The main area also includes a QE parameter form for basic calculation settings.
-- The form now generates preview Quantum ESPRESSO input files through ASE.
+- The app resolves and caches SSSP pseudopotentials from versioned Materials Cloud manifests and archives.
+- The form now generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
 - Dependencies are listed in `requirements.txt`.
 
 ## File Map
@@ -103,21 +104,47 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Added a cleaned UI-facing copy at `qe_runs/pw.in`.
 - Displayed the generated input text in the Streamlit app with a warning that placeholder pseudopotentials are preview-only.
 
+### 2026-03-25
+
+- Added `pseudopotentials.py` to resolve SSSP pseudopotentials from versioned Materials Cloud JSON manifests and `.tar.gz` archives.
+- Added support for SSSP `1.3.0` with:
+  - `PBE + efficiency`
+  - `PBE + precision`
+  - `PBEsol + efficiency`
+  - `PBEsol + precision`
+- Added a `Pseudopotentials` section to the main UI with:
+  - detected element display
+  - SSSP family selectors
+  - cache usage toggle
+  - resolve button
+  - cache-clear button
+- Added local pseudopotential caching under `qe_runs/pseudopotentials/sssp/`.
+- Added manifest validation, archive extraction, cache repair, and resolved-map serialization.
+- Stored resolved pseudopotential settings, pseudo directory, element-to-UPF map, resolution status, and structure signature in `st.session_state`.
+- Replaced placeholder pseudopotential handling with real SSSP resolution for runnable QE input generation.
+- Added stale invalidation behavior for:
+  - pseudopotential family setting changes
+  - uploaded CIF changes with the same element set
+- Added full clear invalidation when a newly uploaded CIF changes the element set.
+- Added `unittest` coverage for helper functions, cache writes, and cache-repair behavior.
+- Added `requests` to `requirements.txt`.
+
 ## Known Limitations
 
 - Only the first structure in a CIF file is loaded.
 - No structure editing tools exist yet.
 - No persistent storage exists beyond the active Streamlit session.
 - A hard browser refresh resets Streamlit session state.
-- No dedicated test suite exists yet.
-- Real pseudopotential filenames are not collected yet, so generated inputs are not runnable as-is.
+- Manual pseudopotential override does not exist yet.
+- Offline-only pseudopotential resolution does not exist yet.
 
 ## Next Likely Steps
 
 - Add explicit empty and error states in the main area for invalid uploads.
 - Improve the 3D viewer layout and responsiveness.
 - Add support for selecting among multiple structures in CIF files if needed.
-- Add UI support for real UPF pseudopotential selection.
+- Add manual pseudopotential override controls.
+- Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
 
 ## AI Context Notes
