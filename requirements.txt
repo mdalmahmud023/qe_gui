@@ -1,3 +1,6 @@
+# Python dependencies for QE Studio.
+# Quantum ESPRESSO itself is not installed through pip;
+# install it separately and make sure `pw.x` is on your PATH.
 streamlit
 ase
 py3Dmol

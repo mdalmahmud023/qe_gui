@@ -20,6 +20,41 @@ The current version can:
 
 - Python 3.12 or another compatible Python 3 version
 - `pip`
+- Quantum ESPRESSO installed locally with the `pw.x` executable available on your `PATH`
+
+## Install Quantum ESPRESSO
+
+QE Studio can generate input files with Python alone, but the `Run Calculation` button requires a working local Quantum ESPRESSO installation.
+
+Common installation options:
+
+### Debian or Ubuntu
+
+```bash
+sudo apt update
+sudo apt install quantum-espresso
+```
+
+### Conda
+
+```bash
+conda install -c conda-forge quantum-espresso
+```
+
+### From source
+
+If you need a custom build, MPI support, or a newer system-specific build, install Quantum ESPRESSO from source following its upstream build instructions, then make sure the resulting `pw.x` binary is on your `PATH`.
+
+### Verify the installation
+
+Confirm the executable is visible before starting the app:
+
+```bash
+which pw.x
+pw.x -h
+```
+
+If `which pw.x` prints nothing, add the directory containing `pw.x` to your shell `PATH` before launching Streamlit.
 
 ## Setup
 
@@ -42,6 +77,8 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+`requirements.txt` installs only the Python packages used by QE Studio. It does not install Quantum ESPRESSO itself.
+
 ## Run The App
 
 From the project root, run:
@@ -63,6 +100,8 @@ http://localhost:8501
 ```
 
 Open that URL in your browser, then upload a `.cif` file from the sidebar.
+
+Before using `Run Calculation`, make sure `pw.x` is still available in the same shell environment that launches Streamlit.
 
 ## Quick Test Flow
 

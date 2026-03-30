@@ -139,6 +139,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Stores durable run state in Streamlit session state and resolves live worker state through a module-level `RUN_REGISTRY`.
 - Disables QE input regeneration while a calculation is active and resets run state when a new `pw.in` is generated.
 - Added unit tests for run event handling, rolling terminal tails, registry cleanup, and runtime-loss handling.
+- Expanded setup documentation to include local Quantum ESPRESSO installation and `pw.x` verification steps.
 
 ## Known Limitations
 
