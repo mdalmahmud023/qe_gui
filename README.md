@@ -38,7 +38,7 @@ sudo apt install quantum-espresso
 ### Conda
 
 ```bash
-conda install -c conda-forge quantum-espresso
+conda install -c conda-forge qe
 ```
 
 ### From source
