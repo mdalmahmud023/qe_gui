@@ -287,8 +287,24 @@ def build_qe_input_data(qe_parameters: dict) -> dict:
 
 
 def clean_generated_qe_input_text(input_text: str) -> str:
-    """Do not remove empty namelists, as QE requires them (e.g., &ELECTRONS)."""
-    cleaned = re.sub(r"\n{3,}", "\n\n", input_text).strip()
+    """Smartly remove empty namelists unless they are strictly required by the calculation type."""
+    calc_match = re.search(r"calculation\s*=\s*['\"]([^'\"]+)['\"]", input_text, re.IGNORECASE)
+    calc_type = calc_match.group(1).lower() if calc_match else "scf"
+
+    required_namelists = {"&CONTROL", "&SYSTEM", "&ELECTRONS"}
+    if calc_type in ("relax", "md", "vc-relax", "vc-md"):
+        required_namelists.add("&IONS")
+    if calc_type in ("vc-relax", "vc-md"):
+        required_namelists.add("&CELL")
+
+    def replacer(match):
+        namelist_name = match.group(1).upper()
+        if namelist_name in required_namelists:
+            return match.group(0)  # Preserve required empty namelists
+        return ""  # Strip unneeded empty namelists to avoid QE warnings
+
+    cleaned = re.sub(r"(?ms)^(&[A-Z_]+)\n(?:\s*\n)*\s*/\n", replacer, input_text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return f"{cleaned}\n"
 
 
