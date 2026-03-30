@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import shutil
 from pathlib import Path
 
 import py3Dmol
@@ -16,6 +17,24 @@ from pseudopotentials import (
     get_unique_elements,
     has_same_element_set,
     resolve_sssp_pseudopotentials,
+)
+from qe_runner import (
+    ACTIVE_RUN_ID_STATE_KEY,
+    DEFAULT_MAX_TAIL_LINES,
+    RUN_ACTIVE_STATE_KEY,
+    RUN_FINISHED_STATE_KEY,
+    RUN_OUTPUT_PATH_STATE_KEY,
+    RUN_RETURNCODE_STATE_KEY,
+    RUN_TAIL_LINES_STATE_KEY,
+    apply_run_events,
+    cleanup_run,
+    drain_run_events,
+    get_run_context,
+    initialize_run_state,
+    mark_runtime_lost,
+    reset_run_state,
+    set_run_started,
+    start_qe_run,
 )
 
 
@@ -51,6 +70,8 @@ DEFAULT_PSEUDO_SETTINGS = {
 }
 
 QE_RUNS_DIR = Path("qe_runs")
+QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
+QE_OUTPUT_FILENAME = "pw.out"
 EMPTY_NAMELIST_RE = re.compile(r"(?ms)^&[A-Z_]+\n(?:\s*\n)*\s*/\n")
 
 
@@ -501,12 +522,131 @@ def render_generated_qe_input_preview() -> None:
     st.code(qe_input_text, language="fortran")
 
 
+def format_run_output_text() -> str:
+    """Return the current rolling terminal tail for display."""
+    tail_lines = st.session_state.get(RUN_TAIL_LINES_STATE_KEY, [])
+    if tail_lines:
+        return "".join(tail_lines)
+    if st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        return "Waiting for Quantum ESPRESSO output...\n"
+    if st.session_state.get(RUN_FINISHED_STATE_KEY):
+        return "Quantum ESPRESSO finished without terminal output.\n"
+    return "Run output will appear here.\n"
+
+
+@st.fragment(run_every=1)
+def render_live_run_output_fragment() -> None:
+    """Poll the active run queue and repaint the live output tail."""
+    output_placeholder = st.empty()
+    active_run_id = st.session_state.get(ACTIVE_RUN_ID_STATE_KEY)
+
+    if not active_run_id:
+        mark_runtime_lost(st.session_state)
+        output_placeholder.code(format_run_output_text(), language="text")
+        st.rerun(scope="app")
+        return
+
+    context = get_run_context(active_run_id)
+    if context is None:
+        mark_runtime_lost(st.session_state)
+        output_placeholder.code(format_run_output_text(), language="text")
+        st.rerun(scope="app")
+        return
+
+    events = drain_run_events(active_run_id)
+    run_completed = apply_run_events(
+        st.session_state,
+        events,
+        max_tail_lines=DEFAULT_MAX_TAIL_LINES,
+    )
+    output_placeholder.code(format_run_output_text(), language="text")
+
+    if not run_completed and st.session_state.get(RUN_ACTIVE_STATE_KEY) and not context.thread.is_alive():
+        mark_runtime_lost(st.session_state)
+        cleanup_run(active_run_id)
+        st.rerun(scope="app")
+        return
+
+    if run_completed:
+        cleanup_run(active_run_id)
+        st.rerun(scope="app")
+
+
+def render_qe_run_section() -> None:
+    """Render local QE execution controls and live output."""
+    qe_input_text = st.session_state.get(QE_INPUT_TEXT_STATE_KEY)
+    ui_path_value = st.session_state.get(QE_INPUT_UI_PATH_STATE_KEY)
+    if not qe_input_text or not ui_path_value:
+        return
+
+    input_path = Path(ui_path_value)
+    if not input_path.is_file():
+        st.warning("The generated `pw.in` file is missing from disk. Generate it again before running.")
+        return
+
+    run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
+    run_finished = bool(st.session_state.get(RUN_FINISHED_STATE_KEY))
+    run_returncode = st.session_state.get(RUN_RETURNCODE_STATE_KEY)
+    output_path_value = st.session_state.get(RUN_OUTPUT_PATH_STATE_KEY)
+    output_path_text = output_path_value or str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)
+
+    st.divider()
+    st.subheader("Run Calculation")
+    st.caption("Execute the generated input locally with Quantum ESPRESSO and stream the live terminal output.")
+
+    if run_active:
+        st.info("Quantum ESPRESSO is running. Live terminal output is updating below.")
+    elif run_finished and run_returncode == 0:
+        st.success(f"Quantum ESPRESSO finished successfully with exit code {run_returncode}.")
+    elif run_finished:
+        st.error(f"Quantum ESPRESSO exited with code {run_returncode}.")
+    else:
+        st.info("Launch `pw.x` against the generated `pw.in` input file.")
+
+    st.caption(f"Full output log: `{output_path_text}`")
+
+    run_clicked = st.button(
+        "Run Calculation",
+        use_container_width=True,
+        disabled=run_active,
+    )
+
+    if run_clicked:
+        if shutil.which(QE_RUN_COMMAND[0]) is None:
+            st.error("Quantum ESPRESSO executable `pw.x` was not found on your PATH.")
+        else:
+            try:
+                reset_run_state(st.session_state)
+                run_id, output_path = start_qe_run(
+                    run_dir=QE_RUNS_DIR,
+                    command=QE_RUN_COMMAND,
+                    output_filename=QE_OUTPUT_FILENAME,
+                )
+            except Exception as exc:
+                reset_run_state(st.session_state)
+                st.error(f"Failed to start Quantum ESPRESSO: {exc}")
+            else:
+                set_run_started(
+                    st.session_state,
+                    run_id=run_id,
+                    output_path=output_path,
+                )
+                st.rerun()
+
+    if st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        render_live_run_output_fragment()
+    else:
+        output_placeholder = st.empty()
+        output_placeholder.code(format_run_output_text(), language="text")
+
+
 def render_qe_input_form() -> None:
     """Render the QE input form and gate runnable generation on pseudo resolution."""
     defaults = get_qe_parameters()
     default_k_grid = defaults["k_points_grid"]
     atoms = st.session_state.get(ATOMS_STATE_KEY)
     blocker_message = get_qe_generation_blocker_message(atoms)
+    run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
 
     st.divider()
     st.subheader("QE Input Parameters")
@@ -517,6 +657,8 @@ def render_qe_input_form() -> None:
             st.info(blocker_message)
         else:
             st.warning(blocker_message)
+    elif run_active:
+        st.info("Wait for the active calculation to finish before generating a new `pw.in` file.")
 
     with st.form("qe_input_form"):
         row_one_col1, row_one_col2, row_one_col3 = st.columns(3)
@@ -578,7 +720,7 @@ def render_qe_input_form() -> None:
         submitted = st.form_submit_button(
             "Generate Input File",
             use_container_width=True,
-            disabled=blocker_message is not None,
+            disabled=blocker_message is not None or run_active,
         )
 
     if submitted:
@@ -611,12 +753,14 @@ def render_qe_input_form() -> None:
             st.error(f"Failed to generate the Quantum ESPRESSO input file: {exc}")
             return
 
+        reset_run_state(st.session_state)
         st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
         st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = internal_path
         st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = ui_path
 
 
 st.set_page_config(page_title="QE Studio", layout="wide")
+initialize_run_state(st.session_state)
 
 with st.sidebar:
     st.title("QE Studio")
@@ -648,3 +792,4 @@ else:
 render_pseudopotentials_section(atoms)
 render_qe_input_form()
 render_generated_qe_input_preview()
+render_qe_run_section()

@@ -13,6 +13,8 @@ The current version can:
 - cache extracted `.UPF` files locally under `qe_runs/pseudopotentials/sssp/`
 - collect basic Quantum ESPRESSO input parameters in a form
 - generate runnable Quantum ESPRESSO input files in `qe_runs/` once pseudopotentials are resolved
+- run `pw.x` locally against the generated `qe_runs/pw.in`
+- stream live Quantum ESPRESSO terminal output in the Streamlit UI and save the full log to `qe_runs/pw.out`
 
 ## Requirements
 
@@ -81,6 +83,9 @@ Open that URL in your browser, then upload a `.cif` file from the sidebar.
 11. Change a few values and click `Generate Input File`.
 12. Confirm a success message appears and the generated QE input text appears in a code block.
 13. Confirm `qe_runs/espresso.pwi` and `qe_runs/pw.in` are created.
+14. Click `Run Calculation`.
+15. Confirm live Quantum ESPRESSO output appears in the app while the process runs.
+16. Confirm the final full output is saved to `qe_runs/pw.out`.
 
 ## Useful Checks
 

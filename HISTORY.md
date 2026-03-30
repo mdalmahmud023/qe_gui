@@ -24,6 +24,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - The main area also includes a QE parameter form for basic calculation settings.
 - The app resolves and caches SSSP pseudopotentials from versioned Materials Cloud manifests and archives.
 - The form now generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
+- The app can now launch `pw.x` locally, stream live terminal output, and save the full run log to `qe_runs/pw.out`.
 - Dependencies are listed in `requirements.txt`.
 
 ## File Map
@@ -129,6 +130,16 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Added `unittest` coverage for helper functions, cache writes, and cache-repair behavior.
 - Added `requests` to `requirements.txt`.
 
+### 2026-03-30
+
+- Added `qe_runner.py` for registry-backed Quantum ESPRESSO subprocess execution and queue-based output streaming.
+- Added a `Run Calculation` section below the generated QE input preview.
+- Launches Quantum ESPRESSO with `["pw.x", "-in", "pw.in"]` using `cwd="qe_runs"`.
+- Streams live combined stdout/stderr into the Streamlit UI while writing the full log to `qe_runs/pw.out`.
+- Stores durable run state in Streamlit session state and resolves live worker state through a module-level `RUN_REGISTRY`.
+- Disables QE input regeneration while a calculation is active and resets run state when a new `pw.in` is generated.
+- Added unit tests for run event handling, rolling terminal tails, registry cleanup, and runtime-loss handling.
+
 ## Known Limitations
 
 - Only the first structure in a CIF file is loaded.
@@ -137,6 +148,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - A hard browser refresh resets Streamlit session state.
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
+- Live UI streaming depends on `pw.x` flushing stdout/stderr as it runs.
 
 ## Next Likely Steps
 
@@ -144,6 +156,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Improve the 3D viewer layout and responsiveness.
 - Add support for selecting among multiple structures in CIF files if needed.
 - Add manual pseudopotential override controls.
+- Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
 - Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
 
