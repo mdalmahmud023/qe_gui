@@ -269,6 +269,8 @@ def get_qe_parameters() -> dict:
 
 def build_qe_input_data(qe_parameters: dict) -> dict:
     """Build the ASE Espresso input_data mapping from form values."""
+    calc_type = qe_parameters["calculation"]
+    
     system_data = {
         "ecutwfc": qe_parameters["ecutwfc"],
         "ecutrho": qe_parameters["ecutrho"],
@@ -278,12 +280,24 @@ def build_qe_input_data(qe_parameters: dict) -> dict:
     if qe_parameters["degauss"] > 0:
         system_data["occupations"] = "smearing"
 
-    return {
+    input_data = {
         "control": {
-            "calculation": qe_parameters["calculation"],
+            "calculation": calc_type,
         },
         "system": system_data,
+        "electrons": {
+            "conv_thr": 1.0e-6,
+            "mixing_beta": 0.7,
+        }
     }
+
+    if calc_type in ("relax", "md", "vc-relax", "vc-md"):
+        input_data["ions"] = {"ion_dynamics": "bfgs"}
+        
+    if calc_type in ("vc-relax", "vc-md"):
+        input_data["cell"] = {"cell_dynamics": "bfgs"}
+
+    return input_data
 
 
 def clean_generated_qe_input_text(input_text: str) -> str:
