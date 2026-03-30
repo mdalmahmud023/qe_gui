@@ -72,7 +72,6 @@ DEFAULT_PSEUDO_SETTINGS = {
 QE_RUNS_DIR = Path("qe_runs")
 QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
 QE_OUTPUT_FILENAME = "pw.out"
-EMPTY_NAMELIST_RE = re.compile(r"(?ms)^&[A-Z_]+\n(?:\s*\n)*\s*/\n")
 
 
 def clear_generated_qe_input_state() -> None:
@@ -288,9 +287,8 @@ def build_qe_input_data(qe_parameters: dict) -> dict:
 
 
 def clean_generated_qe_input_text(input_text: str) -> str:
-    """Remove empty namelists from the generated QE preview text."""
-    cleaned = EMPTY_NAMELIST_RE.sub("", input_text)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    """Do not remove empty namelists, as QE requires them (e.g., &ELECTRONS)."""
+    cleaned = re.sub(r"\n{3,}", "\n\n", input_text).strip()
     return f"{cleaned}\n"
 
 

@@ -35,6 +35,12 @@ sudo apt update
 sudo apt install quantum-espresso
 ```
 
+If you encounter missing MPI library errors (e.g., `libmpi_mpifh.so.40: cannot open shared object file`) when running `pw.x`, you will also need to install OpenMPI system dependencies:
+
+```bash
+sudo apt install libopenmpi-dev openmpi-bin
+```
+
 ### Conda
 
 ```bash
