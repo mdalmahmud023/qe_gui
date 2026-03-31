@@ -8,7 +8,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Project name: QE Studio
 - Goal: build a web-based GUI for Quantum ESPRESSO using Python, Streamlit, and ASE
-- Current stage: structure visualization, SSSP pseudopotential resolution, and runnable QE input generation
+- Current stage: structure visualization, SSSP pseudopotential resolution, runnable QE input generation, and first-pass electronic-properties analysis
 
 ## Current State
 
@@ -25,11 +25,13 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - The app resolves and caches SSSP pseudopotentials from versioned Materials Cloud manifests and archives.
 - The form now generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
 - The app can now launch `pw.x` locally, stream live terminal output, and save the full run log to `qe_runs/pw.out`.
+- The app can now detect QE analysis artifacts in `qe_runs/` and render first-pass DOS and band-structure charts from real QE post-processing files.
 - Dependencies are listed in `requirements.txt`.
 
 ## File Map
 
 - `app.py`: main Streamlit application
+- `electronic_properties.py`: QE analysis discovery, parsing, and Plotly helpers
 - `requirements.txt`: direct Python dependencies
 - `README.md`: setup, run, and test instructions
 - `HISTORY.md`: persistent project context for humans and AI
@@ -141,6 +143,29 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Added unit tests for run event handling, rolling terminal tails, registry cleanup, and runtime-loss handling.
 - Expanded setup documentation to include local Quantum ESPRESSO installation and `pw.x` verification steps.
 
+### 2026-03-31
+
+- Added `electronic_properties.py` for QE artifact discovery, XML-first Fermi metadata extraction, DOS parsing, `filband.gnu` parsing, and Plotly figure creation.
+- Added an `Electronic Properties Analysis` expander below the run section in `app.py`.
+- The analysis UI now:
+  - shows a summary row for DOS detection, band detection, Fermi source, and run directory
+  - shows an explicit metadata-only empty state when only `pw.out` and/or QE XML metadata exists
+  - renders total DOS and non-projected band-structure plots with Plotly
+  - exposes per-plot Fermi-alignment toggles and PNG export defaults through Plotly config
+- DOS parsing behavior:
+  - supports 2-column total DOS
+  - supports 3-column total DOS plus integrated DOS
+  - accepts 4+ column DOS only when headers explicitly identify spin-resolved total DOS
+- Fermi metadata behavior:
+  - prefers QE XML from `prefix.save/data-file-schema.xml`
+  - converts XML Hartree energies to eV
+  - falls back to `pw.out` regex parsing only if XML metadata is unavailable
+- Band parsing behavior:
+  - supports the observed `filband.gnu` text layout used by the bundled real QE sample fixture
+  - optionally extracts high-symmetry separators from `K_POINTS crystal_b` / `tpiba_b` in a matching band input file
+- Added `tests/test_electronic_properties.py` and QE-derived fixtures for XML metadata and `filband.gnu` parsing coverage.
+- Added `plotly` to `requirements.txt`.
+
 ## Known Limitations
 
 - Only the first structure in a CIF file is loaded.
@@ -150,6 +175,9 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
 - Live UI streaming depends on `pw.x` flushing stdout/stderr as it runs.
+- DOS analysis does not run `dos.x`; it only parses existing DOS artifacts.
+- Band analysis does not run `bands.x`; it only parses existing `filband.gnu`-style artifacts.
+- V1 analysis does not support PDOS, fat bands, or projected band weights.
 
 ## Next Likely Steps
 
@@ -160,6 +188,9 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
 - Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
+- Extend electronic-properties analysis to PDOS from `projwfc.x`.
+- Add projected or fat-band visualization.
+- Add optional post-processing job launching for `dos.x` and `bands.x`.
 
 ## AI Context Notes
 

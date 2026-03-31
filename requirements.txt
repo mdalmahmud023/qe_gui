@@ -4,4 +4,5 @@
 streamlit
 ase
 py3Dmol
+plotly
 requests

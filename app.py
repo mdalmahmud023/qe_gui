@@ -9,6 +9,19 @@ import streamlit as st
 import streamlit.components.v1 as components
 from ase.calculators.espresso import Espresso, EspressoProfile
 from ase.io import read, write
+from electronic_properties import (
+    DEFAULT_PLOTLY_CONFIG,
+    AnalysisParseError,
+    BandData,
+    DOSData,
+    FermiMetadata,
+    extract_qe_fermi_metadata,
+    find_available_analysis_files,
+    make_band_figure,
+    make_dos_figure,
+    parse_qe_band_structure,
+    parse_qe_dos,
+)
 
 from pseudopotentials import (
     PseudopotentialResolutionError,
@@ -668,6 +681,188 @@ def render_qe_run_section() -> None:
         output_placeholder.code(format_run_output_text(), language="text")
 
 
+def format_fermi_source_label(fermi_metadata: FermiMetadata | None) -> str:
+    """Return a compact UI label for the active Fermi metadata source."""
+    if fermi_metadata is None:
+        return "Unavailable"
+    if fermi_metadata.energy_ev is None:
+        return f"{fermi_metadata.source_type} (no single reference)"
+    return f"{fermi_metadata.source_type}: {fermi_metadata.reference_kind}"
+
+
+def make_plotly_chart_config(filename: str) -> dict:
+    """Return Plotly export settings with a figure-specific filename."""
+    export_options = dict(DEFAULT_PLOTLY_CONFIG["toImageButtonOptions"])
+    export_options["filename"] = filename
+    config = dict(DEFAULT_PLOTLY_CONFIG)
+    config["toImageButtonOptions"] = export_options
+    return config
+
+
+def render_artifact_summary_row(run_dir: Path, analysis_files, fermi_metadata: FermiMetadata | None) -> None:
+    """Render a compact summary of detected analysis artifacts."""
+    col1, col2, col3, col4 = st.columns(4)
+    col1.caption("DOS detected")
+    col1.write("Yes" if analysis_files.dos_detected else "No")
+    col2.caption("Bands detected")
+    col2.write("Yes" if analysis_files.bands_detected else "No")
+    col3.caption("Fermi source")
+    col3.write(format_fermi_source_label(fermi_metadata))
+    col4.caption("Run directory")
+    col4.write(str(run_dir))
+
+
+def render_dos_summary(dos_data: DOSData) -> None:
+    """Render compact numeric DOS metadata."""
+    col1, col2, col3, col4 = st.columns(4)
+    col1.caption("Source file")
+    col1.write(str(dos_data.source_file))
+    col2.caption("Fermi energy")
+    if dos_data.fermi_energy_ev is None:
+        col2.write("Unavailable")
+    else:
+        col2.write(f"{dos_data.fermi_energy_ev:.4f} eV")
+    col3.caption("Spin polarized")
+    col3.write("Yes" if dos_data.spin_polarized else "No")
+    col4.caption("Energy window")
+    col4.write(f"{min(dos_data.energies_ev):.3f} to {max(dos_data.energies_ev):.3f} eV")
+
+
+def render_band_summary(band_data: BandData) -> None:
+    """Render compact numeric band metadata."""
+    n_kpoints = len(band_data.distances)
+    n_bands = len(band_data.eigenvalues_ev[0]) if band_data.eigenvalues_ev else 0
+    flattened_energies = [value for row in band_data.eigenvalues_ev for value in row]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.caption("Source file")
+    col1.write(str(band_data.source_file))
+    col2.caption("Fermi energy")
+    if band_data.fermi_energy_ev is None:
+        col2.write("Unavailable")
+    else:
+        col2.write(f"{band_data.fermi_energy_ev:.4f} eV")
+    col3.caption("Bands / k-points")
+    col3.write(f"{n_bands} / {n_kpoints}")
+    col4.caption("Energy window")
+    col4.write(f"{min(flattened_energies):.3f} to {max(flattened_energies):.3f} eV")
+
+
+def render_dos_subsection(analysis_files) -> None:
+    """Render the DOS subsection with graceful parsing failure handling."""
+    st.markdown("### DOS")
+    if analysis_files.dos_file is None:
+        st.info("DOS data has not been generated yet. Run QE DOS post-processing to produce a DOS file.")
+        return
+
+    try:
+        dos_data = parse_qe_dos(analysis_files.dos_file, analysis_files=analysis_files)
+    except AnalysisParseError as exc:
+        st.error(f"Failed to parse DOS data from `{analysis_files.dos_file}`: {exc}")
+        return
+    except Exception as exc:
+        st.error(f"Unexpected DOS parsing error for `{analysis_files.dos_file}`: {exc}")
+        return
+
+    render_dos_summary(dos_data)
+
+    if dos_data.fermi_metadata is not None:
+        st.caption(
+            "Fermi metadata source: "
+            f"`{dos_data.fermi_metadata.source_file}` ({dos_data.fermi_metadata.source_type})"
+        )
+        if dos_data.fermi_metadata.message:
+            st.info(dos_data.fermi_metadata.message)
+
+    align_to_fermi = st.checkbox(
+        "Align DOS to Fermi level (0 eV)",
+        value=dos_data.fermi_energy_ev is not None,
+        disabled=dos_data.fermi_energy_ev is None,
+        key="dos_align_to_fermi",
+    )
+    if dos_data.fermi_energy_ev is None:
+        st.info("No Fermi energy was found for DOS alignment, so raw energies are shown.")
+
+    figure = make_dos_figure(dos_data, align_to_fermi=align_to_fermi)
+    st.plotly_chart(
+        figure,
+        use_container_width=True,
+        config=make_plotly_chart_config("qe_studio_dos"),
+    )
+
+
+def render_band_subsection(analysis_files) -> None:
+    """Render the band-structure subsection with graceful parsing failure handling."""
+    st.markdown("### Band Structure")
+    if analysis_files.band_file is None:
+        st.info(
+            "Band-structure data is unavailable. A dedicated band calculation and `filband.gnu` output are required."
+        )
+        return
+
+    try:
+        band_data = parse_qe_band_structure(
+            analysis_files.band_file,
+            band_input_file=analysis_files.band_input_file,
+            analysis_files=analysis_files,
+        )
+    except AnalysisParseError as exc:
+        st.error(f"Failed to parse band data from `{analysis_files.band_file}`: {exc}")
+        return
+    except Exception as exc:
+        st.error(f"Unexpected band parsing error for `{analysis_files.band_file}`: {exc}")
+        return
+
+    render_band_summary(band_data)
+
+    if band_data.fermi_metadata is not None:
+        st.caption(
+            "Fermi metadata source: "
+            f"`{band_data.fermi_metadata.source_file}` ({band_data.fermi_metadata.source_type})"
+        )
+        if band_data.fermi_metadata.message:
+            st.info(band_data.fermi_metadata.message)
+    if analysis_files.band_input_file is not None:
+        st.caption(f"Band-path input: `{analysis_files.band_input_file}`")
+
+    align_to_fermi = st.checkbox(
+        "Align bands to Fermi level (0 eV)",
+        value=band_data.fermi_energy_ev is not None,
+        disabled=band_data.fermi_energy_ev is None,
+        key="band_align_to_fermi",
+    )
+    if band_data.fermi_energy_ev is None:
+        st.info("No Fermi energy was found for band alignment, so raw energies are shown.")
+
+    figure = make_band_figure(band_data, align_to_fermi=align_to_fermi)
+    st.plotly_chart(
+        figure,
+        use_container_width=True,
+        config=make_plotly_chart_config("qe_studio_bands"),
+    )
+
+
+def render_electronic_properties_section(run_dir: Path) -> None:
+    """Render the Electronic Properties Analysis expander when artifacts exist."""
+    analysis_files = find_available_analysis_files(run_dir)
+    if not analysis_files.has_any_artifact:
+        return
+
+    fermi_metadata = extract_qe_fermi_metadata(analysis_files)
+    with st.expander("Electronic Properties Analysis", expanded=True):
+        render_artifact_summary_row(run_dir, analysis_files, fermi_metadata)
+
+        if analysis_files.is_metadata_only:
+            st.info(
+                "QE metadata was detected in this run directory, but no plottable DOS or `filband.gnu` data "
+                "is available yet. Generate DOS and/or band-structure post-processing outputs to enable charts."
+            )
+
+        render_dos_subsection(analysis_files)
+        st.divider()
+        render_band_subsection(analysis_files)
+
+
 def render_qe_input_form() -> None:
     """Render the QE input form and gate runnable generation on pseudo resolution."""
     defaults = get_qe_parameters()
@@ -821,3 +1016,4 @@ render_pseudopotentials_section(atoms)
 render_qe_input_form()
 render_generated_qe_input_preview()
 render_qe_run_section()
+render_electronic_properties_section(QE_RUNS_DIR)

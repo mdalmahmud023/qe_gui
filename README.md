@@ -15,6 +15,8 @@ The current version can:
 - generate runnable Quantum ESPRESSO input files in `qe_runs/` once pseudopotentials are resolved
 - run `pw.x` locally against the generated `qe_runs/pw.in`
 - stream live Quantum ESPRESSO terminal output in the Streamlit UI and save the full log to `qe_runs/pw.out`
+- detect QE post-processing artifacts in `qe_runs/`
+- render interactive total DOS and `filband.gnu` band-structure charts with Plotly when suitable files exist
 
 ## Requirements
 
@@ -131,13 +133,18 @@ Before using `Run Calculation`, make sure `pw.x` is still available in the same 
 14. Click `Run Calculation`.
 15. Confirm live Quantum ESPRESSO output appears in the app while the process runs.
 16. Confirm the final full output is saved to `qe_runs/pw.out`.
+17. If QE post-processing artifacts such as DOS output, `filband.gnu`, or QE XML metadata exist in `qe_runs/`, confirm the `Electronic Properties Analysis` expander appears.
+18. Confirm the top summary row reports DOS detection, band detection, Fermi source, and the run directory.
+19. If only `pw.out` or QE XML metadata exists, confirm the expander shows an explicit empty-state message explaining that no plottable DOS or band data is available yet.
+20. If a DOS file from `dos.x` exists, confirm the interactive DOS plot renders with Plotly and a Fermi-alignment toggle.
+21. If a `filband.gnu` file exists, confirm the interactive band-structure plot renders with Plotly and optional high-symmetry separators from the matching band input file.
 
 ## Useful Checks
 
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py pseudopotentials.py
+python3 -m py_compile app.py electronic_properties.py pseudopotentials.py qe_runner.py
 ```
 
 Unit tests:
@@ -155,6 +162,7 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 ## Current Files
 
 - `app.py`: Streamlit app entrypoint
+- `electronic_properties.py`: QE analysis artifact discovery, parsing, and Plotly figure helpers
 - `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
 - `requirements.txt`: Python dependencies
 - `HISTORY.md`: running project history and AI context handoff
@@ -166,3 +174,6 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 - A hard browser refresh still resets Streamlit session state.
 - The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
 - QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination.
+- Electronic-properties analysis is disk-driven and looks for DOS and band artifacts inside `qe_runs/`.
+- V1 analysis support is limited to total DOS and non-projected `filband.gnu` band plots.
+- The app prefers structured QE XML metadata from `prefix.save/data-file-schema.xml` for Fermi alignment and falls back to `pw.out` only when XML metadata is unavailable.
