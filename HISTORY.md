@@ -8,30 +8,53 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Project name: QE Studio
 - Goal: build a web-based GUI for Quantum ESPRESSO using Python, Streamlit, and ASE
-- Current stage: structure visualization, SSSP pseudopotential resolution, runnable QE input generation, and first-pass electronic-properties analysis
+- Current stage: multipage QE workflow with structure setup, runnable QE input generation, live execution, post-processing runners, and electronic-properties analysis
 
 ## Current State
 
-- Streamlit app entrypoint exists at `app.py`.
-- The page uses a wide layout.
-- The sidebar contains:
-  - app title and description
-  - `.cif` file uploader
-  - structure metadata after parsing
+- Streamlit app entrypoint exists at `app.py` and now acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
+- The app uses a wide layout and a 4-page workflow:
+  - `Structure`
+  - `Setup`
+  - `Run`
+  - `Analysis`
+- The sidebar is now a persistent project summary visible on every page.
+- CIF upload now lives on the `Structure` page rather than in the sidebar.
 - Uploaded CIF files are parsed with `ase.io.read(...)`.
 - Parsed ASE `Atoms` objects are stored in `st.session_state`.
-- The main area renders the structure with `py3Dmol`.
-- The main area also includes a QE parameter form for basic calculation settings.
+- The active structure can be switched between the uploaded cell and a symmetry-reduced primitive cell.
+- The `Structure` page renders the active structure with `py3Dmol`.
+- The `Setup` page handles:
+  - SSSP pseudopotential resolution
+  - QE input parameter collection
+  - generated `pw.in` preview
 - The app resolves and caches SSSP pseudopotentials from versioned Materials Cloud manifests and archives.
-- The form now generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
-- The app can now launch `pw.x` locally, stream live terminal output, and save the full run log to `qe_runs/pw.out`.
-- The app can now detect QE analysis artifacts in `qe_runs/` and render first-pass DOS and band-structure charts from real QE post-processing files.
+- The setup flow generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
+- The `Run` page handles:
+  - base `pw.x` execution
+  - DOS post-processing
+  - band-structure workflow execution
+  - live logs and artifact summaries
+- The app can launch `pw.x`, `dos.x`, and `bands.x` locally, stream live terminal output, and save logs under `qe_runs/`.
+- The `Analysis` page detects QE analysis artifacts in `qe_runs/` and renders DOS and band-structure charts from real QE post-processing files.
+- `project_context.py` now centralizes lightweight session-plus-disk summaries for the shared shell and page prerequisites.
+- Heavy DOS and band parsing remains inside `ui_analysis.py`; the shared context stays summary-only.
 - Dependencies are listed in `requirements.txt`.
 
 ## File Map
 
-- `app.py`: main Streamlit application
+- `app.py`: shared Streamlit shell, navigation, workflow indicator, and persistent sidebar summary
+- `project_context.py`: lightweight cross-page state and disk summary helpers
+- `ui_structure.py`: Structure page UI
+- `ui_setup.py`: Setup page UI
+- `ui_run.py`: Run page UI
+- `ui_analysis.py`: Analysis page UI
 - `electronic_properties.py`: QE analysis discovery, parsing, and Plotly helpers
+- `postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
+- `qe_runner.py`: registry-backed QE subprocess execution and live output streaming
+- `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
+- `structure_tools.py`: primitive-cell reduction and automatic band-path helpers
+- `tests/test_project_context.py`: coverage for lightweight shared context summaries
 - `requirements.txt`: direct Python dependencies
 - `README.md`: setup, run, and test instructions
 - `HISTORY.md`: persistent project context for humans and AI
@@ -166,6 +189,51 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Added `tests/test_electronic_properties.py` and QE-derived fixtures for XML metadata and `filband.gnu` parsing coverage.
 - Added `plotly` to `requirements.txt`.
 
+### 2026-04-02
+
+- Refactored QE Studio from a single-page Streamlit app into a 4-page workflow using `st.Page(...)` and `st.navigation(...)`.
+- Replaced the old sidebar uploader layout with a shared app shell:
+  - persistent sidebar project summary
+  - top navigation
+  - compact workflow-step indicator
+- Added `project_context.py` to centralize:
+  - shared state keys
+  - structure/session helpers
+  - pseudopotential summary state
+  - generated-input summary state
+  - job summary state
+  - lightweight artifact discovery summaries
+- Kept `project_context.py` summary-only:
+  - no DOS parsing
+  - no band parsing
+  - no figure generation
+  - no heavy log reads
+- Added `ui_structure.py` for:
+  - CIF upload
+  - uploaded vs primitive-cell controls
+  - compact structure summary
+  - `py3Dmol` visualization
+- Added `ui_setup.py` for:
+  - pseudopotential resolution UI
+  - QE input form
+  - generated `pw.in` preview with disk fallback
+- Added `ui_run.py` for:
+  - base `pw.x` execution
+  - DOS runner
+  - band workflow runner
+  - live logs
+  - artifact tables
+- Added `ui_analysis.py` for:
+  - artifact summary row
+  - DOS viewer
+  - band viewer
+  - band-gap summary
+  - alignment controls
+- Preserved the existing runner registry/session-state architecture and kept the `Run` page as the only operational/log-heavy page.
+- Preserved disk-first behavior under `qe_runs/` so pages remain robust across refreshes.
+- Added `tests/test_project_context.py` to verify the new shared context behavior and guard against heavy DOS/band parsing in the context layer.
+- Updated `README.md` to document the new multipage layout and page responsibilities.
+
 ## Known Limitations
 
 - Only the first structure in a CIF file is loaded.
@@ -174,27 +242,27 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - A hard browser refresh resets Streamlit session state.
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
-- Live UI streaming depends on `pw.x` flushing stdout/stderr as it runs.
-- DOS analysis does not run `dos.x`; it only parses existing DOS artifacts.
-- Band analysis does not run `bands.x`; it only parses existing `filband.gnu`-style artifacts.
+- Live UI streaming depends on QE executables flushing stdout/stderr as they run.
 - V1 analysis does not support PDOS, fat bands, or projected band weights.
+- The shared sidebar intentionally shows only lightweight summaries; full DOS/band parsing happens only on the `Analysis` page.
 
 ## Next Likely Steps
 
-- Add explicit empty and error states in the main area for invalid uploads.
-- Improve the 3D viewer layout and responsiveness.
-- Add support for selecting among multiple structures in CIF files if needed.
-- Add manual pseudopotential override controls.
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
+- Polish the shared shell styling and card layouts for a more dashboard-like presentation.
+- Add manual pseudopotential override controls.
+- Add support for selecting among multiple structures in CIF files if needed.
 - Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
 - Extend electronic-properties analysis to PDOS from `projwfc.x`.
 - Add projected or fat-band visualization.
-- Add optional post-processing job launching for `dos.x` and `bands.x`.
+- Add run history or recent-artifact navigation inside the shared project frame.
 
 ## AI Context Notes
 
-- The repo is currently very small and centered on `app.py`.
+- The repo is no longer centered on a single large `app.py`; the UI is split across dedicated page modules plus `project_context.py`.
 - The local virtual environment directory `venv/` exists and has already been used to install dependencies.
 - There is no git repository initialized at the moment.
-- Prefer preserving the current minimal structure unless the app grows enough to justify splitting `app.py` into modules.
+- The current architecture should preserve the lightweight shared context rule:
+  - summary-only work in `project_context.py`
+  - heavy DOS/band parsing only in `ui_analysis.py`
