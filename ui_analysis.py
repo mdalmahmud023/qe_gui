@@ -11,6 +11,8 @@ from electronic_properties import (
     BandGapSummary,
     DOSData,
     FermiMetadata,
+    INTERACTIVE_FIGURE_MODE,
+    PUBLICATION_EXPORT_FIGURE_MODE,
     extract_qe_fermi_metadata,
     infer_band_gap,
     make_band_figure,
@@ -26,6 +28,12 @@ from project_context import (
 )
 
 ANALYSIS_PLOT_COLUMN_WEIGHTS = [0.85, 5.3, 0.85]
+ANALYSIS_FIGURE_MODE_OPTIONS = [INTERACTIVE_FIGURE_MODE, PUBLICATION_EXPORT_FIGURE_MODE]
+ANALYSIS_EXPORT_FORMAT_OPTIONS = ["png", "svg"]
+ANALYSIS_FIGURE_MODE_WIDGET_KEY = "analysis_figure_mode"
+ANALYSIS_EXPORT_FORMAT_WIDGET_KEY = "analysis_export_format"
+PUBLICATION_EXPORT_DOS_WIDTH = 980
+PUBLICATION_EXPORT_BAND_WIDTH = 1080
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -42,6 +50,7 @@ def render_page(ctx: ProjectContext) -> None:
 
     fermi_metadata = extract_qe_fermi_metadata(analysis_files)
     render_artifact_summary_row(ctx.run_dir, analysis_files, fermi_metadata)
+    figure_mode, export_format = render_figure_options()
 
     if analysis_files.is_metadata_only:
         st.info(
@@ -49,9 +58,9 @@ def render_page(ctx: ProjectContext) -> None:
         )
 
     st.divider()
-    render_dos_subsection(analysis_files)
+    render_dos_subsection(analysis_files, figure_mode=figure_mode, export_format=export_format)
     st.divider()
-    render_band_subsection(analysis_files)
+    render_band_subsection(analysis_files, figure_mode=figure_mode, export_format=export_format)
 
 
 def format_fermi_source_label(fermi_metadata: FermiMetadata | None) -> str:
@@ -63,23 +72,85 @@ def format_fermi_source_label(fermi_metadata: FermiMetadata | None) -> str:
     return f"{fermi_metadata.source_type}: {fermi_metadata.reference_kind}"
 
 
-def make_plotly_chart_config(filename: str) -> dict:
+def make_plotly_chart_config(
+    filename: str,
+    *,
+    export_format: str = "png",
+    export_height: int | None = None,
+    export_width: int | None = None,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+) -> dict:
     """Return Plotly export settings with a figure-specific filename."""
     export_options = dict(DEFAULT_PLOTLY_CONFIG["toImageButtonOptions"])
     export_options["filename"] = filename
+    export_options["format"] = export_format
+    export_options["scale"] = 1 if export_format == "svg" else (3 if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else 2)
+    if export_height is not None:
+        export_options["height"] = export_height
+    if export_width is not None:
+        export_options["width"] = export_width
     config = dict(DEFAULT_PLOTLY_CONFIG)
     config["toImageButtonOptions"] = export_options
     return config
 
 
-def render_centered_plotly_chart(figure, *, filename: str) -> None:
+def render_figure_options() -> tuple[str, str]:
+    """Render global Analysis-page figure controls."""
+    with st.container(border=True):
+        st.caption("Figure Options")
+        col1, col2 = st.columns([1.7, 1.2])
+        figure_mode = col1.radio(
+            "Figure mode",
+            options=ANALYSIS_FIGURE_MODE_OPTIONS,
+            horizontal=True,
+            format_func=lambda mode: {
+                INTERACTIVE_FIGURE_MODE: "Interactive",
+                PUBLICATION_EXPORT_FIGURE_MODE: "Publication Export",
+            }[mode],
+            key=ANALYSIS_FIGURE_MODE_WIDGET_KEY,
+        )
+        export_format = col2.selectbox(
+            "Export format",
+            options=ANALYSIS_EXPORT_FORMAT_OPTIONS,
+            format_func=lambda file_format: {
+                "png": "PNG",
+                "svg": "SVG",
+            }[file_format],
+            key=ANALYSIS_EXPORT_FORMAT_WIDGET_KEY,
+        )
+        if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE:
+            st.caption(
+                "Publication Export uses larger fonts, tighter margins, and fixed export sizing. "
+                "Use the Plotly camera button to save the current figure; SVG is recommended for journal layouts and PDF workflows."
+            )
+        else:
+            st.caption(
+                "Interactive keeps a compact on-screen layout. The Plotly camera button exports the current figure using the selected format."
+            )
+    return figure_mode, export_format
+
+
+def render_centered_plotly_chart(
+    figure,
+    *,
+    filename: str,
+    export_format: str,
+    figure_mode: str,
+    export_width: int | None = None,
+) -> None:
     """Render an analysis figure in a centered, narrower layout."""
     _left, center, _right = st.columns(ANALYSIS_PLOT_COLUMN_WEIGHTS)
     with center:
         st.plotly_chart(
             figure,
             use_container_width=True,
-            config=make_plotly_chart_config(filename),
+            config=make_plotly_chart_config(
+                filename,
+                export_format=export_format,
+                export_height=int(figure.layout.height) if figure.layout.height is not None else None,
+                export_width=export_width,
+                figure_mode=figure_mode,
+            ),
             theme=None,
         )
 
@@ -199,7 +270,7 @@ def resolve_band_alignment_mode(
     return normalized_mode, None
 
 
-def render_dos_subsection(analysis_files) -> None:
+def render_dos_subsection(analysis_files, *, figure_mode: str, export_format: str) -> None:
     """Render the DOS subsection with graceful parsing failure handling."""
     st.markdown("### DOS")
     if analysis_files.dos_file is None:
@@ -234,11 +305,21 @@ def render_dos_subsection(analysis_files) -> None:
     if dos_data.fermi_energy_ev is None:
         st.info("No Fermi energy was found for DOS alignment, so raw energies are shown.")
 
-    figure = make_dos_figure(dos_data, align_to_fermi=align_to_fermi)
-    render_centered_plotly_chart(figure, filename="qe_studio_dos")
+    figure = make_dos_figure(
+        dos_data,
+        align_to_fermi=align_to_fermi,
+        figure_mode=figure_mode,
+    )
+    render_centered_plotly_chart(
+        figure,
+        filename="qe_studio_dos",
+        export_format=export_format,
+        figure_mode=figure_mode,
+        export_width=PUBLICATION_EXPORT_DOS_WIDTH if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else None,
+    )
 
 
-def render_band_subsection(analysis_files) -> None:
+def render_band_subsection(analysis_files, *, figure_mode: str, export_format: str) -> None:
     """Render the band-structure subsection with graceful parsing failure handling."""
     st.markdown("### Band Structure")
     if analysis_files.band_file is None:
@@ -299,5 +380,12 @@ def render_band_subsection(analysis_files) -> None:
         band_data,
         alignment_mode=alignment_mode,
         band_gap=band_gap,
+        figure_mode=figure_mode,
     )
-    render_centered_plotly_chart(figure, filename="qe_studio_bands")
+    render_centered_plotly_chart(
+        figure,
+        filename="qe_studio_bands",
+        export_format=export_format,
+        figure_mode=figure_mode,
+        export_width=PUBLICATION_EXPORT_BAND_WIDTH if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else None,
+    )

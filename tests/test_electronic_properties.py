@@ -166,9 +166,28 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(len(figure.data), 1)
         self.assertEqual(len(figure.layout.shapes), 1)
         self.assertEqual(figure.layout.shapes[0]["x0"], 0.0)
-        self.assertEqual(figure.layout.height, ep.PUBLICATION_DOS_HEIGHT)
+        self.assertEqual(figure.layout.height, ep.INTERACTIVE_DOS_HEIGHT)
         self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
         self.assertEqual(figure.layout.paper_bgcolor, "white")
+
+    def test_make_dos_figure_publication_export_mode_uses_larger_typography(self) -> None:
+        dos_data = ep.DOSData(
+            energies_ev=[-1.0, 0.0, 1.0],
+            dos_total=[0.2, 1.0, 0.3],
+            source_file=Path("sample.dos"),
+            source_type="qe_dos",
+            fermi_energy_ev=0.5,
+        )
+
+        figure = ep.make_dos_figure(
+            dos_data,
+            align_to_fermi=True,
+            figure_mode=ep.PUBLICATION_EXPORT_FIGURE_MODE,
+        )
+
+        self.assertEqual(figure.layout.height, ep.PUBLICATION_DOS_HEIGHT)
+        self.assertGreater(figure.layout.font.size, 15)
+        self.assertGreater(figure.data[0]["line"]["width"], 2.4)
 
     def test_infer_band_gap_reports_indirect_gap(self) -> None:
         band_data = ep.BandData(
@@ -218,9 +237,34 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(list(figure.layout.xaxis.tickvals), [0.0, 1.0, 2.0])
         self.assertEqual(list(figure.layout.xaxis.ticktext), ["G", "X", "L"])
         self.assertEqual(figure.layout.yaxis.title.text, "Energy relative to Fermi (eV)")
-        self.assertEqual(figure.layout.height, ep.PUBLICATION_BAND_HEIGHT)
+        self.assertEqual(figure.layout.height, ep.INTERACTIVE_BAND_HEIGHT)
         self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
         self.assertEqual(figure.layout.xaxis.tickfont.color, ep.PUBLICATION_TEXT)
+
+    def test_make_band_figure_publication_export_mode_uses_larger_typography(self) -> None:
+        band_data = ep.BandData(
+            distances=[0.0, 1.0, 2.0],
+            eigenvalues_ev=[
+                [-1.0, 1.0],
+                [-0.5, 1.5],
+                [0.0, 2.0],
+            ],
+            source_file=Path("sample.filband.gnu"),
+            source_type="qe_filband_gnu",
+            kpoint_tick_positions=[0.0, 1.0, 2.0],
+            kpoint_tick_labels=["G", "X", "L"],
+            fermi_energy_ev=0.25,
+        )
+
+        figure = ep.make_band_figure(
+            band_data,
+            alignment_mode="fermi",
+            figure_mode=ep.PUBLICATION_EXPORT_FIGURE_MODE,
+        )
+
+        self.assertEqual(figure.layout.height, ep.PUBLICATION_BAND_HEIGHT)
+        self.assertGreater(figure.layout.font.size, 15)
+        self.assertGreater(figure.data[0]["line"]["width"], 1.3)
 
     def test_make_band_figure_vbm_alignment_shifts_top_valence_to_zero(self) -> None:
         band_data = ep.BandData(

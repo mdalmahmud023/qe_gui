@@ -19,8 +19,12 @@ PUBLICATION_TEXT = "#111827"
 PUBLICATION_MUTED = "#4B5563"
 PUBLICATION_GRID = "#D1D5DB"
 PUBLICATION_SEPARATOR = "#A8B0BD"
-PUBLICATION_DOS_HEIGHT = 500
-PUBLICATION_BAND_HEIGHT = 600
+INTERACTIVE_FIGURE_MODE = "interactive"
+PUBLICATION_EXPORT_FIGURE_MODE = "publication"
+INTERACTIVE_DOS_HEIGHT = 500
+INTERACTIVE_BAND_HEIGHT = 600
+PUBLICATION_DOS_HEIGHT = 560
+PUBLICATION_BAND_HEIGHT = 680
 DEFAULT_PLOTLY_CONFIG = {
     "displaylogo": False,
     "responsive": True,
@@ -381,10 +385,16 @@ def parse_band_input_ticks(band_input_file: Path, distances: list[float]) -> tup
     return [], []
 
 
-def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Figure:
+def make_dos_figure(
+    dos_data: DOSData,
+    *,
+    align_to_fermi: bool = True,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+) -> go.Figure:
     """Build a publication-friendly Plotly figure for total DOS."""
     x_values = _shifted_values(dos_data.energies_ev, dos_data.fermi_energy_ev, align_to_fermi)
     reference_x = 0.0 if align_to_fermi and dos_data.fermi_energy_ev is not None else dos_data.fermi_energy_ev
+    publication_mode = _is_publication_export_mode(figure_mode)
 
     figure = go.Figure()
     figure.add_trace(
@@ -393,7 +403,7 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
             y=dos_data.dos_total,
             mode="lines",
             name="Total DOS",
-            line={"color": PUBLICATION_BLUE, "width": 2.4},
+            line={"color": PUBLICATION_BLUE, "width": 2.8 if publication_mode else 2.4},
             hovertemplate="Energy: %{x:.3f} eV<br>DOS: %{y:.4f}<extra></extra>",
         )
     )
@@ -403,7 +413,10 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
         xaxis_title="Energy (eV)",
         yaxis_title="DOS",
         showlegend=False,
-        **_base_plot_layout(height=PUBLICATION_DOS_HEIGHT),
+        **_base_plot_layout(
+            height=PUBLICATION_DOS_HEIGHT if publication_mode else INTERACTIVE_DOS_HEIGHT,
+            figure_mode=figure_mode,
+        ),
     )
 
     if reference_x is not None:
@@ -411,7 +424,7 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
             x=reference_x,
             line_dash="dash",
             line_color=PUBLICATION_MUTED,
-            line_width=1.4,
+            line_width=1.6 if publication_mode else 1.4,
         )
 
     return figure
@@ -463,9 +476,11 @@ def make_band_figure(
     *,
     alignment_mode: str = "fermi",
     band_gap: BandGapSummary | None = None,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
 ) -> go.Figure:
     """Build a publication-friendly Plotly figure for band structure."""
     figure = go.Figure()
+    publication_mode = _is_publication_export_mode(figure_mode)
     energy_shift, reference_y, yaxis_title = _resolve_band_alignment(
         band_data,
         alignment_mode=alignment_mode,
@@ -479,7 +494,7 @@ def make_band_figure(
                 x=band_data.distances,
                 y=shifted,
                 mode="lines",
-                line={"color": PUBLICATION_BLUE, "width": 1.3},
+                line={"color": PUBLICATION_BLUE, "width": 1.6 if publication_mode else 1.3},
                 name=f"Band {band_index}",
                 hovertemplate="k-distance: %{x:.3f}<br>Energy: %{y:.3f} eV<extra></extra>",
                 showlegend=False,
@@ -491,7 +506,10 @@ def make_band_figure(
         xaxis_title="k-path distance",
         yaxis_title=yaxis_title,
         showlegend=False,
-        **_base_plot_layout(height=PUBLICATION_BAND_HEIGHT),
+        **_base_plot_layout(
+            height=PUBLICATION_BAND_HEIGHT if publication_mode else INTERACTIVE_BAND_HEIGHT,
+            figure_mode=figure_mode,
+        ),
     )
 
     if reference_y is not None:
@@ -499,7 +517,7 @@ def make_band_figure(
             y=reference_y,
             line_dash="dash",
             line_color=PUBLICATION_MUTED,
-            line_width=1.4,
+            line_width=1.6 if publication_mode else 1.4,
         )
 
     if band_data.kpoint_tick_positions:
@@ -508,7 +526,7 @@ def make_band_figure(
                 x=separator_position,
                 line_dash="dot",
                 line_color=PUBLICATION_SEPARATOR,
-                line_width=1.0,
+                line_width=1.15 if publication_mode else 1.0,
             )
 
         if band_data.kpoint_tick_labels:
@@ -905,26 +923,38 @@ def _shifted_values(values: list[float], reference: float | None, align_to_refer
     return [value - reference for value in values]
 
 
-def _base_plot_layout(*, height: int) -> dict:
+def _base_plot_layout(*, height: int, figure_mode: str = INTERACTIVE_FIGURE_MODE) -> dict:
+    publication_mode = _is_publication_export_mode(figure_mode)
     return {
         "template": "none",
         "plot_bgcolor": "white",
         "paper_bgcolor": "white",
         "height": height,
-        "font": {"family": "Helvetica, Arial, sans-serif", "size": 15, "color": PUBLICATION_TEXT},
+        "font": {
+            "family": "Helvetica, Arial, sans-serif",
+            "size": 18 if publication_mode else 15,
+            "color": PUBLICATION_TEXT,
+        },
         "title_x": 0.02,
         "title_xanchor": "left",
-        "title_font": {"size": 23, "color": PUBLICATION_TEXT},
-        "margin": {"l": 88, "r": 34, "t": 74, "b": 82},
+        "title_font": {"size": 26 if publication_mode else 23, "color": PUBLICATION_TEXT},
+        "margin": (
+            {"l": 72, "r": 20, "t": 56, "b": 64}
+            if publication_mode
+            else {"l": 88, "r": 34, "t": 74, "b": 82}
+        ),
         "hovermode": "closest",
         "hoverlabel": {
             "bgcolor": "white",
             "bordercolor": PUBLICATION_MUTED,
-            "font": {"color": PUBLICATION_TEXT, "size": 14},
+            "font": {"color": PUBLICATION_TEXT, "size": 16 if publication_mode else 14},
         },
         "xaxis": {
-            "title": {"font": {"size": 18, "color": PUBLICATION_TEXT}, "standoff": 14},
-            "tickfont": {"size": 15, "color": PUBLICATION_TEXT},
+            "title": {
+                "font": {"size": 20 if publication_mode else 18, "color": PUBLICATION_TEXT},
+                "standoff": 14,
+            },
+            "tickfont": {"size": 17 if publication_mode else 15, "color": PUBLICATION_TEXT},
             "showline": True,
             "linewidth": 1.6,
             "linecolor": PUBLICATION_TEXT,
@@ -937,8 +967,11 @@ def _base_plot_layout(*, height: int) -> dict:
             "automargin": True,
         },
         "yaxis": {
-            "title": {"font": {"size": 18, "color": PUBLICATION_TEXT}, "standoff": 14},
-            "tickfont": {"size": 15, "color": PUBLICATION_TEXT},
+            "title": {
+                "font": {"size": 20 if publication_mode else 18, "color": PUBLICATION_TEXT},
+                "standoff": 14,
+            },
+            "tickfont": {"size": 17 if publication_mode else 15, "color": PUBLICATION_TEXT},
             "showline": True,
             "linewidth": 1.6,
             "linecolor": PUBLICATION_TEXT,
@@ -951,3 +984,7 @@ def _base_plot_layout(*, height: int) -> dict:
             "automargin": True,
         },
     }
+
+
+def _is_publication_export_mode(figure_mode: str) -> bool:
+    return figure_mode.strip().lower() == PUBLICATION_EXPORT_FIGURE_MODE

@@ -245,6 +245,11 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - centered DOS and band figures in narrower layout columns
   - lowered default figure heights so charts no longer dominate the full screen
   - kept the publication-style colors, labels, and export behavior
+- Added a dedicated `Publication Export` figure mode on the `Analysis` page:
+  - keeps `Interactive` as the default on-screen preset
+  - adds larger typography and tighter margins for export-focused figures
+  - lets the Plotly export button use either PNG or SVG output
+  - applies fixed export widths for DOS and band figures to support more consistent journal-ready output
 
 ## Known Limitations
 
