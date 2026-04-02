@@ -19,6 +19,8 @@ PUBLICATION_TEXT = "#111827"
 PUBLICATION_MUTED = "#4B5563"
 PUBLICATION_GRID = "#D1D5DB"
 PUBLICATION_SEPARATOR = "#A8B0BD"
+PUBLICATION_DOS_HEIGHT = 500
+PUBLICATION_BAND_HEIGHT = 600
 DEFAULT_PLOTLY_CONFIG = {
     "displaylogo": False,
     "responsive": True,
@@ -401,7 +403,7 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
         xaxis_title="Energy (eV)",
         yaxis_title="DOS",
         showlegend=False,
-        **_base_plot_layout(height=620),
+        **_base_plot_layout(height=PUBLICATION_DOS_HEIGHT),
     )
 
     if reference_x is not None:
@@ -489,7 +491,7 @@ def make_band_figure(
         xaxis_title="k-path distance",
         yaxis_title=yaxis_title,
         showlegend=False,
-        **_base_plot_layout(height=720),
+        **_base_plot_layout(height=PUBLICATION_BAND_HEIGHT),
     )
 
     if reference_y is not None:

@@ -166,7 +166,7 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(len(figure.data), 1)
         self.assertEqual(len(figure.layout.shapes), 1)
         self.assertEqual(figure.layout.shapes[0]["x0"], 0.0)
-        self.assertEqual(figure.layout.height, 620)
+        self.assertEqual(figure.layout.height, ep.PUBLICATION_DOS_HEIGHT)
         self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
         self.assertEqual(figure.layout.paper_bgcolor, "white")
 
@@ -218,7 +218,7 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(list(figure.layout.xaxis.tickvals), [0.0, 1.0, 2.0])
         self.assertEqual(list(figure.layout.xaxis.ticktext), ["G", "X", "L"])
         self.assertEqual(figure.layout.yaxis.title.text, "Energy relative to Fermi (eV)")
-        self.assertEqual(figure.layout.height, 720)
+        self.assertEqual(figure.layout.height, ep.PUBLICATION_BAND_HEIGHT)
         self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
         self.assertEqual(figure.layout.xaxis.tickfont.color, ep.PUBLICATION_TEXT)
 

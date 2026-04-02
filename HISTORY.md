@@ -241,6 +241,10 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - stronger typography and axis styling
   - taller chart proportions for better readability
   - Streamlit Plotly theme override disabled in the Analysis page so figure styling remains consistent
+- Reduced the on-screen footprint of Analysis charts:
+  - centered DOS and band figures in narrower layout columns
+  - lowered default figure heights so charts no longer dominate the full screen
+  - kept the publication-style colors, labels, and export behavior
 
 ## Known Limitations
 

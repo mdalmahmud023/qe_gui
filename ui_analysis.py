@@ -25,6 +25,8 @@ from project_context import (
     ProjectContext,
 )
 
+ANALYSIS_PLOT_COLUMN_WEIGHTS = [0.85, 5.3, 0.85]
+
 
 def render_page(ctx: ProjectContext) -> None:
     """Render the Analysis page."""
@@ -68,6 +70,18 @@ def make_plotly_chart_config(filename: str) -> dict:
     config = dict(DEFAULT_PLOTLY_CONFIG)
     config["toImageButtonOptions"] = export_options
     return config
+
+
+def render_centered_plotly_chart(figure, *, filename: str) -> None:
+    """Render an analysis figure in a centered, narrower layout."""
+    _left, center, _right = st.columns(ANALYSIS_PLOT_COLUMN_WEIGHTS)
+    with center:
+        st.plotly_chart(
+            figure,
+            use_container_width=True,
+            config=make_plotly_chart_config(filename),
+            theme=None,
+        )
 
 
 def render_artifact_summary_row(run_dir: Path, analysis_files, fermi_metadata: FermiMetadata | None) -> None:
@@ -221,12 +235,7 @@ def render_dos_subsection(analysis_files) -> None:
         st.info("No Fermi energy was found for DOS alignment, so raw energies are shown.")
 
     figure = make_dos_figure(dos_data, align_to_fermi=align_to_fermi)
-    st.plotly_chart(
-        figure,
-        use_container_width=True,
-        config=make_plotly_chart_config("qe_studio_dos"),
-        theme=None,
-    )
+    render_centered_plotly_chart(figure, filename="qe_studio_dos")
 
 
 def render_band_subsection(analysis_files) -> None:
@@ -291,9 +300,4 @@ def render_band_subsection(analysis_files) -> None:
         alignment_mode=alignment_mode,
         band_gap=band_gap,
     )
-    st.plotly_chart(
-        figure,
-        use_container_width=True,
-        config=make_plotly_chart_config("qe_studio_bands"),
-        theme=None,
-    )
+    render_centered_plotly_chart(figure, filename="qe_studio_bands")
