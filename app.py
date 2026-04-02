@@ -68,12 +68,16 @@ from qe_runner import (
     run_external_job,
     set_run_started,
 )
+from structure_tools import generate_band_path_rows, make_primitive_atoms
 
 
 ATOMS_STATE_KEY = "structure_atoms"
+RAW_ATOMS_STATE_KEY = "structure_raw_atoms"
 CIF_BYTES_STATE_KEY = "structure_cif_bytes"
 FILENAME_STATE_KEY = "structure_filename"
 ERROR_STATE_KEY = "structure_error"
+STRUCTURE_MODE_STATE_KEY = "structure_mode"
+STRUCTURE_MODE_STATUS_STATE_KEY = "structure_mode_status"
 QE_PARAMS_STATE_KEY = "qe_parameters"
 QE_INPUT_TEXT_STATE_KEY = "qe_input_text"
 QE_INPUT_INTERNAL_PATH_STATE_KEY = "qe_input_internal_path"
@@ -89,6 +93,12 @@ PSEUDO_FUNCTIONAL_WIDGET_KEY = "pseudo_widget_functional"
 PSEUDO_MODE_WIDGET_KEY = "pseudo_widget_mode"
 PSEUDO_VERSION_WIDGET_KEY = "pseudo_widget_version"
 PSEUDO_USE_CACHE_WIDGET_KEY = "pseudo_widget_use_cache"
+STRUCTURE_MODE_WIDGET_KEY = "structure_mode_widget"
+BAND_NBND_WIDGET_KEY = "band_nbnd_widget"
+BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
+BAND_PATH_WIDGET_KEY = "band_path_widget"
+AUTO_BAND_PATH_POINTS_WIDGET_KEY = "auto_band_path_points_widget"
+AUTO_BAND_PATH_STATUS_STATE_KEY = "auto_band_path_status"
 
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
 QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")
@@ -122,6 +132,7 @@ JOB_OWNER_BANDS = "bands"
 DOS_BZ_SUM_OPTIONS = ("smearing", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt")
 BAND_COORDINATE_MODE_OPTIONS = ("crystal_b", "tpiba_b")
 DEFAULT_BAND_PATH_TEXT = "0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 20 ! X\n0.5 0.5 0.5 1 ! L\n"
+STRUCTURE_MODE_OPTIONS = ("uploaded", "primitive")
 
 
 def clear_generated_qe_input_state() -> None:
@@ -130,6 +141,7 @@ def clear_generated_qe_input_state() -> None:
         QE_INPUT_TEXT_STATE_KEY,
         QE_INPUT_INTERNAL_PATH_STATE_KEY,
         QE_INPUT_UI_PATH_STATE_KEY,
+        AUTO_BAND_PATH_STATUS_STATE_KEY,
     ):
         st.session_state.pop(key, None)
 
@@ -153,9 +165,12 @@ def clear_structure_state() -> None:
     clear_pseudopotential_state(clear_structure_signature=True)
     for key in (
         ATOMS_STATE_KEY,
+        RAW_ATOMS_STATE_KEY,
         CIF_BYTES_STATE_KEY,
         FILENAME_STATE_KEY,
         ERROR_STATE_KEY,
+        STRUCTURE_MODE_STATE_KEY,
+        STRUCTURE_MODE_STATUS_STATE_KEY,
     ):
         st.session_state.pop(key, None)
 
@@ -163,6 +178,53 @@ def clear_structure_state() -> None:
 def parse_cif_bytes(cif_bytes: bytes):
     """Parse the first CIF structure block into ASE atoms."""
     return read(io.BytesIO(cif_bytes), format="cif", index=0)
+
+
+def get_structure_mode() -> str:
+    """Return the current structure-mode selection."""
+    return st.session_state.get(STRUCTURE_MODE_STATE_KEY, "uploaded")
+
+
+def resolve_atoms_for_structure_mode(raw_atoms, mode: str) -> tuple[object, str, str]:
+    """Return the active atoms object for the selected structure mode."""
+    if raw_atoms is None:
+        raise ValueError("No structure is loaded.")
+
+    if mode != "primitive":
+        return raw_atoms.copy(), "uploaded", "Using the uploaded cell."
+
+    try:
+        primitive_result = make_primitive_atoms(raw_atoms)
+    except Exception as exc:
+        return raw_atoms.copy(), "uploaded", f"Primitive-cell reduction failed; using the uploaded cell instead: {exc}"
+    return primitive_result.atoms, "primitive", primitive_result.message
+
+
+def apply_structure_mode_selection(mode: str, *, preserve_resolution_status: bool = True) -> None:
+    """Apply a new active structure mode using the stored raw uploaded structure."""
+    raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+    if raw_atoms is None:
+        return
+
+    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(raw_atoms, mode)
+    st.session_state[ATOMS_STATE_KEY] = active_atoms
+    st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
+    st.session_state[STRUCTURE_MODE_WIDGET_KEY] = resolved_mode
+    st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = status_message
+    st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = get_structure_signature(active_atoms)
+    clear_generated_qe_input_state()
+    reset_run_state(st.session_state)
+
+    if preserve_resolution_status and has_resolved_pseudopotential_data():
+        status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY)
+        if status and status.get("state") == "resolved":
+            set_resolution_status(
+                state="resolved",
+                message=status.get("message", "Resolved pseudopotentials are available."),
+                warnings=list(status.get("warnings", [])),
+                resolved_settings=status.get("resolved_settings"),
+                resolved_structure_signature=get_structure_signature(active_atoms),
+            )
 
 
 def atoms_to_cif_text(atoms) -> str:
@@ -272,10 +334,18 @@ def store_uploaded_structure(uploaded_file) -> None:
         return
 
     try:
-        atoms = parse_cif_bytes(cif_bytes)
+        raw_atoms = parse_cif_bytes(cif_bytes)
     except Exception as exc:
         clear_structure_state()
         st.session_state[ERROR_STATE_KEY] = f"Failed to parse CIF file: {exc}"
+        return
+
+    requested_mode = get_structure_mode()
+    try:
+        atoms, resolved_mode, structure_mode_message = resolve_atoms_for_structure_mode(raw_atoms, requested_mode)
+    except Exception as exc:
+        clear_structure_state()
+        st.session_state[ERROR_STATE_KEY] = f"Failed to prepare the selected structure mode: {exc}"
         return
 
     previous_pseudo_signature = st.session_state.get(PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY)
@@ -293,10 +363,14 @@ def store_uploaded_structure(uploaded_file) -> None:
     elif st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY):
         clear_pseudopotential_state(clear_structure_signature=False)
 
+    st.session_state[RAW_ATOMS_STATE_KEY] = raw_atoms
     st.session_state[ATOMS_STATE_KEY] = atoms
     st.session_state[CIF_BYTES_STATE_KEY] = cif_bytes
     st.session_state[FILENAME_STATE_KEY] = uploaded_file.name
     st.session_state[ERROR_STATE_KEY] = None
+    st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
+    st.session_state[STRUCTURE_MODE_WIDGET_KEY] = resolved_mode
+    st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = structure_mode_message
     st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = new_structure_signature
 
 
@@ -560,6 +634,41 @@ def render_pseudopotentials_section(atoms) -> None:
             )
 
     render_pseudopotential_status()
+
+
+def render_structure_mode_controls() -> None:
+    """Render uploaded-vs-primitive cell controls in the sidebar."""
+    raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+    current_mode = get_structure_mode()
+    st.selectbox(
+        "Cell Mode",
+        options=STRUCTURE_MODE_OPTIONS,
+        format_func=lambda value: "Primitive Cell" if value == "primitive" else "Uploaded Cell",
+        index=STRUCTURE_MODE_OPTIONS.index(current_mode) if current_mode in STRUCTURE_MODE_OPTIONS else 0,
+        key=STRUCTURE_MODE_WIDGET_KEY,
+        disabled=raw_atoms is None,
+    )
+
+    if raw_atoms is None:
+        st.caption("Upload a crystal structure to choose between the uploaded cell and a primitive cell.")
+        return
+
+    selected_mode = st.session_state.get(STRUCTURE_MODE_WIDGET_KEY, current_mode)
+    if selected_mode != current_mode:
+        try:
+            apply_structure_mode_selection(selected_mode)
+        except Exception as exc:
+            st.error(f"Failed to apply the selected cell mode: {exc}")
+        else:
+            st.rerun()
+
+    status_message = st.session_state.get(STRUCTURE_MODE_STATUS_STATE_KEY)
+    if status_message:
+        if "failed" in status_message.lower():
+            st.warning(status_message)
+        else:
+            st.caption(status_message)
+    st.caption("Changing the cell mode affects newly generated QE inputs. Regenerate `pw.in` and rerun SCF before DOS/bands.")
 
 
 def get_qe_generation_blocker_message(atoms) -> str | None:
@@ -883,6 +992,59 @@ def render_prerequisite_feedback(check) -> None:
         st.success("Prerequisites are satisfied.")
 
 
+def render_auto_band_path_controls() -> None:
+    """Offer auto-generated high-symmetry paths from the active structure."""
+    atoms = st.session_state.get(ATOMS_STATE_KEY)
+    if atoms is None:
+        st.caption("Upload a structure to auto-generate a band path.")
+        return
+
+    auto_points_col, auto_button_col = st.columns([1, 2])
+    points_per_segment = auto_points_col.number_input(
+        "Auto path points/segment",
+        min_value=1,
+        value=int(st.session_state.get(AUTO_BAND_PATH_POINTS_WIDGET_KEY, 20)),
+        step=1,
+        key=AUTO_BAND_PATH_POINTS_WIDGET_KEY,
+    )
+    auto_fill_clicked = auto_button_col.button(
+        "Auto-Fill High-Symmetry Path",
+        use_container_width=True,
+    )
+
+    if auto_fill_clicked:
+        try:
+            auto_path = generate_band_path_rows(atoms, points_per_segment=int(points_per_segment))
+        except Exception as exc:
+            st.session_state[AUTO_BAND_PATH_STATUS_STATE_KEY] = {
+                "state": "error",
+                "message": f"Failed to auto-generate a band path: {exc}",
+            }
+        else:
+            st.session_state[BAND_COORDINATE_MODE_WIDGET_KEY] = "crystal_b"
+            st.session_state[BAND_PATH_WIDGET_KEY] = auto_path.rows_text
+            message = (
+                f"Auto-filled ASE path `{auto_path.path_string}` using the active structure."
+            )
+            if auto_path.used_first_section_only:
+                message += " Only the first continuous segment was filled automatically; you can extend it manually."
+            st.session_state[AUTO_BAND_PATH_STATUS_STATE_KEY] = {
+                "state": "success",
+                "message": message,
+            }
+            st.rerun()
+
+    status = st.session_state.get(AUTO_BAND_PATH_STATUS_STATE_KEY)
+    if status:
+        if status.get("state") == "success":
+            st.caption(status.get("message"))
+        else:
+            st.warning(status.get("message"))
+
+    if get_structure_mode() != "primitive":
+        st.caption("Auto-filled paths use the active cell. Switch to `Primitive Cell` first for textbook primitive-cell band paths.")
+
+
 def render_qe_run_section() -> None:
     """Render local QE execution controls and live output."""
     qe_input_text = st.session_state.get(QE_INPUT_TEXT_STATE_KEY)
@@ -1063,17 +1225,31 @@ def render_band_workflow_subsection() -> None:
     st.caption("Run a dedicated band-path `pw.x` calculation followed by `bands.x` using the saved SCF source in `qe_runs/`.")
     render_saved_run_context(context)
     st.info("This workflow is a new band-path run plus `bands.x` post-processing. It is not just post-processing of the original SCF job.")
+    render_auto_band_path_controls()
 
     with st.form("bands_runner_form"):
         row_one_col1, row_one_col2 = st.columns(2)
-        nbnd = row_one_col1.number_input("nbnd", min_value=1, value=int(default_nbnd), step=1)
-        coordinate_mode = row_one_col2.selectbox("Coordinate mode", options=BAND_COORDINATE_MODE_OPTIONS, index=0)
+        if BAND_NBND_WIDGET_KEY not in st.session_state:
+            st.session_state[BAND_NBND_WIDGET_KEY] = int(default_nbnd)
+        elif context.band_count_estimate is not None and st.session_state[BAND_NBND_WIDGET_KEY] < 1:
+            st.session_state[BAND_NBND_WIDGET_KEY] = int(default_nbnd)
+        if BAND_COORDINATE_MODE_WIDGET_KEY not in st.session_state:
+            st.session_state[BAND_COORDINATE_MODE_WIDGET_KEY] = "crystal_b"
+        if BAND_PATH_WIDGET_KEY not in st.session_state:
+            st.session_state[BAND_PATH_WIDGET_KEY] = DEFAULT_BAND_PATH_TEXT
+
+        nbnd = row_one_col1.number_input("nbnd", min_value=1, step=1, key=BAND_NBND_WIDGET_KEY)
+        coordinate_mode = row_one_col2.selectbox(
+            "Coordinate mode",
+            options=BAND_COORDINATE_MODE_OPTIONS,
+            key=BAND_COORDINATE_MODE_WIDGET_KEY,
+        )
         st.caption("Paste rows only: `kx ky kz npoints ! label`")
         band_path_text = st.text_area(
             "Band-path points",
-            value=DEFAULT_BAND_PATH_TEXT,
             height=180,
             help="Enter only the point rows. QE Studio writes the `K_POINTS` header and point count automatically.",
+            key=BAND_PATH_WIDGET_KEY,
         )
         run_clicked = st.form_submit_button(
             "Run Band Structure Workflow",
@@ -1521,9 +1697,12 @@ with st.sidebar:
     if error_message:
         st.error(error_message)
 
+    render_structure_mode_controls()
+
     if atoms is not None:
         st.subheader("Structure Info")
         st.write(f"File: {st.session_state.get(FILENAME_STATE_KEY, 'Unknown')}")
+        st.write(f"Cell mode: {'Primitive cell' if get_structure_mode() == 'primitive' else 'Uploaded cell'}")
         st.write(f"Formula: {atoms.get_chemical_formula()}")
         st.write(f"Atoms: {len(atoms)}")
         st.text(format_cell_parameters(atoms))

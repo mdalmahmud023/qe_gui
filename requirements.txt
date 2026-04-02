@@ -6,3 +6,4 @@ ase
 py3Dmol
 plotly
 requests
+spglib
