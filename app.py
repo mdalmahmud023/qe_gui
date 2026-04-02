@@ -34,6 +34,7 @@ from pseudopotentials import (
 from postprocessing import (
     build_bands_pp_input_text,
     build_dos_input_text,
+    get_effective_band_nbnd,
     resolve_qe_run_context,
     sanitize_leaf_filename,
     summarize_artifacts,
@@ -859,6 +860,18 @@ def render_saved_run_context(context) -> None:
     col7.caption("XML metadata")
     col7.write("Yes" if context.has_xml_metadata else "No")
 
+    col8, col9 = st.columns(2)
+    col8.caption("Restart wavefunctions")
+    col8.write("Yes" if context.has_restart_wavefunctions else "No")
+    col9.caption("Band-count estimate")
+    if context.band_count_estimate is None:
+        col9.write("Unavailable")
+    else:
+        col9.write(
+            f"min {context.band_count_estimate.minimum_nbnd}, "
+            f"recommended {context.band_count_estimate.recommended_nbnd}"
+        )
+
 
 def render_prerequisite_feedback(check) -> None:
     """Render blockers and warnings for a prerequisite check."""
@@ -1045,6 +1058,7 @@ def render_dos_runner_subsection() -> None:
 def render_band_workflow_subsection() -> None:
     """Render the dedicated band-structure workflow controls and status."""
     context = resolve_qe_run_context(QE_RUNS_DIR)
+    default_nbnd = context.band_count_estimate.recommended_nbnd if context.band_count_estimate is not None else 16
     st.markdown("### Band Structure")
     st.caption("Run a dedicated band-path `pw.x` calculation followed by `bands.x` using the saved SCF source in `qe_runs/`.")
     render_saved_run_context(context)
@@ -1052,7 +1066,7 @@ def render_band_workflow_subsection() -> None:
 
     with st.form("bands_runner_form"):
         row_one_col1, row_one_col2 = st.columns(2)
-        nbnd = row_one_col1.number_input("nbnd", min_value=1, value=8, step=1)
+        nbnd = row_one_col1.number_input("nbnd", min_value=1, value=int(default_nbnd), step=1)
         coordinate_mode = row_one_col2.selectbox("Coordinate mode", options=BAND_COORDINATE_MODE_OPTIONS, index=0)
         st.caption("Paste rows only: `kx ky kz npoints ! label`")
         band_path_text = st.text_area(
@@ -1067,12 +1081,31 @@ def render_band_workflow_subsection() -> None:
             disabled=bool(st.session_state.get(RUN_ACTIVE_STATE_KEY)),
         )
 
+    requested_nbnd = int(nbnd)
+    effective_nbnd = get_effective_band_nbnd(context, requested_nbnd)
     prerequisites = validate_bands_prerequisites(
         context,
-        nbnd=int(nbnd),
+        nbnd=requested_nbnd,
         band_path_text=band_path_text,
     )
     render_prerequisite_feedback(prerequisites)
+    if context.band_count_estimate is not None:
+        estimate = context.band_count_estimate
+        st.caption(
+            "Saved-run estimate: "
+            f"`nelec={estimate.electron_count:.3f}` from `{estimate.source}`, "
+            f"minimum occupied bands `{estimate.minimum_nbnd}`, recommended `nbnd={estimate.recommended_nbnd}`."
+        )
+    if effective_nbnd != requested_nbnd:
+        st.warning(
+            f"Requested `nbnd={requested_nbnd}` is too small for the saved run. "
+            f"QE Studio will write `nbnd={effective_nbnd}` into `bands_pw.in`."
+        )
+    if not context.has_restart_wavefunctions:
+        st.caption(
+            "No reusable restart wavefunction files were found in the save directory. "
+            "The band-path run will reuse the saved potential and generate fresh wavefunctions."
+        )
 
     bands_pw_input_path = QE_RUNS_DIR / BANDS_PW_INPUT_FILENAME
     bands_pw_log_path = QE_RUNS_DIR / BANDS_PW_OUTPUT_FILENAME
@@ -1103,7 +1136,7 @@ def render_band_workflow_subsection() -> None:
             try:
                 bands_pw_text = transform_input_to_bands_pw(
                     context,
-                    nbnd=int(nbnd),
+                    nbnd=effective_nbnd,
                     coordinate_mode=coordinate_mode,
                     band_path_text=band_path_text,
                 )

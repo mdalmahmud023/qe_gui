@@ -4,6 +4,8 @@ from tempfile import TemporaryDirectory
 
 import postprocessing as pp
 
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
 
 class PostprocessingTests(unittest.TestCase):
     def test_resolve_qe_run_context_prefers_pw_in_and_defaults_prefix_outdir(self) -> None:
@@ -86,6 +88,53 @@ class PostprocessingTests(unittest.TestCase):
             self.assertTrue(any("SCF source" in blocker for blocker in check.blockers))
             self.assertTrue(any("exactly four numeric fields" in blocker for blocker in check.blockers))
 
+    def test_validate_bands_prerequisites_warns_and_auto_adjusts_low_nbnd(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text(
+                "&CONTROL\n"
+                "   calculation = 'scf'\n"
+                "/\n",
+                encoding="utf-8",
+            )
+            save_dir = run_dir / "pwscf.save"
+            save_dir.mkdir()
+            (save_dir / "data-file-schema.xml").write_text(
+                (FIXTURES_DIR / "qe_trimmed_al001_pbc.xml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            context = pp.resolve_qe_run_context(run_dir)
+            check = pp.validate_bands_prerequisites(
+                context,
+                nbnd=4,
+                band_path_text="0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 1 ! X\n",
+            )
+
+            self.assertTrue(check.ok)
+            self.assertTrue(any("will use `10` instead" in warning for warning in check.warnings))
+            self.assertEqual(pp.get_effective_band_nbnd(context, 4), 10)
+
+    def test_resolve_qe_run_context_detects_restart_wavefunctions_and_band_estimate(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text("&CONTROL\n   calculation = 'scf'\n/\n", encoding="utf-8")
+            save_dir = run_dir / "pwscf.save"
+            save_dir.mkdir()
+            (save_dir / "wfc1").write_text("binary-ish", encoding="utf-8")
+            (save_dir / "data-file-schema.xml").write_text(
+                (FIXTURES_DIR / "qe_trimmed_al001_pbc.xml").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+            context = pp.resolve_qe_run_context(run_dir)
+
+            self.assertTrue(context.has_restart_wavefunctions)
+            self.assertIsNotNone(context.band_count_estimate)
+            assert context.band_count_estimate is not None
+            self.assertEqual(context.band_count_estimate.minimum_nbnd, 6)
+            self.assertEqual(context.band_count_estimate.recommended_nbnd, 10)
+
     def test_sanitize_leaf_filename_rejects_nested_paths(self) -> None:
         with self.assertRaises(ValueError):
             pp.sanitize_leaf_filename("nested/dos.dat", default_name="dos.dat")
@@ -138,7 +187,7 @@ class PostprocessingTests(unittest.TestCase):
             self.assertIn("outdir = '.'", transformed)
             self.assertIn("nbnd = 12", transformed)
             self.assertIn("startingpot = 'file'", transformed)
-            self.assertIn("startingwfc = 'file'", transformed)
+            self.assertIn("startingwfc = 'atomic+random'", transformed)
             self.assertIn("K_POINTS crystal_b", transformed)
             self.assertNotIn("K_POINTS automatic", transformed)
 
