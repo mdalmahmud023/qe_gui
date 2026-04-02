@@ -96,8 +96,7 @@ def make_plotly_chart_config(
 
 def render_figure_options() -> tuple[str, str]:
     """Render global Analysis-page figure controls."""
-    with st.container(border=True):
-        st.caption("Figure Options")
+    with st.expander("Figure options", expanded=False):
         col1, col2 = st.columns([1.7, 1.2])
         figure_mode = col1.radio(
             "Figure mode",

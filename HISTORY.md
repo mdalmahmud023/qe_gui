@@ -250,6 +250,9 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - adds larger typography and tighter margins for export-focused figures
   - lets the Plotly export button use either PNG or SVG output
   - applies fixed export widths for DOS and band figures to support more consistent journal-ready output
+- Moved Analysis `Figure options` into a collapsed expander by default so the results dashboard stays cleaner until export controls are needed.
+- Tightened the shared sidebar top spacing so the project panel aligns more cleanly with the top navigation and main app frame.
+- Shifted the full sidebar content block upward so the `QE Studio` heading aligns more closely with the built-in sidebar collapse arrow.
 
 ## Known Limitations
 

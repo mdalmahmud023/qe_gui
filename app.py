@@ -10,6 +10,34 @@ import ui_setup
 import ui_structure
 
 
+def render_app_shell_styles() -> None:
+    """Apply small layout tweaks for the shared Streamlit shell."""
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
+            padding-top: 0.1rem;
+            padding-bottom: 0.1rem;
+            min-height: 0;
+        }
+        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+            padding-top: 0 !important;
+            margin-top: -2.05rem;
+        }
+        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div:first-child {
+            padding-top: 0 !important;
+        }
+        [data-testid="stSidebar"] h1 {
+            margin-top: 0;
+            padding-top: 0;
+            margin-bottom: 0.35rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_sidebar_project_summary(ctx) -> None:
     """Render the shared sidebar status frame."""
     with st.sidebar:
@@ -85,6 +113,7 @@ def render_workflow_indicator(active_title: str) -> None:
 
 
 st.set_page_config(page_title="QE Studio", layout="wide")
+render_app_shell_styles()
 initialize_run_state(st.session_state)
 initialize_job_summaries_state()
 ctx = build_project_context(QE_RUNS_DIR)
