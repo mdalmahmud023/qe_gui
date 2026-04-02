@@ -1,0 +1,180 @@
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import postprocessing as pp
+
+
+class PostprocessingTests(unittest.TestCase):
+    def test_resolve_qe_run_context_prefers_pw_in_and_defaults_prefix_outdir(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text(
+                "&CONTROL\n"
+                "   calculation = 'relax'\n"
+                "/\n"
+                "K_POINTS automatic\n"
+                "4 4 4 0 0 0\n",
+                encoding="utf-8",
+            )
+            (run_dir / "espresso.pwi").write_text(
+                "&CONTROL\n"
+                "   calculation = 'scf'\n"
+                "   prefix = 'from_internal'\n"
+                "/\n",
+                encoding="utf-8",
+            )
+
+            context = pp.resolve_qe_run_context(run_dir)
+
+            self.assertEqual(context.source_input_file, run_dir / "pw.in")
+            self.assertEqual(context.calculation, "relax")
+            self.assertEqual(context.prefix, pp.DEFAULT_PREFIX)
+            self.assertEqual(context.resolved_outdir, run_dir)
+            self.assertEqual(context.effective_outdir, pp.DEFAULT_OUTDIR_VALUE)
+
+    def test_find_qe_save_dir_uses_explicit_outdir(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            outdir = run_dir / "scratch"
+            save_dir = outdir / "sample.save"
+            save_dir.mkdir(parents=True)
+
+            resolved = pp.find_qe_save_dir(run_dir, "sample", "scratch")
+
+            self.assertEqual(resolved, save_dir)
+
+    def test_validate_dos_prerequisites_warns_for_non_nscf_source(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text(
+                "&CONTROL\n"
+                "   calculation = 'scf'\n"
+                "/\n"
+                "K_POINTS automatic\n"
+                "4 4 4 0 0 0\n",
+                encoding="utf-8",
+            )
+            save_dir = run_dir / "pwscf.save"
+            save_dir.mkdir()
+            (save_dir / "data-file-schema.xml").write_text("<root />", encoding="utf-8")
+
+            check = pp.validate_dos_prerequisites(pp.resolve_qe_run_context(run_dir))
+
+            self.assertTrue(check.ok)
+            self.assertTrue(any("not `nscf`" in warning for warning in check.warnings))
+
+    def test_validate_bands_prerequisites_blocks_non_scf_and_bad_path(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text(
+                "&CONTROL\n"
+                "   calculation = 'relax'\n"
+                "/\n",
+                encoding="utf-8",
+            )
+            save_dir = run_dir / "pwscf.save"
+            save_dir.mkdir()
+
+            check = pp.validate_bands_prerequisites(
+                pp.resolve_qe_run_context(run_dir),
+                nbnd=8,
+                band_path_text="0.0 0.0 0.0 ! G\n",
+            )
+
+            self.assertFalse(check.ok)
+            self.assertTrue(any("SCF source" in blocker for blocker in check.blockers))
+            self.assertTrue(any("exactly four numeric fields" in blocker for blocker in check.blockers))
+
+    def test_sanitize_leaf_filename_rejects_nested_paths(self) -> None:
+        with self.assertRaises(ValueError):
+            pp.sanitize_leaf_filename("nested/dos.dat", default_name="dos.dat")
+
+    def test_build_dos_input_text_omits_smearing_fields_for_tetrahedra(self) -> None:
+        text = pp.build_dos_input_text(
+            prefix="pwscf",
+            outdir=".",
+            fildos="dos.dat",
+            emin_ev=-8.0,
+            emax_ev=8.0,
+            deltae_ev=0.1,
+            bz_sum="tetrahedra",
+        )
+
+        self.assertIn("bz_sum = 'tetrahedra'", text)
+        self.assertNotIn("ngauss", text)
+        self.assertNotIn("degauss", text)
+
+    def test_transform_input_to_bands_pw_rewrites_required_fields(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "pw.in").write_text(
+                "&CONTROL\n"
+                "   calculation = 'scf'\n"
+                "/\n"
+                "&SYSTEM\n"
+                "   ecutwfc = 40.0\n"
+                "/\n"
+                "&ELECTRONS\n"
+                "   conv_thr = 1.0d-8\n"
+                "/\n"
+                "K_POINTS automatic\n"
+                "4 4 4 0 0 0\n"
+                "ATOMIC_SPECIES\n"
+                "Si 28.085 Si.UPF\n",
+                encoding="utf-8",
+            )
+            context = pp.resolve_qe_run_context(run_dir)
+
+            transformed = pp.transform_input_to_bands_pw(
+                context,
+                nbnd=12,
+                coordinate_mode="crystal_b",
+                band_path_text="0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 1 ! X\n",
+            )
+
+            self.assertIn("calculation = 'bands'", transformed)
+            self.assertIn("prefix = 'pwscf'", transformed)
+            self.assertIn("outdir = '.'", transformed)
+            self.assertIn("nbnd = 12", transformed)
+            self.assertIn("startingpot = 'file'", transformed)
+            self.assertIn("startingwfc = 'file'", transformed)
+            self.assertIn("K_POINTS crystal_b", transformed)
+            self.assertNotIn("K_POINTS automatic", transformed)
+
+    def test_validate_dos_output_file_requires_parseable_numeric_rows(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            dos_file = Path(tmp_dir) / "dos.dat"
+            dos_file.write_text("not numeric\n", encoding="utf-8")
+
+            with self.assertRaises(Exception):
+                pp.validate_dos_output_file(dos_file)
+
+            dos_file.write_text("-1.0 0.2\n0.0 0.5\n", encoding="utf-8")
+            pp.validate_dos_output_file(dos_file)
+
+    def test_validate_band_output_file_requires_nonempty_parseable_file(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            band_file = Path(tmp_dir) / "filband.gnu"
+            band_file.write_text("", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                pp.validate_band_output_file(band_file)
+
+            band_file.write_text("broken\n", encoding="utf-8")
+            with self.assertRaises(Exception):
+                pp.validate_band_output_file(band_file)
+
+            band_file.write_text(
+                "0.0 1.0\n"
+                "1.0 2.0\n"
+                "\n"
+                "0.0 3.0\n"
+                "1.0 4.0\n",
+                encoding="utf-8",
+            )
+            pp.validate_band_output_file(band_file)
+
+
+if __name__ == "__main__":
+    unittest.main()

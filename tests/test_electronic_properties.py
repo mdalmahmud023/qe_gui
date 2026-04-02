@@ -215,6 +215,23 @@ class ElectronicPropertiesTests(unittest.TestCase):
             self.assertIsNone(metadata.energy_ev)
             self.assertIn("distinct spin-dependent", metadata.message or "")
 
+    def test_find_available_analysis_files_prefers_band_input_with_kpoints_over_pp_input(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            (run_dir / "filband.gnu").write_text("0.0 1.0\n1.0 2.0\n\n0.0 3.0\n1.0 4.0\n", encoding="utf-8")
+            (run_dir / "bands_pp.in").write_text("&BANDS\n/\n", encoding="utf-8")
+            (run_dir / "bands_pw.in").write_text(
+                "K_POINTS crystal_b\n"
+                "2\n"
+                "0.0 0.0 0.0 2 ! G\n"
+                "0.5 0.0 0.0 1 ! X\n",
+                encoding="utf-8",
+            )
+
+            analysis_files = ep.find_available_analysis_files(run_dir)
+
+            self.assertEqual(analysis_files.band_input_file, run_dir / "bands_pw.in")
+
 
 if __name__ == "__main__":
     unittest.main()

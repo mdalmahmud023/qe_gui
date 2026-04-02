@@ -557,6 +557,12 @@ def _find_band_input_file(band_file: Path, paths: Iterable[Path]) -> Path | None
             continue
 
         score = _common_prefix_score(path.stem.lower(), band_file.stem.lower())
+        if _contains_band_kpoints_card(path):
+            score += 20
+        if name.endswith("bands_pw.in") or "_pw" in name:
+            score += 10
+        if name.endswith("bands_pp.in") or "_pp" in name:
+            score -= 5
         candidates.append((score, path.stat().st_mtime, path))
 
     if not candidates:
@@ -564,6 +570,11 @@ def _find_band_input_file(band_file: Path, paths: Iterable[Path]) -> Path | None
 
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidates[0][2]
+
+
+def _contains_band_kpoints_card(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    return bool(re.search(r"^\s*K_POINTS\s+(crystal_b|tpiba_b)\b", text, re.IGNORECASE | re.MULTILINE))
 
 
 def _score_dos_candidate(path: Path) -> int | None:

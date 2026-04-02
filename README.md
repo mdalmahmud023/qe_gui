@@ -15,6 +15,7 @@ The current version can:
 - generate runnable Quantum ESPRESSO input files in `qe_runs/` once pseudopotentials are resolved
 - run `pw.x` locally against the generated `qe_runs/pw.in`
 - stream live Quantum ESPRESSO terminal output in the Streamlit UI and save the full log to `qe_runs/pw.out`
+- launch dedicated DOS and band-structure follow-up workflows inside `qe_runs/`
 - detect QE post-processing artifacts in `qe_runs/`
 - render interactive total DOS and `filband.gnu` band-structure charts with Plotly when suitable files exist
 
@@ -22,7 +23,7 @@ The current version can:
 
 - Python 3.12 or another compatible Python 3 version
 - `pip`
-- Quantum ESPRESSO installed locally with the `pw.x` executable available on your `PATH`
+- Quantum ESPRESSO installed locally with the `pw.x`, `dos.x`, and `bands.x` executables available on your `PATH`
 
 ## Install Quantum ESPRESSO
 
@@ -58,11 +59,11 @@ If you need a custom build, MPI support, or a newer system-specific build, insta
 Confirm the executable is visible before starting the app:
 
 ```bash
-which pw.x
+which pw.x dos.x bands.x
 pw.x -h
 ```
 
-If `which pw.x` prints nothing, add the directory containing `pw.x` to your shell `PATH` before launching Streamlit.
+If one or more executables are missing, add the directory containing the Quantum ESPRESSO binaries to your shell `PATH` before launching Streamlit.
 
 ## Setup
 
@@ -109,7 +110,7 @@ http://localhost:8501
 
 Open that URL in your browser, then upload a `.cif` file from the sidebar.
 
-Before using `Run Calculation`, make sure `pw.x` is still available in the same shell environment that launches Streamlit.
+Before using `Run Calculation` or the post-processing runners, make sure `pw.x`, `dos.x`, and `bands.x` are still available in the same shell environment that launches Streamlit.
 
 ## Quick Test Flow
 
@@ -133,18 +134,23 @@ Before using `Run Calculation`, make sure `pw.x` is still available in the same 
 14. Click `Run Calculation`.
 15. Confirm live Quantum ESPRESSO output appears in the app while the process runs.
 16. Confirm the final full output is saved to `qe_runs/pw.out`.
-17. If QE post-processing artifacts such as DOS output, `filband.gnu`, or QE XML metadata exist in `qe_runs/`, confirm the `Electronic Properties Analysis` expander appears.
-18. Confirm the top summary row reports DOS detection, band detection, Fermi source, and the run directory.
-19. If only `pw.out` or QE XML metadata exists, confirm the expander shows an explicit empty-state message explaining that no plottable DOS or band data is available yet.
-20. If a DOS file from `dos.x` exists, confirm the interactive DOS plot renders with Plotly and a Fermi-alignment toggle.
-21. If a `filband.gnu` file exists, confirm the interactive band-structure plot renders with Plotly and optional high-symmetry separators from the matching band input file.
+17. Confirm the `Post-Processing Runners` section appears below `Run Calculation`.
+18. Run the DOS workflow and confirm `qe_runs/dos.in`, `qe_runs/dos.out`, and the selected DOS data file are created.
+19. Confirm live DOS output appears in the DOS subsection while `dos.x` runs.
+20. Run the band-structure workflow and confirm `qe_runs/bands_pw.in`, `qe_runs/bands_pw.out`, `qe_runs/bands_pp.in`, `qe_runs/bands_pp.out`, `qe_runs/filband`, and `qe_runs/filband.gnu` are created.
+21. Confirm live output clearly labels the `bands pw.x` and `bands.x` phases.
+22. If QE post-processing artifacts such as DOS output, `filband.gnu`, or QE XML metadata exist in `qe_runs/`, confirm the `Electronic Properties Analysis` expander appears.
+23. Confirm the top summary row reports DOS detection, band detection, Fermi source, and the run directory.
+24. If only `pw.out` or QE XML metadata exists, confirm the expander shows an explicit empty-state message explaining that no plottable DOS or band data is available yet.
+25. If a DOS file from `dos.x` exists, confirm the interactive DOS plot renders with Plotly and a Fermi-alignment toggle.
+26. If a `filband.gnu` file exists, confirm the interactive band-structure plot renders with Plotly and optional high-symmetry separators from the matching band input file.
 
 ## Useful Checks
 
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py electronic_properties.py pseudopotentials.py qe_runner.py
+python3 -m py_compile app.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
 ```
 
 Unit tests:
@@ -163,6 +169,7 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 
 - `app.py`: Streamlit app entrypoint
 - `electronic_properties.py`: QE analysis artifact discovery, parsing, and Plotly figure helpers
+- `postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
 - `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
 - `requirements.txt`: Python dependencies
 - `HISTORY.md`: running project history and AI context handoff
@@ -174,6 +181,7 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 - A hard browser refresh still resets Streamlit session state.
 - The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
 - QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination.
+- DOS and band post-processing runners are disk-driven and inspect `qe_runs/pw.in` first, then `qe_runs/espresso.pwi` if needed.
 - Electronic-properties analysis is disk-driven and looks for DOS and band artifacts inside `qe_runs/`.
 - V1 analysis support is limited to total DOS and non-projected `filband.gnu` band plots.
 - The app prefers structured QE XML metadata from `prefix.save/data-file-schema.xml` for Fermi alignment and falls back to `pw.out` only when XML metadata is unavailable.

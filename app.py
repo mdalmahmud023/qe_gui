@@ -31,14 +31,31 @@ from pseudopotentials import (
     has_same_element_set,
     resolve_sssp_pseudopotentials,
 )
+from postprocessing import (
+    build_bands_pp_input_text,
+    build_dos_input_text,
+    resolve_qe_run_context,
+    sanitize_leaf_filename,
+    summarize_artifacts,
+    transform_input_to_bands_pw,
+    validate_band_output_file,
+    validate_bands_prerequisites,
+    validate_dos_output_file,
+    validate_dos_prerequisites,
+)
 from qe_runner import (
     ACTIVE_RUN_ID_STATE_KEY,
     DEFAULT_MAX_TAIL_LINES,
     RUN_ACTIVE_STATE_KEY,
     RUN_FINISHED_STATE_KEY,
+    RUN_JOB_LABEL_STATE_KEY,
+    RUN_JOB_OWNER_STATE_KEY,
     RUN_OUTPUT_PATH_STATE_KEY,
+    RUN_OUTPUT_PATHS_STATE_KEY,
+    RUN_PHASE_LABEL_STATE_KEY,
     RUN_RETURNCODE_STATE_KEY,
     RUN_TAIL_LINES_STATE_KEY,
+    JobStep,
     apply_run_events,
     cleanup_run,
     drain_run_events,
@@ -46,8 +63,9 @@ from qe_runner import (
     initialize_run_state,
     mark_runtime_lost,
     reset_run_state,
+    run_chained_jobs,
+    run_external_job,
     set_run_started,
-    start_qe_run,
 )
 
 
@@ -85,6 +103,24 @@ DEFAULT_PSEUDO_SETTINGS = {
 QE_RUNS_DIR = Path("qe_runs")
 QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
 QE_OUTPUT_FILENAME = "pw.out"
+DOS_COMMAND = ("dos.x", "-i", "dos.in")
+BANDS_PW_COMMAND = ("pw.x", "-in", "bands_pw.in")
+BANDS_PP_COMMAND = ("bands.x", "-i", "bands_pp.in")
+DOS_INPUT_FILENAME = "dos.in"
+DOS_OUTPUT_FILENAME = "dos.out"
+BANDS_PW_INPUT_FILENAME = "bands_pw.in"
+BANDS_PW_OUTPUT_FILENAME = "bands_pw.out"
+BANDS_PP_INPUT_FILENAME = "bands_pp.in"
+BANDS_PP_OUTPUT_FILENAME = "bands_pp.out"
+FILBAND_FILENAME = "filband"
+FILBAND_GNU_FILENAME = "filband.gnu"
+JOB_SUMMARIES_STATE_KEY = "qe_job_summaries"
+JOB_OWNER_PW = "pw"
+JOB_OWNER_DOS = "dos"
+JOB_OWNER_BANDS = "bands"
+DOS_BZ_SUM_OPTIONS = ("smearing", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt")
+BAND_COORDINATE_MODE_OPTIONS = ("crystal_b", "tpiba_b")
+DEFAULT_BAND_PATH_TEXT = "0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 20 ! X\n0.5 0.5 0.5 1 ! L\n"
 
 
 def clear_generated_qe_input_state() -> None:
@@ -563,15 +599,91 @@ def render_generated_qe_input_preview() -> None:
     st.code(qe_input_text, language="fortran")
 
 
+def initialize_job_summaries_state() -> None:
+    """Ensure durable per-section job summaries exist."""
+    default_summary = {
+        "status": "idle",
+        "job_label": None,
+        "current_phase": None,
+        "last_phase": None,
+        "returncode": None,
+        "log_paths": {},
+        "artifacts": {},
+        "tail_lines": [],
+        "current_output_path": None,
+    }
+    summaries = st.session_state.setdefault(JOB_SUMMARIES_STATE_KEY, {})
+    for owner in (JOB_OWNER_PW, JOB_OWNER_DOS, JOB_OWNER_BANDS):
+        summaries.setdefault(owner, dict(default_summary))
+
+
+def get_job_summary(owner: str) -> dict:
+    """Return a copy of the stored job summary for one UI section."""
+    initialize_job_summaries_state()
+    return dict(st.session_state[JOB_SUMMARIES_STATE_KEY].get(owner, {}))
+
+
+def update_job_summary(owner: str, **updates) -> None:
+    """Merge new fields into the stored summary for one UI section."""
+    initialize_job_summaries_state()
+    summaries = st.session_state[JOB_SUMMARIES_STATE_KEY]
+    current_summary = dict(summaries.get(owner, {}))
+    current_summary.update(updates)
+    summaries[owner] = current_summary
+
+
+def get_active_job_owner() -> str | None:
+    """Return the globally active QE job owner, if any."""
+    if not st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        return None
+    return st.session_state.get(RUN_JOB_OWNER_STATE_KEY)
+
+
+def get_active_job_label() -> str | None:
+    """Return the globally active QE job label, if any."""
+    if not st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        return None
+    return st.session_state.get(RUN_JOB_LABEL_STATE_KEY)
+
+
+def sync_active_job_summary_from_run_state() -> None:
+    """Mirror generic runner state into the durable section summary."""
+    owner = st.session_state.get(RUN_JOB_OWNER_STATE_KEY)
+    if not owner:
+        return
+
+    current_phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY)
+    returncode = st.session_state.get(RUN_RETURNCODE_STATE_KEY)
+    summary_updates = {
+        "job_label": st.session_state.get(RUN_JOB_LABEL_STATE_KEY),
+        "current_phase": current_phase,
+        "returncode": returncode,
+        "tail_lines": list(st.session_state.get(RUN_TAIL_LINES_STATE_KEY, [])),
+        "current_output_path": st.session_state.get(RUN_OUTPUT_PATH_STATE_KEY),
+    }
+    if current_phase:
+        summary_updates["last_phase"] = current_phase
+
+    if st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        summary_updates["status"] = "running"
+    elif st.session_state.get(RUN_FINISHED_STATE_KEY):
+        summary_updates["status"] = "success" if returncode == 0 else "error"
+
+    update_job_summary(owner, **summary_updates)
+
+
 def format_run_output_text() -> str:
     """Return the current rolling terminal tail for display."""
     tail_lines = st.session_state.get(RUN_TAIL_LINES_STATE_KEY, [])
     if tail_lines:
         return "".join(tail_lines)
+    phase_label = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY)
+    job_label = st.session_state.get(RUN_JOB_LABEL_STATE_KEY)
+    wait_label = phase_label or job_label or "Quantum ESPRESSO"
     if st.session_state.get(RUN_ACTIVE_STATE_KEY):
-        return "Waiting for Quantum ESPRESSO output...\n"
+        return f"Waiting for {wait_label} output...\n"
     if st.session_state.get(RUN_FINISHED_STATE_KEY):
-        return "Quantum ESPRESSO finished without terminal output.\n"
+        return f"{wait_label} finished without terminal output.\n"
     return "Run output will appear here.\n"
 
 
@@ -583,6 +695,7 @@ def render_live_run_output_fragment() -> None:
 
     if not active_run_id:
         mark_runtime_lost(st.session_state)
+        sync_active_job_summary_from_run_state()
         output_placeholder.code(format_run_output_text(), language="text")
         st.rerun(scope="app")
         return
@@ -590,6 +703,7 @@ def render_live_run_output_fragment() -> None:
     context = get_run_context(active_run_id)
     if context is None:
         mark_runtime_lost(st.session_state)
+        sync_active_job_summary_from_run_state()
         output_placeholder.code(format_run_output_text(), language="text")
         st.rerun(scope="app")
         return
@@ -600,17 +714,160 @@ def render_live_run_output_fragment() -> None:
         events,
         max_tail_lines=DEFAULT_MAX_TAIL_LINES,
     )
+    sync_active_job_summary_from_run_state()
     output_placeholder.code(format_run_output_text(), language="text")
 
     if not run_completed and st.session_state.get(RUN_ACTIVE_STATE_KEY) and not context.thread.is_alive():
         mark_runtime_lost(st.session_state)
+        sync_active_job_summary_from_run_state()
         cleanup_run(active_run_id)
         st.rerun(scope="app")
         return
 
     if run_completed:
         cleanup_run(active_run_id)
+        sync_active_job_summary_from_run_state()
         st.rerun(scope="app")
+
+
+def render_job_status_block(owner: str, *, idle_message: str) -> None:
+    """Render a compact status area for one QE job section."""
+    summary = get_job_summary(owner)
+    active_owner = get_active_job_owner()
+    active_label = get_active_job_label()
+
+    if active_owner and active_owner != owner and active_label:
+        st.info(f"`{active_label}` is currently running. Wait for it to finish before starting another QE job.")
+
+    status = summary.get("status")
+    current_phase = summary.get("current_phase")
+    returncode = summary.get("returncode")
+    job_label = summary.get("job_label") or idle_message
+
+    if status == "running":
+        phase_suffix = f" Current phase: `{current_phase}`." if current_phase else ""
+        st.info(f"{job_label} is running.{phase_suffix}")
+    elif status == "success":
+        st.success(f"{job_label} finished successfully with exit code {returncode}.")
+    elif status == "error":
+        st.error(f"{job_label} exited with code {returncode}.")
+    else:
+        st.info(idle_message)
+
+
+def render_job_console(owner: str, *, empty_message: str) -> None:
+    """Render either the live console or the last stored tail for one section."""
+    if st.session_state.get(RUN_ACTIVE_STATE_KEY) and get_active_job_owner() == owner:
+        render_live_run_output_fragment()
+        return
+
+    summary = get_job_summary(owner)
+    tail_lines = summary.get("tail_lines") or []
+    if tail_lines:
+        st.code("".join(tail_lines), language="text")
+    else:
+        st.code(f"{empty_message}\n", language="text")
+
+
+def render_job_log_paths(owner: str) -> None:
+    """Show persisted log paths for a section summary."""
+    summary = get_job_summary(owner)
+    log_paths = summary.get("log_paths") or {}
+    for label, path in log_paths.items():
+        st.caption(f"{label}: `{path}`")
+
+
+def render_job_artifact_summary(owner: str) -> None:
+    """Render an artifact table after a successful run."""
+    summary = get_job_summary(owner)
+    if summary.get("status") != "success":
+        return
+
+    artifacts = summary.get("artifacts") or {}
+    if artifacts:
+        st.dataframe(summarize_artifacts({label: Path(path) for label, path in artifacts.items()}), use_container_width=True, hide_index=True)
+
+
+def start_managed_qe_job(
+    *,
+    owner: str,
+    job_label: str,
+    steps: list[JobStep],
+    log_paths: dict[str, str],
+    artifacts: dict[str, str],
+) -> None:
+    """Start a reusable QE job and store its durable UI summary."""
+    if st.session_state.get(RUN_ACTIVE_STATE_KEY):
+        active_label = get_active_job_label() or "Another Quantum ESPRESSO job"
+        raise RuntimeError(f"{active_label} is already running.")
+
+    reset_run_state(st.session_state)
+    if len(steps) == 1:
+        run_id, output_paths = run_external_job(
+            job_label=steps[0].label,
+            command=steps[0].command,
+            cwd=steps[0].cwd,
+            output_path=steps[0].output_path,
+            prepare=steps[0].prepare,
+            validator=steps[0].validator,
+        )
+    else:
+        run_id, output_paths = run_chained_jobs(job_label=job_label, steps=steps)
+
+    output_path_map = {step.label: str(path) for step, path in zip(steps, output_paths)}
+    set_run_started(
+        st.session_state,
+        run_id=run_id,
+        output_path=steps[0].output_path,
+        output_paths=output_path_map,
+        job_label=job_label,
+        job_owner=owner,
+        phase_label=steps[0].label,
+    )
+    update_job_summary(
+        owner,
+        status="running",
+        job_label=job_label,
+        current_phase=steps[0].label,
+        last_phase=steps[0].label,
+        returncode=None,
+        log_paths=log_paths,
+        artifacts=artifacts,
+        tail_lines=[],
+        current_output_path=str(steps[0].output_path),
+    )
+    st.rerun()
+
+
+def render_saved_run_context(context) -> None:
+    """Render resolved disk-first QE context for post-processing."""
+    col1, col2, col3, col4 = st.columns(4)
+    col1.caption("Source input")
+    col1.write(str(context.source_input_file) if context.source_input_file else "Unavailable")
+    col2.caption("Prefix")
+    col2.write(context.prefix)
+    col3.caption("Outdir")
+    col3.write(context.effective_outdir)
+    col4.caption("Save dir")
+    col4.write(str(context.save_dir) if context.save_dir else "Missing")
+
+    col5, col6, col7 = st.columns(3)
+    col5.caption("Calculation")
+    col5.write(context.calculation or "Unknown")
+    col6.caption("K_POINTS")
+    col6.write(context.k_points_mode or "Unknown")
+    col7.caption("XML metadata")
+    col7.write("Yes" if context.has_xml_metadata else "No")
+
+
+def render_prerequisite_feedback(check) -> None:
+    """Render blockers and warnings for a prerequisite check."""
+    for blocker in check.blockers:
+        st.error(blocker)
+    for warning in check.warnings:
+        st.warning(warning)
+    if check.ok and not check.warnings:
+        st.success("Prerequisites are satisfied.")
 
 
 def render_qe_run_section() -> None:
@@ -626,24 +883,17 @@ def render_qe_run_section() -> None:
         return
 
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
-    run_finished = bool(st.session_state.get(RUN_FINISHED_STATE_KEY))
-    run_returncode = st.session_state.get(RUN_RETURNCODE_STATE_KEY)
-    output_path_value = st.session_state.get(RUN_OUTPUT_PATH_STATE_KEY)
-    output_path_text = output_path_value or str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)
+    active_owner = get_active_job_owner()
+    summary = get_job_summary(JOB_OWNER_PW)
+    output_path_text = summary.get("current_output_path") or str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)
 
     st.divider()
     st.subheader("Run Calculation")
     st.caption("Execute the generated input locally with Quantum ESPRESSO and stream the live terminal output.")
 
-    if run_active:
-        st.info("Quantum ESPRESSO is running. Live terminal output is updating below.")
-    elif run_finished and run_returncode == 0:
-        st.success(f"Quantum ESPRESSO finished successfully with exit code {run_returncode}.")
-    elif run_finished:
-        st.error(f"Quantum ESPRESSO exited with code {run_returncode}.")
-    else:
-        st.info("Launch `pw.x` against the generated `pw.in` input file.")
-
+    render_job_status_block(JOB_OWNER_PW, idle_message="Launch `pw.x` against the generated `pw.in` input file.")
+    st.caption(f"Command: `{' '.join(QE_RUN_COMMAND)}`")
+    st.caption(f"Input file: `{input_path}`")
     st.caption(f"Full output log: `{output_path_text}`")
 
     run_clicked = st.button(
@@ -657,28 +907,268 @@ def render_qe_run_section() -> None:
             st.error("Quantum ESPRESSO executable `pw.x` was not found on your PATH.")
         else:
             try:
-                reset_run_state(st.session_state)
-                run_id, output_path = start_qe_run(
-                    run_dir=QE_RUNS_DIR,
-                    command=QE_RUN_COMMAND,
-                    output_filename=QE_OUTPUT_FILENAME,
+                start_managed_qe_job(
+                    owner=JOB_OWNER_PW,
+                    job_label="Run Calculation",
+                    steps=[
+                        JobStep(
+                            label="pw.x",
+                            command=QE_RUN_COMMAND,
+                            cwd=QE_RUNS_DIR,
+                            output_path=QE_RUNS_DIR / QE_OUTPUT_FILENAME,
+                        )
+                    ],
+                    log_paths={"pw.x log": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)},
+                    artifacts={
+                        "pw.in": str(input_path),
+                        "pw.out": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME),
+                    },
                 )
             except Exception as exc:
                 reset_run_state(st.session_state)
                 st.error(f"Failed to start Quantum ESPRESSO: {exc}")
-            else:
-                set_run_started(
-                    st.session_state,
-                    run_id=run_id,
-                    output_path=output_path,
-                )
-                st.rerun()
 
-    if st.session_state.get(RUN_ACTIVE_STATE_KEY):
-        render_live_run_output_fragment()
-    else:
-        output_placeholder = st.empty()
-        output_placeholder.code(format_run_output_text(), language="text")
+    render_job_log_paths(JOB_OWNER_PW)
+    render_job_console(JOB_OWNER_PW, empty_message="Run output will appear here.")
+
+    if active_owner != JOB_OWNER_PW:
+        render_job_artifact_summary(JOB_OWNER_PW)
+
+
+def render_dos_runner_subsection() -> None:
+    """Render DOS post-processing controls and status."""
+    context = resolve_qe_run_context(QE_RUNS_DIR)
+    prerequisites = validate_dos_prerequisites(context)
+    default_dos_file = "dos.dat"
+
+    st.markdown("### Density of States (DOS)")
+    st.caption("Run `dos.x` against saved QE data in `qe_runs/` without changing the main `pw.x` input form.")
+    render_saved_run_context(context)
+    render_prerequisite_feedback(prerequisites)
+
+    with st.form("dos_runner_form"):
+        row_one_col1, row_one_col2, row_one_col3 = st.columns(3)
+        emin_ev = row_one_col1.number_input("Energy min (Emin, eV)", value=-10.0, step=0.5, format="%.3f")
+        emax_ev = row_one_col2.number_input("Energy max (Emax, eV)", value=10.0, step=0.5, format="%.3f")
+        deltae_ev = row_one_col3.number_input(
+            "Energy step (DeltaE, eV)",
+            min_value=0.001,
+            value=0.1,
+            step=0.01,
+            format="%.3f",
+        )
+
+        row_two_col1, row_two_col2, row_two_col3 = st.columns(3)
+        bz_sum = row_two_col1.selectbox("BZ sum method", options=DOS_BZ_SUM_OPTIONS, index=0)
+        ngauss = row_two_col2.number_input("ngauss", value=0, step=1, disabled=bz_sum != "smearing")
+        degauss_ry = row_two_col3.number_input(
+            "degauss (Ry)",
+            min_value=0.0,
+            value=0.01,
+            step=0.001,
+            format="%.4f",
+            disabled=bz_sum != "smearing",
+        )
+
+        fildos = st.text_input("Output filename", value=default_dos_file)
+        run_clicked = st.form_submit_button(
+            "Run DOS Workflow",
+            use_container_width=True,
+            disabled=bool(st.session_state.get(RUN_ACTIVE_STATE_KEY)),
+        )
+
+    dos_input_path = QE_RUNS_DIR / DOS_INPUT_FILENAME
+    dos_log_path = QE_RUNS_DIR / DOS_OUTPUT_FILENAME
+    try:
+        dos_data_name = sanitize_leaf_filename(fildos, default_name=default_dos_file)
+    except ValueError:
+        dos_data_name = default_dos_file
+    dos_data_path = QE_RUNS_DIR / dos_data_name
+
+    render_job_status_block(JOB_OWNER_DOS, idle_message="Configure and launch `dos.x` from the saved QE run directory.")
+    st.caption(f"Command: `{' '.join(DOS_COMMAND)}`")
+    st.caption(f"Input file: `{dos_input_path}`")
+    st.caption(f"Log file: `{dos_log_path}`")
+    st.caption(f"DOS data file: `{dos_data_path}`")
+
+    if run_clicked:
+        if shutil.which(DOS_COMMAND[0]) is None:
+            st.error("Quantum ESPRESSO executable `dos.x` was not found on your PATH.")
+        elif not prerequisites.ok:
+            st.error("DOS prerequisites are not satisfied.")
+        elif emax_ev <= emin_ev:
+            st.error("`Emax` must be greater than `Emin`.")
+        else:
+            try:
+                dos_data_name = sanitize_leaf_filename(fildos, default_name=default_dos_file)
+                dos_data_path = QE_RUNS_DIR / dos_data_name
+                dos_input_text = build_dos_input_text(
+                    prefix=context.prefix,
+                    outdir=context.effective_outdir,
+                    fildos=dos_data_name,
+                    emin_ev=emin_ev,
+                    emax_ev=emax_ev,
+                    deltae_ev=deltae_ev,
+                    bz_sum=bz_sum,
+                    ngauss=int(ngauss) if bz_sum == "smearing" else None,
+                    degauss_ry=degauss_ry if bz_sum == "smearing" else None,
+                )
+                dos_input_path.write_text(dos_input_text, encoding="utf-8")
+                start_managed_qe_job(
+                    owner=JOB_OWNER_DOS,
+                    job_label="Density of States (DOS)",
+                    steps=[
+                        JobStep(
+                            label="dos.x",
+                            command=DOS_COMMAND,
+                            cwd=QE_RUNS_DIR,
+                            output_path=dos_log_path,
+                            validator=lambda path=dos_data_path: validate_dos_output_file(path),
+                        )
+                    ],
+                    log_paths={"dos.x log": str(dos_log_path)},
+                    artifacts={
+                        "dos.in": str(dos_input_path),
+                        "dos.out": str(dos_log_path),
+                        dos_data_name: str(dos_data_path),
+                    },
+                )
+            except Exception as exc:
+                reset_run_state(st.session_state)
+                st.error(f"Failed to start DOS post-processing: {exc}")
+
+    render_job_log_paths(JOB_OWNER_DOS)
+    render_job_console(JOB_OWNER_DOS, empty_message="DOS live output will appear here.")
+    render_job_artifact_summary(JOB_OWNER_DOS)
+
+
+def render_band_workflow_subsection() -> None:
+    """Render the dedicated band-structure workflow controls and status."""
+    context = resolve_qe_run_context(QE_RUNS_DIR)
+    st.markdown("### Band Structure")
+    st.caption("Run a dedicated band-path `pw.x` calculation followed by `bands.x` using the saved SCF source in `qe_runs/`.")
+    render_saved_run_context(context)
+    st.info("This workflow is a new band-path run plus `bands.x` post-processing. It is not just post-processing of the original SCF job.")
+
+    with st.form("bands_runner_form"):
+        row_one_col1, row_one_col2 = st.columns(2)
+        nbnd = row_one_col1.number_input("nbnd", min_value=1, value=8, step=1)
+        coordinate_mode = row_one_col2.selectbox("Coordinate mode", options=BAND_COORDINATE_MODE_OPTIONS, index=0)
+        st.caption("Paste rows only: `kx ky kz npoints ! label`")
+        band_path_text = st.text_area(
+            "Band-path points",
+            value=DEFAULT_BAND_PATH_TEXT,
+            height=180,
+            help="Enter only the point rows. QE Studio writes the `K_POINTS` header and point count automatically.",
+        )
+        run_clicked = st.form_submit_button(
+            "Run Band Structure Workflow",
+            use_container_width=True,
+            disabled=bool(st.session_state.get(RUN_ACTIVE_STATE_KEY)),
+        )
+
+    prerequisites = validate_bands_prerequisites(
+        context,
+        nbnd=int(nbnd),
+        band_path_text=band_path_text,
+    )
+    render_prerequisite_feedback(prerequisites)
+
+    bands_pw_input_path = QE_RUNS_DIR / BANDS_PW_INPUT_FILENAME
+    bands_pw_log_path = QE_RUNS_DIR / BANDS_PW_OUTPUT_FILENAME
+    bands_pp_input_path = QE_RUNS_DIR / BANDS_PP_INPUT_FILENAME
+    bands_pp_log_path = QE_RUNS_DIR / BANDS_PP_OUTPUT_FILENAME
+    filband_path = QE_RUNS_DIR / FILBAND_FILENAME
+    filband_gnu_path = QE_RUNS_DIR / FILBAND_GNU_FILENAME
+
+    render_job_status_block(JOB_OWNER_BANDS, idle_message="Configure a band path, then launch the dedicated `pw.x` + `bands.x` workflow.")
+    st.caption(f"Step 1 command: `{' '.join(BANDS_PW_COMMAND)}`")
+    st.caption(f"Step 1 input: `{bands_pw_input_path}`")
+    st.caption(f"Step 1 log: `{bands_pw_log_path}`")
+    st.caption(f"Step 2 command: `{' '.join(BANDS_PP_COMMAND)}`")
+    st.caption(f"Step 2 input: `{bands_pp_input_path}`")
+    st.caption(f"Step 2 log: `{bands_pp_log_path}`")
+    st.caption(f"Band data: `{filband_path}` and `{filband_gnu_path}`")
+
+    if run_clicked:
+        missing_executables = [name for name in (BANDS_PW_COMMAND[0], BANDS_PP_COMMAND[0]) if shutil.which(name) is None]
+        if missing_executables:
+            st.error(
+                "Required Quantum ESPRESSO executables were not found on your PATH: "
+                + ", ".join(f"`{name}`" for name in missing_executables)
+            )
+        elif not prerequisites.ok:
+            st.error("Band workflow prerequisites are not satisfied.")
+        else:
+            try:
+                bands_pw_text = transform_input_to_bands_pw(
+                    context,
+                    nbnd=int(nbnd),
+                    coordinate_mode=coordinate_mode,
+                    band_path_text=band_path_text,
+                )
+                bands_pw_input_path.write_text(bands_pw_text, encoding="utf-8")
+
+                def prepare_bands_pp_input() -> None:
+                    bands_pp_text = build_bands_pp_input_text(
+                        prefix=context.prefix,
+                        outdir=context.effective_outdir,
+                        filband=FILBAND_FILENAME,
+                    )
+                    bands_pp_input_path.write_text(bands_pp_text, encoding="utf-8")
+
+                start_managed_qe_job(
+                    owner=JOB_OWNER_BANDS,
+                    job_label="Band Structure Workflow",
+                    steps=[
+                        JobStep(
+                            label="bands pw.x",
+                            command=BANDS_PW_COMMAND,
+                            cwd=QE_RUNS_DIR,
+                            output_path=bands_pw_log_path,
+                        ),
+                        JobStep(
+                            label="bands.x",
+                            command=BANDS_PP_COMMAND,
+                            cwd=QE_RUNS_DIR,
+                            output_path=bands_pp_log_path,
+                            prepare=prepare_bands_pp_input,
+                            validator=lambda path=filband_gnu_path, band_input=bands_pw_input_path: validate_band_output_file(
+                                path,
+                                band_input_file=band_input,
+                            ),
+                        ),
+                    ],
+                    log_paths={
+                        "bands pw.x log": str(bands_pw_log_path),
+                        "bands.x log": str(bands_pp_log_path),
+                    },
+                    artifacts={
+                        "bands_pw.in": str(bands_pw_input_path),
+                        "bands_pw.out": str(bands_pw_log_path),
+                        "bands_pp.in": str(bands_pp_input_path),
+                        "bands_pp.out": str(bands_pp_log_path),
+                        "filband": str(filband_path),
+                        "filband.gnu": str(filband_gnu_path),
+                    },
+                )
+            except Exception as exc:
+                reset_run_state(st.session_state)
+                st.error(f"Failed to start the band-structure workflow: {exc}")
+
+    render_job_log_paths(JOB_OWNER_BANDS)
+    render_job_console(JOB_OWNER_BANDS, empty_message="Band workflow live output will appear here.")
+    render_job_artifact_summary(JOB_OWNER_BANDS)
+
+
+def render_postprocessing_runners_section() -> None:
+    """Render DOS and band-structure post-processing launchers."""
+    st.divider()
+    st.subheader("Post-Processing Runners")
+    st.caption("Launch dedicated DOS and band-structure workflows using the saved QE data under `qe_runs/`.")
+    render_dos_runner_subsection()
+    st.divider()
+    render_band_workflow_subsection()
 
 
 def format_fermi_source_label(fermi_metadata: FermiMetadata | None) -> str:
@@ -984,6 +1474,7 @@ def render_qe_input_form() -> None:
 
 st.set_page_config(page_title="QE Studio", layout="wide")
 initialize_run_state(st.session_state)
+initialize_job_summaries_state()
 
 with st.sidebar:
     st.title("QE Studio")
@@ -1016,4 +1507,5 @@ render_pseudopotentials_section(atoms)
 render_qe_input_form()
 render_generated_qe_input_preview()
 render_qe_run_section()
+render_postprocessing_runners_section()
 render_electronic_properties_section(QE_RUNS_DIR)
