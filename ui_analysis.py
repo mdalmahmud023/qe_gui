@@ -225,6 +225,7 @@ def render_dos_subsection(analysis_files) -> None:
         figure,
         use_container_width=True,
         config=make_plotly_chart_config("qe_studio_dos"),
+        theme=None,
     )
 
 
@@ -294,4 +295,5 @@ def render_band_subsection(analysis_files) -> None:
         figure,
         use_container_width=True,
         config=make_plotly_chart_config("qe_studio_bands"),
+        theme=None,
     )

@@ -14,6 +14,11 @@ import plotly.graph_objects as go
 HARTREE_TO_EV = 27.211386245988
 DEFAULT_PREFIX = "pwscf"
 DEFAULT_QE_OUTPUT = "pw.out"
+PUBLICATION_BLUE = "#124E8C"
+PUBLICATION_TEXT = "#111827"
+PUBLICATION_MUTED = "#4B5563"
+PUBLICATION_GRID = "#D1D5DB"
+PUBLICATION_SEPARATOR = "#A8B0BD"
 DEFAULT_PLOTLY_CONFIG = {
     "displaylogo": False,
     "responsive": True,
@@ -386,7 +391,7 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
             y=dos_data.dos_total,
             mode="lines",
             name="Total DOS",
-            line={"color": "#1f4e79", "width": 2},
+            line={"color": PUBLICATION_BLUE, "width": 2.4},
             hovertemplate="Energy: %{x:.3f} eV<br>DOS: %{y:.4f}<extra></extra>",
         )
     )
@@ -396,15 +401,15 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
         xaxis_title="Energy (eV)",
         yaxis_title="DOS",
         showlegend=False,
-        **_base_plot_layout(),
+        **_base_plot_layout(height=620),
     )
 
     if reference_x is not None:
         figure.add_vline(
             x=reference_x,
             line_dash="dash",
-            line_color="#444444",
-            line_width=1.2,
+            line_color=PUBLICATION_MUTED,
+            line_width=1.4,
         )
 
     return figure
@@ -472,7 +477,7 @@ def make_band_figure(
                 x=band_data.distances,
                 y=shifted,
                 mode="lines",
-                line={"color": "#1f4e79", "width": 1.1},
+                line={"color": PUBLICATION_BLUE, "width": 1.3},
                 name=f"Band {band_index}",
                 hovertemplate="k-distance: %{x:.3f}<br>Energy: %{y:.3f} eV<extra></extra>",
                 showlegend=False,
@@ -484,15 +489,15 @@ def make_band_figure(
         xaxis_title="k-path distance",
         yaxis_title=yaxis_title,
         showlegend=False,
-        **_base_plot_layout(),
+        **_base_plot_layout(height=720),
     )
 
     if reference_y is not None:
         figure.add_hline(
             y=reference_y,
             line_dash="dash",
-            line_color="#444444",
-            line_width=1.2,
+            line_color=PUBLICATION_MUTED,
+            line_width=1.4,
         )
 
     if band_data.kpoint_tick_positions:
@@ -500,7 +505,7 @@ def make_band_figure(
             figure.add_vline(
                 x=separator_position,
                 line_dash="dot",
-                line_color="#bbbbbb",
+                line_color=PUBLICATION_SEPARATOR,
                 line_width=1.0,
             )
 
@@ -898,29 +903,49 @@ def _shifted_values(values: list[float], reference: float | None, align_to_refer
     return [value - reference for value in values]
 
 
-def _base_plot_layout() -> dict:
+def _base_plot_layout(*, height: int) -> dict:
     return {
+        "template": "none",
         "plot_bgcolor": "white",
         "paper_bgcolor": "white",
-        "font": {"family": "Arial, sans-serif", "size": 14, "color": "#1f1f1f"},
-        "margin": {"l": 70, "r": 30, "t": 60, "b": 60},
+        "height": height,
+        "font": {"family": "Helvetica, Arial, sans-serif", "size": 15, "color": PUBLICATION_TEXT},
+        "title_x": 0.02,
+        "title_xanchor": "left",
+        "title_font": {"size": 23, "color": PUBLICATION_TEXT},
+        "margin": {"l": 88, "r": 34, "t": 74, "b": 82},
         "hovermode": "closest",
+        "hoverlabel": {
+            "bgcolor": "white",
+            "bordercolor": PUBLICATION_MUTED,
+            "font": {"color": PUBLICATION_TEXT, "size": 14},
+        },
         "xaxis": {
+            "title": {"font": {"size": 18, "color": PUBLICATION_TEXT}, "standoff": 14},
+            "tickfont": {"size": 15, "color": PUBLICATION_TEXT},
             "showline": True,
-            "linewidth": 1.2,
-            "linecolor": "#222222",
+            "linewidth": 1.6,
+            "linecolor": PUBLICATION_TEXT,
             "mirror": False,
             "ticks": "outside",
             "showgrid": False,
             "zeroline": False,
+            "tickcolor": PUBLICATION_TEXT,
+            "tickwidth": 1.2,
+            "automargin": True,
         },
         "yaxis": {
+            "title": {"font": {"size": 18, "color": PUBLICATION_TEXT}, "standoff": 14},
+            "tickfont": {"size": 15, "color": PUBLICATION_TEXT},
             "showline": True,
-            "linewidth": 1.2,
-            "linecolor": "#222222",
+            "linewidth": 1.6,
+            "linecolor": PUBLICATION_TEXT,
             "mirror": False,
             "ticks": "outside",
             "showgrid": False,
             "zeroline": False,
+            "tickcolor": PUBLICATION_TEXT,
+            "tickwidth": 1.2,
+            "automargin": True,
         },
     }

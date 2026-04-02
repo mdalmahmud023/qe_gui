@@ -166,6 +166,9 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(len(figure.data), 1)
         self.assertEqual(len(figure.layout.shapes), 1)
         self.assertEqual(figure.layout.shapes[0]["x0"], 0.0)
+        self.assertEqual(figure.layout.height, 620)
+        self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
+        self.assertEqual(figure.layout.paper_bgcolor, "white")
 
     def test_infer_band_gap_reports_indirect_gap(self) -> None:
         band_data = ep.BandData(
@@ -215,6 +218,9 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(list(figure.layout.xaxis.tickvals), [0.0, 1.0, 2.0])
         self.assertEqual(list(figure.layout.xaxis.ticktext), ["G", "X", "L"])
         self.assertEqual(figure.layout.yaxis.title.text, "Energy relative to Fermi (eV)")
+        self.assertEqual(figure.layout.height, 720)
+        self.assertEqual(figure.layout.font.color, ep.PUBLICATION_TEXT)
+        self.assertEqual(figure.layout.xaxis.tickfont.color, ep.PUBLICATION_TEXT)
 
     def test_make_band_figure_vbm_alignment_shifts_top_valence_to_zero(self) -> None:
         band_data = ep.BandData(

@@ -235,6 +235,12 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Updated `README.md` to document the new multipage layout and page responsibilities.
 - Improved the shared workflow indicator styling for better readability in dark mode.
 - Promoted the `Upload a CIF file` heading on the `Structure` page so it aligns visually with `Structure Summary`.
+- Updated DOS and band Plotly figures for a more publication-ready style:
+  - explicit light paper background
+  - dark high-contrast labels for dark-mode compatibility
+  - stronger typography and axis styling
+  - taller chart proportions for better readability
+  - Streamlit Plotly theme override disabled in the Analysis page so figure styling remains consistent
 
 ## Known Limitations
 
