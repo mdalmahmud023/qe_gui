@@ -167,7 +167,32 @@ class ElectronicPropertiesTests(unittest.TestCase):
         self.assertEqual(len(figure.layout.shapes), 1)
         self.assertEqual(figure.layout.shapes[0]["x0"], 0.0)
 
-    def test_make_band_figure_has_reference_and_separators(self) -> None:
+    def test_infer_band_gap_reports_indirect_gap(self) -> None:
+        band_data = ep.BandData(
+            distances=[0.0, 1.0, 2.0],
+            eigenvalues_ev=[
+                [-0.2, 1.1],
+                [0.0, 0.9],
+                [-0.1, 0.8],
+            ],
+            source_file=Path("sample.filband.gnu"),
+            source_type="qe_filband_gnu",
+            kpoint_tick_positions=[0.0, 1.0, 2.0],
+            kpoint_tick_labels=["G", "X", "L"],
+            fermi_energy_ev=0.4,
+        )
+
+        band_gap = ep.infer_band_gap(band_data)
+
+        self.assertIsNotNone(band_gap)
+        assert band_gap is not None
+        self.assertAlmostEqual(band_gap.vbm_energy_ev, 0.0, places=6)
+        self.assertAlmostEqual(band_gap.cbm_energy_ev, 0.8, places=6)
+        self.assertAlmostEqual(band_gap.gap_energy_ev, 0.8, places=6)
+        self.assertFalse(band_gap.is_direct)
+        self.assertFalse(band_gap.is_metallic)
+
+    def test_make_band_figure_fermi_alignment_has_zero_reference_and_separators(self) -> None:
         band_data = ep.BandData(
             distances=[0.0, 1.0, 2.0],
             eigenvalues_ev=[
@@ -182,12 +207,58 @@ class ElectronicPropertiesTests(unittest.TestCase):
             fermi_energy_ev=0.25,
         )
 
-        figure = ep.make_band_figure(band_data, align_to_fermi=True)
+        figure = ep.make_band_figure(band_data, alignment_mode="fermi")
 
         self.assertEqual(len(figure.data), 2)
         self.assertEqual(len(figure.layout.shapes), 2)
+        self.assertEqual(figure.layout.shapes[0]["y0"], 0.0)
         self.assertEqual(list(figure.layout.xaxis.tickvals), [0.0, 1.0, 2.0])
         self.assertEqual(list(figure.layout.xaxis.ticktext), ["G", "X", "L"])
+        self.assertEqual(figure.layout.yaxis.title.text, "Energy relative to Fermi (eV)")
+
+    def test_make_band_figure_vbm_alignment_shifts_top_valence_to_zero(self) -> None:
+        band_data = ep.BandData(
+            distances=[0.0, 1.0, 2.0],
+            eigenvalues_ev=[
+                [-0.4, 1.2],
+                [0.1, 0.8],
+                [-0.2, 0.9],
+            ],
+            source_file=Path("sample.filband.gnu"),
+            source_type="qe_filband_gnu",
+            kpoint_tick_positions=[0.0, 2.0],
+            kpoint_tick_labels=["G", "L"],
+            fermi_energy_ev=0.4,
+        )
+
+        band_gap = ep.infer_band_gap(band_data)
+        figure = ep.make_band_figure(band_data, alignment_mode="vbm", band_gap=band_gap)
+
+        self.assertIsNotNone(band_gap)
+        assert band_gap is not None
+        self.assertEqual(figure.layout.shapes[0]["y0"], 0.0)
+        self.assertAlmostEqual(max(figure.data[0]["y"]), 0.0, places=6)
+        self.assertEqual(figure.layout.yaxis.title.text, "Energy relative to VBM (eV)")
+
+    def test_make_band_figure_raw_mode_keeps_absolute_energies(self) -> None:
+        band_data = ep.BandData(
+            distances=[0.0, 1.0],
+            eigenvalues_ev=[
+                [-1.0, 2.0],
+                [0.5, 3.0],
+            ],
+            source_file=Path("sample.filband.gnu"),
+            source_type="qe_filband_gnu",
+            kpoint_tick_positions=[],
+            kpoint_tick_labels=[],
+            fermi_energy_ev=0.25,
+        )
+
+        figure = ep.make_band_figure(band_data, alignment_mode="raw")
+
+        self.assertEqual(list(figure.data[0]["y"]), [-1.0, 0.5])
+        self.assertEqual(figure.layout.shapes[0]["y0"], 0.25)
+        self.assertEqual(figure.layout.yaxis.title.text, "Energy (eV)")
 
     def test_extract_qe_fermi_metadata_handles_split_spin_xml_without_single_reference(self) -> None:
         with TemporaryDirectory() as tmp_dir:

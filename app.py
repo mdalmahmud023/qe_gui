@@ -13,10 +13,12 @@ from electronic_properties import (
     DEFAULT_PLOTLY_CONFIG,
     AnalysisParseError,
     BandData,
+    BandGapSummary,
     DOSData,
     FermiMetadata,
     extract_qe_fermi_metadata,
     find_available_analysis_files,
+    infer_band_gap,
     make_band_figure,
     make_dos_figure,
     parse_qe_band_structure,
@@ -98,6 +100,7 @@ BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
 BAND_PATH_WIDGET_KEY = "band_path_widget"
 AUTO_BAND_PATH_POINTS_WIDGET_KEY = "auto_band_path_points_widget"
 AUTO_BAND_PATH_STATUS_STATE_KEY = "auto_band_path_status"
+BAND_ALIGNMENT_MODE_WIDGET_KEY = "band_alignment_mode_widget"
 
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
 QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")
@@ -130,6 +133,8 @@ JOB_OWNER_DOS = "dos"
 JOB_OWNER_BANDS = "bands"
 DOS_BZ_SUM_OPTIONS = ("smearing", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt")
 BAND_COORDINATE_MODE_OPTIONS = ("crystal_b", "tpiba_b")
+BAND_ALIGNMENT_MODE_OPTIONS = ("vbm", "fermi", "raw")
+DEFAULT_BAND_ALIGNMENT_MODE = "vbm"
 DEFAULT_BAND_PATH_TEXT = "0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 20 ! X\n0.5 0.5 0.5 1 ! L\n"
 STRUCTURE_MODE_OPTIONS = ("uploaded", "primitive")
 
@@ -1442,6 +1447,72 @@ def render_band_summary(band_data: BandData) -> None:
     col4.write(f"{min(flattened_energies):.3f} to {max(flattened_energies):.3f} eV")
 
 
+def render_band_gap_summary(band_gap: BandGapSummary | None) -> None:
+    """Render a compact band-gap summary derived from the parsed band structure."""
+    col1, col2, col3, col4 = st.columns(4)
+    col1.caption("Band gap")
+    col2.caption("Gap type")
+    col3.caption("VBM")
+    col4.caption("CBM")
+
+    if band_gap is None:
+        col1.write("Unavailable")
+        col2.write("Unavailable")
+        col3.write("Unavailable")
+        col4.write("Unavailable")
+        return
+
+    col1.write(f"{band_gap.gap_energy_ev:.4f} eV")
+    if band_gap.is_metallic:
+        col2.write("Metallic / zero-gap")
+    else:
+        col2.write("Direct" if band_gap.is_direct else "Indirect")
+    col3.write(f"{band_gap.vbm_energy_ev:.4f} eV at k={band_gap.vbm_distance:.3f}")
+    col4.write(f"{band_gap.cbm_energy_ev:.4f} eV at k={band_gap.cbm_distance:.3f}")
+
+
+def get_default_band_alignment_mode(
+    band_data: BandData,
+    band_gap: BandGapSummary | None,
+) -> str:
+    """Choose a sensible default energy reference for the current band plot."""
+    if band_gap is not None and not band_gap.is_metallic:
+        return DEFAULT_BAND_ALIGNMENT_MODE
+    if band_data.fermi_energy_ev is not None:
+        return "fermi"
+    return "raw"
+
+
+def resolve_band_alignment_mode(
+    requested_mode: str,
+    band_data: BandData,
+    band_gap: BandGapSummary | None,
+) -> tuple[str, str | None]:
+    """Map a requested UI alignment mode onto a valid plotting mode plus any UX note."""
+    normalized_mode = requested_mode.strip().lower()
+    if normalized_mode not in BAND_ALIGNMENT_MODE_OPTIONS:
+        normalized_mode = "raw"
+
+    if normalized_mode == "vbm":
+        if band_gap is None:
+            fallback_mode = "fermi" if band_data.fermi_energy_ev is not None else "raw"
+            return (
+                fallback_mode,
+                "VBM alignment requires a detectable valence-band maximum and conduction-band minimum.",
+            )
+        if band_gap.is_metallic:
+            fallback_mode = "fermi" if band_data.fermi_energy_ev is not None else "raw"
+            return (
+                fallback_mode,
+                "VBM alignment is not used for metallic or zero-gap band structures, so the plot falls back to the available reference.",
+            )
+
+    if normalized_mode == "fermi" and band_data.fermi_energy_ev is None:
+        return "raw", "No single Fermi reference was found, so raw band energies are shown."
+
+    return normalized_mode, None
+
+
 def render_dos_subsection(analysis_files) -> None:
     """Render the DOS subsection with graceful parsing failure handling."""
     st.markdown("### DOS")
@@ -1507,7 +1578,10 @@ def render_band_subsection(analysis_files) -> None:
         st.error(f"Unexpected band parsing error for `{analysis_files.band_file}`: {exc}")
         return
 
+    band_gap = infer_band_gap(band_data)
+
     render_band_summary(band_data)
+    render_band_gap_summary(band_gap)
 
     if band_data.fermi_metadata is not None:
         st.caption(
@@ -1519,16 +1593,31 @@ def render_band_subsection(analysis_files) -> None:
     if analysis_files.band_input_file is not None:
         st.caption(f"Band-path input: `{analysis_files.band_input_file}`")
 
-    align_to_fermi = st.checkbox(
-        "Align bands to Fermi level (0 eV)",
-        value=band_data.fermi_energy_ev is not None,
-        disabled=band_data.fermi_energy_ev is None,
-        key="band_align_to_fermi",
+    default_alignment_mode = get_default_band_alignment_mode(band_data, band_gap)
+    requested_alignment_mode = st.selectbox(
+        "Energy reference",
+        options=BAND_ALIGNMENT_MODE_OPTIONS,
+        index=BAND_ALIGNMENT_MODE_OPTIONS.index(default_alignment_mode),
+        format_func=lambda mode: {
+            "vbm": "Align to VBM",
+            "fermi": "Align to Fermi",
+            "raw": "Raw energies",
+        }[mode],
+        key=BAND_ALIGNMENT_MODE_WIDGET_KEY,
     )
-    if band_data.fermi_energy_ev is None:
-        st.info("No Fermi energy was found for band alignment, so raw energies are shown.")
+    alignment_mode, alignment_note = resolve_band_alignment_mode(
+        requested_alignment_mode,
+        band_data,
+        band_gap,
+    )
+    if alignment_note:
+        st.info(alignment_note)
 
-    figure = make_band_figure(band_data, align_to_fermi=align_to_fermi)
+    figure = make_band_figure(
+        band_data,
+        alignment_mode=alignment_mode,
+        band_gap=band_gap,
+    )
     st.plotly_chart(
         figure,
         use_container_width=True,

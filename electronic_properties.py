@@ -61,6 +61,19 @@ class BandData:
 
 
 @dataclass(frozen=True)
+class BandGapSummary:
+    vbm_energy_ev: float
+    cbm_energy_ev: float
+    gap_energy_ev: float
+    vbm_kpoint_index: int
+    cbm_kpoint_index: int
+    vbm_distance: float
+    cbm_distance: float
+    is_direct: bool
+    is_metallic: bool = False
+
+
+@dataclass(frozen=True)
 class AnalysisFiles:
     run_dir: Path
     qe_input_file: Path | None = None
@@ -397,13 +410,63 @@ def make_dos_figure(dos_data: DOSData, *, align_to_fermi: bool = True) -> go.Fig
     return figure
 
 
-def make_band_figure(band_data: BandData, *, align_to_fermi: bool = True) -> go.Figure:
+def infer_band_gap(band_data: BandData, *, tolerance_ev: float = 1.0e-4) -> BandGapSummary | None:
+    """Infer a simple band-gap summary from a parsed band structure and its energy reference."""
+    if band_data.fermi_energy_ev is None or not band_data.eigenvalues_ev:
+        return None
+
+    reference_energy = band_data.fermi_energy_ev
+    states: list[tuple[float, int, float]] = []
+    for kpoint_index, (distance, energies) in enumerate(zip(band_data.distances, band_data.eigenvalues_ev)):
+        for energy in energies:
+            states.append((energy, kpoint_index, distance))
+
+    occupied_states = [state for state in states if state[0] <= reference_energy + tolerance_ev]
+    unoccupied_states = [state for state in states if state[0] > reference_energy + tolerance_ev]
+    if not occupied_states or not unoccupied_states:
+        return None
+
+    band_energies = list(zip(*band_data.eigenvalues_ev))
+    is_metallic = any(
+        min(band) <= reference_energy + tolerance_ev and max(band) >= reference_energy - tolerance_ev
+        for band in band_energies
+    )
+
+    vbm_energy, vbm_kpoint_index, vbm_distance = max(occupied_states, key=lambda state: state[0])
+    cbm_energy, cbm_kpoint_index, cbm_distance = min(unoccupied_states, key=lambda state: state[0])
+    gap_energy = max(cbm_energy - vbm_energy, 0.0)
+    if is_metallic:
+        gap_energy = 0.0
+
+    return BandGapSummary(
+        vbm_energy_ev=vbm_energy,
+        cbm_energy_ev=cbm_energy,
+        gap_energy_ev=gap_energy,
+        vbm_kpoint_index=vbm_kpoint_index,
+        cbm_kpoint_index=cbm_kpoint_index,
+        vbm_distance=vbm_distance,
+        cbm_distance=cbm_distance,
+        is_direct=vbm_kpoint_index == cbm_kpoint_index,
+        is_metallic=is_metallic,
+    )
+
+
+def make_band_figure(
+    band_data: BandData,
+    *,
+    alignment_mode: str = "fermi",
+    band_gap: BandGapSummary | None = None,
+) -> go.Figure:
     """Build a publication-friendly Plotly figure for band structure."""
     figure = go.Figure()
-    reference_y = 0.0 if align_to_fermi and band_data.fermi_energy_ev is not None else band_data.fermi_energy_ev
+    energy_shift, reference_y, yaxis_title = _resolve_band_alignment(
+        band_data,
+        alignment_mode=alignment_mode,
+        band_gap=band_gap,
+    )
 
     for band_index, band_energies in enumerate(zip(*band_data.eigenvalues_ev), start=1):
-        shifted = _shifted_values(list(band_energies), band_data.fermi_energy_ev, align_to_fermi)
+        shifted = _shifted_values(list(band_energies), energy_shift, energy_shift is not None)
         figure.add_trace(
             go.Scatter(
                 x=band_data.distances,
@@ -419,7 +482,7 @@ def make_band_figure(band_data: BandData, *, align_to_fermi: bool = True) -> go.
     figure.update_layout(
         title="Band Structure",
         xaxis_title="k-path distance",
-        yaxis_title="Energy (eV)",
+        yaxis_title=yaxis_title,
         showlegend=False,
         **_base_plot_layout(),
     )
@@ -449,6 +512,22 @@ def make_band_figure(band_data: BandData, *, align_to_fermi: bool = True) -> go.
             )
 
     return figure
+
+
+def _resolve_band_alignment(
+    band_data: BandData,
+    *,
+    alignment_mode: str,
+    band_gap: BandGapSummary | None,
+) -> tuple[float | None, float | None, str]:
+    normalized_mode = alignment_mode.strip().lower()
+    if normalized_mode == "vbm" and band_gap is not None:
+        return band_gap.vbm_energy_ev, 0.0, "Energy relative to VBM (eV)"
+    if normalized_mode == "fermi" and band_data.fermi_energy_ev is not None:
+        return band_data.fermi_energy_ev, 0.0, "Energy relative to Fermi (eV)"
+    if normalized_mode == "raw":
+        return None, band_data.fermi_energy_ev, "Energy (eV)"
+    return None, band_data.fermi_energy_ev, "Energy (eV)"
 
 
 def _iter_run_files(run_dir: Path) -> Iterable[Path]:
