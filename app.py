@@ -93,7 +93,6 @@ PSEUDO_FUNCTIONAL_WIDGET_KEY = "pseudo_widget_functional"
 PSEUDO_MODE_WIDGET_KEY = "pseudo_widget_mode"
 PSEUDO_VERSION_WIDGET_KEY = "pseudo_widget_version"
 PSEUDO_USE_CACHE_WIDGET_KEY = "pseudo_widget_use_cache"
-STRUCTURE_MODE_WIDGET_KEY = "structure_mode_widget"
 BAND_NBND_WIDGET_KEY = "band_nbnd_widget"
 BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
 BAND_PATH_WIDGET_KEY = "band_path_widget"
@@ -209,7 +208,6 @@ def apply_structure_mode_selection(mode: str, *, preserve_resolution_status: boo
     active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(raw_atoms, mode)
     st.session_state[ATOMS_STATE_KEY] = active_atoms
     st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
-    st.session_state[STRUCTURE_MODE_WIDGET_KEY] = resolved_mode
     st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = status_message
     st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = get_structure_signature(active_atoms)
     clear_generated_qe_input_state()
@@ -369,7 +367,6 @@ def store_uploaded_structure(uploaded_file) -> None:
     st.session_state[FILENAME_STATE_KEY] = uploaded_file.name
     st.session_state[ERROR_STATE_KEY] = None
     st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
-    st.session_state[STRUCTURE_MODE_WIDGET_KEY] = resolved_mode
     st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = structure_mode_message
     st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = new_structure_signature
 
@@ -640,12 +637,11 @@ def render_structure_mode_controls() -> None:
     """Render uploaded-vs-primitive cell controls in the sidebar."""
     raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
     current_mode = get_structure_mode()
-    st.selectbox(
+    selected_mode = st.selectbox(
         "Cell Mode",
         options=STRUCTURE_MODE_OPTIONS,
         format_func=lambda value: "Primitive Cell" if value == "primitive" else "Uploaded Cell",
         index=STRUCTURE_MODE_OPTIONS.index(current_mode) if current_mode in STRUCTURE_MODE_OPTIONS else 0,
-        key=STRUCTURE_MODE_WIDGET_KEY,
         disabled=raw_atoms is None,
     )
 
@@ -653,7 +649,6 @@ def render_structure_mode_controls() -> None:
         st.caption("Upload a crystal structure to choose between the uploaded cell and a primitive cell.")
         return
 
-    selected_mode = st.session_state.get(STRUCTURE_MODE_WIDGET_KEY, current_mode)
     if selected_mode != current_mode:
         try:
             apply_structure_mode_selection(selected_mode)
