@@ -24,7 +24,13 @@ def render_page(ctx: ProjectContext) -> None:
 
     upload_col, summary_col = st.columns([1.1, 0.9])
     with upload_col:
-        uploaded_file = st.file_uploader("Upload a CIF file", type=["cif"], key="cif_uploader")
+        st.markdown("#### Upload a CIF file")
+        uploaded_file = st.file_uploader(
+            "Upload a CIF file",
+            type=["cif"],
+            key="cif_uploader",
+            label_visibility="collapsed",
+        )
         structure_changed = store_uploaded_structure(uploaded_file)
         error_message = st.session_state.get(ERROR_STATE_KEY)
         if structure_changed and error_message is None:

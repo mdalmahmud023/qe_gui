@@ -60,19 +60,23 @@ def render_workflow_indicator(active_title: str) -> None:
     columns = st.columns(len(steps))
     for column, title in zip(columns, steps):
         is_active = title == active_title
-        background = "#e8f1ff" if is_active else "#f7f7f8"
-        border = "#5f87ff" if is_active else "#d9d9de"
+        background = "#1b3558" if is_active else "#1b2230"
+        border = "#7aa2ff" if is_active else "#46506a"
+        title_color = "#f7f9fc"
+        subtitle_color = "#d6deeb" if is_active else "#b6c0d4"
         subtitle = "Current step" if is_active else "&nbsp;"
         column.markdown(
             (
                 "<div style='border:1px solid {border};border-radius:0.75rem;padding:0.65rem 0.8rem;"
-                "background:{background};text-align:center;'>"
-                "<div style='font-weight:600;'>{title}</div>"
-                "<div style='font-size:0.78rem;color:#5f6368;'>{subtitle}</div>"
+                "background:{background};text-align:center;box-shadow:0 1px 3px rgba(0,0,0,0.18);'>"
+                "<div style='font-weight:600;color:{title_color};'>{title}</div>"
+                "<div style='font-size:0.78rem;color:{subtitle_color};'>{subtitle}</div>"
                 "</div>"
             ).format(
                 border=border,
                 background=background,
+                title_color=title_color,
+                subtitle_color=subtitle_color,
                 title=title,
                 subtitle=subtitle,
             ),

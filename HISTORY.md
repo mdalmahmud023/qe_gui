@@ -233,6 +233,8 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Preserved disk-first behavior under `qe_runs/` so pages remain robust across refreshes.
 - Added `tests/test_project_context.py` to verify the new shared context behavior and guard against heavy DOS/band parsing in the context layer.
 - Updated `README.md` to document the new multipage layout and page responsibilities.
+- Improved the shared workflow indicator styling for better readability in dark mode.
+- Promoted the `Upload a CIF file` heading on the `Structure` page so it aligns visually with `Structure Summary`.
 
 ## Known Limitations
 
@@ -249,7 +251,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 ## Next Likely Steps
 
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
-- Polish the shared shell styling and card layouts for a more dashboard-like presentation.
+- Continue polishing the shared shell styling and card layouts for a more dashboard-like presentation.
 - Add manual pseudopotential override controls.
 - Add support for selecting among multiple structures in CIF files if needed.
 - Add offline mode and explicit cache cleanup tools.
