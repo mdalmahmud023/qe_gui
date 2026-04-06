@@ -3,14 +3,19 @@
 QE Studio is a Streamlit-based web GUI for working toward Quantum ESPRESSO workflows.
 
 The current version can:
-- upload a `.cif` file
-- parse the structure with ASE
-- store the parsed ASE `Atoms` object in Streamlit session state
+- import structure files through ASE-backed readers:
+  - `.cif`
+  - VASP `POSCAR` / `CONTCAR`
+  - `.xsf`
+  - `.xyz` / `extxyz` when a usable 3D periodic cell is present
+- build periodic crystal structures manually from lattice parameters, species, and atomic positions
+- generate an ordered cubic double perovskite `A2BB'X6` prototype as a starting structure
+- store the source and active ASE `Atoms` objects in Streamlit session state
 - show a persistent project summary in the sidebar across all pages
 - use a clean 4-page workflow with top navigation: `Structure`, `Setup`, `Run`, and `Analysis`
-- switch between the uploaded cell and a symmetry-reduced primitive cell before generating QE inputs
+- switch between the source cell and a symmetry-reduced primitive cell before generating QE inputs
 - render the parsed structure in 3D with `py3Dmol`
-- detect unique chemical elements from the uploaded structure
+- detect unique chemical elements from the active structure
 - resolve recommended SSSP pseudopotentials from versioned Materials Cloud manifests and archives
 - cache extracted `.UPF` files locally under `qe_runs/pseudopotentials/sssp/`
 - collect basic Quantum ESPRESSO input parameters in a form
@@ -19,6 +24,8 @@ The current version can:
 - stream live Quantum ESPRESSO terminal output in the Streamlit UI and save the full log to `qe_runs/pw.out`
 - launch dedicated DOS and band-structure follow-up workflows inside `qe_runs/`
 - auto-fill a high-symmetry band path from the active cell using ASE when possible
+- track deterministic structure provenance for pseudopotentials, generated input, and QE artifacts
+- show warnings when saved inputs or artifacts are out of sync with the current active structure
 - detect QE post-processing artifacts in `qe_runs/`
 - render interactive total DOS and `filband.gnu` band-structure charts with Plotly when suitable files exist
 
@@ -111,10 +118,10 @@ By default Streamlit will print a local URL such as:
 http://localhost:8501
 ```
 
-Open that URL in your browser, then use the `Structure` page to upload a `.cif` file.
+Open that URL in your browser, then use the `Structure` page to import or build a structure.
 
 The app now uses top navigation with four pages:
-- `Structure`: upload, cell mode, 3D viewer, structure summary
+- `Structure`: import/build workflow, source vs primitive cell mode, 3D viewer, structure summary
 - `Setup`: pseudopotentials, QE input generation, `pw.in` preview
 - `Run`: `pw.x`, DOS, bands, live logs, artifact status
 - `Analysis`: DOS and band dashboards
@@ -126,14 +133,18 @@ Before using `Run Calculation` or the post-processing runners, make sure `pw.x`,
 1. Start the app with `streamlit run app.py`.
 2. Confirm the page loads with a wide layout, top navigation, and a persistent sidebar project summary.
 3. Open the `Structure` page.
-4. Upload a valid `.cif` file.
+4. Create an active structure using one of the available modes:
+   - `Import File`
+   - `Manual Builder`
+   - `Prototype Builder`
 5. Confirm the sidebar shows:
-   - file name
+   - source label
+   - source type
    - chemical formula
    - atom count
    - unit cell parameters
 6. Confirm the `Structure` page shows the interactive 3D structure viewer.
-7. Optionally switch `Cell Mode` to `Primitive Cell` and confirm the structure metadata updates.
+7. Optionally switch `Cell Representation` to `Primitive Cell` and confirm the structure metadata updates.
 8. Open the `Setup` page and confirm the `Pseudopotentials` section shows the detected elements.
 9. Click `Resolve Pseudopotentials`.
 10. Confirm the selected SSSP manifest and archive are cached under `qe_runs/pseudopotentials/sssp/1.3.0/...`.
@@ -161,7 +172,7 @@ Before using `Run Calculation` or the post-processing runners, make sure `pw.x`,
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
+python3 -m py_compile app.py project_context.py structure_sources.py structure_state.py structure_tools.py ui_structure.py ui_setup.py ui_run.py ui_analysis.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
 ```
 
 Unit tests:
@@ -180,6 +191,8 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 
 - `app.py`: Streamlit app entrypoint
 - `project_context.py`: lightweight shared session/disk summaries and cross-page helpers
+- `structure_sources.py`: structure import, manual-builder parsing, prototype generation, and source validation
+- `structure_state.py`: structure commit helpers, cell-mode switching, signatures, provenance, and stale-state invalidation
 - `ui_structure.py`: Structure page UI
 - `ui_setup.py`: Setup page UI
 - `ui_run.py`: Run page UI
@@ -193,14 +206,15 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 
 ## Notes
 
-- The app currently loads the first structure block from a CIF file.
-- The parsed structure is stored in `st.session_state`, which preserves it across normal Streamlit reruns within the same session.
+- The app currently loads the first structure block from a supported multi-structure file.
+- The source and active structures are stored in `st.session_state`, which preserves them across normal Streamlit reruns within the same session.
 - A hard browser refresh still resets Streamlit session state.
-- Generated inputs, logs, and analysis artifacts remain disk-first under `qe_runs/`, so the `Run` and `Analysis` pages can reconstruct their state from disk after refresh.
-- The `Cell Mode` selector affects newly generated QE inputs. If you switch between uploaded and primitive cells, regenerate `pw.in` and rerun the source SCF before post-processing.
+- Generated inputs, logs, analysis artifacts, and deterministic provenance metadata remain disk-first under `qe_runs/`, so the `Run` and `Analysis` pages can reconstruct their state from disk after refresh.
+- The `Cell Representation` selector affects newly generated QE inputs. If you switch between source and primitive cells, regenerate `pw.in` and rerun the source SCF before post-processing.
 - The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
-- QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination.
+- QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination, and previously resolved pseudopotentials are marked stale when the active structure changes.
 - DOS and band post-processing runners are disk-driven and inspect `qe_runs/pw.in` first, then `qe_runs/espresso.pwi` if needed.
 - Electronic-properties analysis is disk-driven and looks for DOS and band artifacts inside `qe_runs/`.
+- The `Setup`, `Run`, and `Analysis` pages show explicit warnings when saved `pw.in` data or QE artifacts are out of sync with the current active structure.
 - V1 analysis support is limited to total DOS and non-projected `filband.gnu` band plots.
 - The app prefers structured QE XML metadata from `prefix.save/data-file-schema.xml` for Fermi alignment and falls back to `pw.out` only when XML metadata is unavailable.

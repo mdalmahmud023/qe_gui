@@ -3,6 +3,7 @@
 # install it separately and make sure `pw.x` is on your PATH.
 streamlit
 ase
+numpy
 py3Dmol
 plotly
 requests

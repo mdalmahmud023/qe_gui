@@ -13,6 +13,8 @@ from typing import Any
 
 import requests
 
+from structure_state import get_structure_signature, get_unique_elements, has_same_element_set
+
 
 DEFAULT_PSEUDO_CACHE_ROOT = Path("qe_runs") / "pseudopotentials" / "sssp"
 SSSP_RECORD_SLUGS = {
@@ -25,30 +27,6 @@ DOWNLOAD_TIMEOUT_SECONDS = 120
 
 class PseudopotentialResolutionError(RuntimeError):
     """Raised when pseudopotential resolution cannot complete safely."""
-
-
-def get_unique_elements(atoms) -> list[str]:
-    """Return unique chemical symbols in deterministic sorted order."""
-    return sorted(set(atoms.get_chemical_symbols()))
-
-
-def get_structure_signature(atoms) -> dict[str, Any]:
-    """Build a lightweight structure signature for invalidation checks."""
-    return {
-        "elements": get_unique_elements(atoms),
-        "formula": atoms.get_chemical_formula(),
-        "atom_count": len(atoms),
-    }
-
-
-def has_same_element_set(
-    first_signature: dict[str, Any] | None,
-    second_signature: dict[str, Any] | None,
-) -> bool:
-    """Return whether two structure signatures contain the same element set."""
-    if not first_signature or not second_signature:
-        return False
-    return list(first_signature.get("elements", [])) == list(second_signature.get("elements", []))
 
 
 def get_pseudo_cache_root(cache_root: Path | None = None) -> Path:

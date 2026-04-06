@@ -55,9 +55,9 @@ def make_primitive_atoms(
     )
     changed = len(primitive_atoms) != len(atoms) or not primitive_atoms.cell.array.round(8).tolist() == atoms.cell.array.round(8).tolist()
     message = (
-        f"Using primitive cell with {len(primitive_atoms)} atoms instead of the uploaded {len(atoms)}-atom cell."
+        f"Using primitive cell with {len(primitive_atoms)} atoms instead of the source {len(atoms)}-atom cell."
         if changed
-        else "The uploaded structure already looks like a primitive cell."
+        else "The source structure already looks like a primitive cell."
     )
     return PrimitiveCellResult(atoms=primitive_atoms, changed=changed, message=message)
 

@@ -7,6 +7,7 @@ from ase import Atoms
 import streamlit as st
 
 import project_context as pc
+import structure_state as ss
 
 
 class ProjectContextTests(unittest.TestCase):
@@ -31,6 +32,9 @@ class ProjectContextTests(unittest.TestCase):
         st.session_state[pc.ATOMS_STATE_KEY] = atoms
         st.session_state[pc.RAW_ATOMS_STATE_KEY] = atoms.copy()
         st.session_state[pc.FILENAME_STATE_KEY] = "Si.cif"
+        st.session_state[pc.SOURCE_KIND_STATE_KEY] = "file"
+        st.session_state[pc.SOURCE_LABEL_STATE_KEY] = "Si.cif"
+        st.session_state[pc.SOURCE_FORMAT_STATE_KEY] = "cif"
         st.session_state[pc.STRUCTURE_MODE_STATE_KEY] = "primitive"
         st.session_state[pc.STRUCTURE_MODE_STATUS_STATE_KEY] = "Using the primitive cell."
 
@@ -39,6 +43,8 @@ class ProjectContextTests(unittest.TestCase):
 
         self.assertTrue(ctx.structure.loaded)
         self.assertEqual(ctx.structure.filename, "Si.cif")
+        self.assertEqual(ctx.structure.source_kind, "file")
+        self.assertEqual(ctx.structure.source_label, "Si.cif")
         self.assertEqual(ctx.structure.cell_mode_label, "Primitive Cell")
         self.assertEqual(ctx.structure.atom_count, 2)
         self.assertIn("a =", ctx.structure.cell_parameters or "")
@@ -88,6 +94,26 @@ class ProjectContextTests(unittest.TestCase):
             self.assertTrue(disk_ctx.input_files.available)
             self.assertEqual(disk_ctx.input_files.preview_source, "disk")
 
+    def test_build_project_context_reports_out_of_sync_input_provenance(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            current_atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+            stale_atoms = Atoms("Si2", positions=[[0, 0, 0], [2.0, 2.0, 2.0]], cell=[5.43, 5.43, 5.43], pbc=True)
+            st.session_state[pc.ATOMS_STATE_KEY] = current_atoms
+            st.session_state[pc.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(current_atoms)
+            (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
+            ss.update_provenance_record(
+                run_dir,
+                ss.PROVENANCE_RECORD_INPUT,
+                structure_signature=ss.get_structure_signature(stale_atoms),
+                paths={"ui_path": str(run_dir / "pw.in")},
+            )
+
+            ctx = pc.build_project_context(run_dir)
+
+        self.assertEqual(ctx.input_files.provenance_state, "out_of_sync")
+        self.assertIn("different active structure", ctx.input_files.provenance_message or "")
+
     def test_build_project_context_discovers_lightweight_artifact_presence(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
@@ -101,6 +127,20 @@ class ProjectContextTests(unittest.TestCase):
         self.assertTrue(ctx.artifacts.dos_detected)
         self.assertTrue(ctx.artifacts.bands_detected)
         self.assertEqual(ctx.artifacts.band_file, run_dir / "filband.gnu")
+
+    def test_build_project_context_reports_unknown_artifact_provenance_without_records(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+            st.session_state[pc.ATOMS_STATE_KEY] = atoms
+            st.session_state[pc.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(atoms)
+            (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
+            (run_dir / "pw.out").write_text("pw output\n", encoding="utf-8")
+
+            ctx = pc.build_project_context(run_dir)
+
+        self.assertEqual(ctx.artifacts.provenance_state, "unknown")
+        self.assertIn("provenance is unavailable", ctx.artifacts.provenance_message or "")
 
     def test_build_project_context_reconstructs_active_job_summary(self) -> None:
         st.session_state[pc.RUN_ACTIVE_STATE_KEY] = True

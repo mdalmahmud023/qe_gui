@@ -19,10 +19,14 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - `Run`
   - `Analysis`
 - The sidebar is now a persistent project summary visible on every page.
-- CIF upload now lives on the `Structure` page rather than in the sidebar.
-- Uploaded CIF files are parsed with `ase.io.read(...)`.
-- Parsed ASE `Atoms` objects are stored in `st.session_state`.
-- The active structure can be switched between the uploaded cell and a symmetry-reduced primitive cell.
+- The `Structure` page now provides a shared `Import / Build Structure` workflow with:
+  - ASE-backed file import for CIF, VASP `POSCAR` / `CONTCAR`, XSF, and periodic XYZ / extXYZ
+  - a manual crystal builder for lattice parameters plus atomic positions
+  - a prototype builder for ordered cubic double perovskites `A2BB'X6`
+- Structure parsing, builder validation, and prototype generation now live in `structure_sources.py`.
+- Structure commit logic, deterministic structure signatures, provenance tracking, and invalidation rules now live in `structure_state.py`.
+- Source and active ASE `Atoms` objects are stored in `st.session_state`.
+- The active structure can be switched between the source cell and a symmetry-reduced primitive cell.
 - The `Structure` page renders the active structure with `py3Dmol`.
 - The `Setup` page handles:
   - SSSP pseudopotential resolution
@@ -36,6 +40,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - band-structure workflow execution
   - live logs and artifact summaries
 - The app can launch `pw.x`, `dos.x`, and `bands.x` locally, stream live terminal output, and save logs under `qe_runs/`.
+- The app records deterministic structure provenance under `qe_runs/qe_studio_provenance.json` and surfaces stale / out-of-sync warnings on `Setup`, `Run`, and `Analysis`.
 - The `Analysis` page detects QE analysis artifacts in `qe_runs/` and renders DOS and band-structure charts from real QE post-processing files.
 - `project_context.py` now centralizes lightweight session-plus-disk summaries for the shared shell and page prerequisites.
 - Heavy DOS and band parsing remains inside `ui_analysis.py`; the shared context stays summary-only.
@@ -45,6 +50,8 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - `app.py`: shared Streamlit shell, navigation, workflow indicator, and persistent sidebar summary
 - `project_context.py`: lightweight cross-page state and disk summary helpers
+- `structure_sources.py`: structure import adapters, manual-builder validation, and prototype generation
+- `structure_state.py`: structure state, signatures, provenance, cell-mode switching, and invalidation helpers
 - `ui_structure.py`: Structure page UI
 - `ui_setup.py`: Setup page UI
 - `ui_run.py`: Run page UI
@@ -60,6 +67,40 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-04-06
+
+- Reworked the `Structure` page from a CIF-only upload flow into a multi-source `Import / Build Structure` workflow.
+- Added ASE-backed file import for:
+  - CIF
+  - VASP `POSCAR` / `CONTCAR`
+  - XSF
+  - periodic XYZ / extXYZ when a valid 3D lattice is present
+- Added a manual crystal builder with validation for:
+  - lattice parameters
+  - coordinate mode
+  - atomic species and positions
+  - duplicate / malformed rows
+  - optional formula consistency checks
+- Added a first prototype builder for ordered cubic double perovskites `A2BB'X6`.
+- Split structure-specific logic out of `project_context.py` into:
+  - `structure_sources.py` for structure ingestion and builder validation
+  - `structure_state.py` for structure commit logic, source / primitive mode handling, deterministic signatures, provenance, and stale-state invalidation
+- Replaced the old `uploaded` structure-mode language with `source`, while keeping legacy compatibility where needed.
+- Added a deterministic structure signature based on normalized cell, wrapped fractional positions, species, and atom count.
+- Added persisted provenance tracking in `qe_runs/qe_studio_provenance.json` for:
+  - generated `pw.in`
+  - base `pw.x` runs
+  - DOS workflow outputs
+  - bands workflow outputs
+- Added stale / out-of-sync warnings across `Setup`, `Run`, and `Analysis` when the active structure no longer matches saved input or artifacts.
+- Updated tests to cover:
+  - structure signatures
+  - file import formats
+  - manual builder validation
+  - prototype generation
+  - provenance and invalidation behavior
+- Added `numpy` as a direct runtime dependency for structure normalization and validation helpers.
 
 ### 2026-03-24
 
@@ -256,9 +297,10 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Known Limitations
 
-- Only the first structure in a CIF file is loaded.
-- No structure editing tools exist yet.
-- No persistent storage exists beyond the active Streamlit session.
+- Only the first structure in a supported multi-structure file is loaded.
+- The prototype builder currently supports only ordered cubic double perovskites `A2BB'X6`.
+- Database-backed import, pasted structure text, and QE-input import are not implemented yet.
+- No persistent storage exists for the active structure or builder drafts beyond the active Streamlit session.
 - A hard browser refresh resets Streamlit session state.
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
@@ -268,10 +310,13 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Next Likely Steps
 
+- Add database-backed structure import through Materials Project, COD, or OPTIMADE.
+- Add pasted-structure-text and QE-input import adapters under the same source-selector workflow.
+- Add more crystal prototypes after the ordered cubic double perovskite builder is stable.
+- Add support for selecting among multiple structures in supported multi-structure files if needed.
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
 - Continue polishing the shared shell styling and card layouts for a more dashboard-like presentation.
 - Add manual pseudopotential override controls.
-- Add support for selecting among multiple structures in CIF files if needed.
 - Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
 - Extend electronic-properties analysis to PDOS from `projwfc.x`.
@@ -281,6 +326,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 ## AI Context Notes
 
 - The repo is no longer centered on a single large `app.py`; the UI is split across dedicated page modules plus `project_context.py`.
+- `project_context.py` should remain summary-focused; structure ingestion, validation, signatures, provenance, and invalidation now live in `structure_sources.py` and `structure_state.py`.
 - The local virtual environment directory `venv/` exists and has already been used to install dependencies.
 - There is no git repository initialized at the moment.
 - The current architecture should preserve the lightweight shared context rule:

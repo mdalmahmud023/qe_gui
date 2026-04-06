@@ -51,7 +51,12 @@ def render_sidebar_project_summary(ctx) -> None:
         st.caption("Structure")
         if ctx.structure.loaded:
             st.write(ctx.structure.formula or "Unknown")
-            st.caption(f"{ctx.structure.cell_mode_label} • {ctx.structure.atom_count} atoms")
+            structure_bits = [ctx.structure.cell_mode_label, f"{ctx.structure.atom_count} atoms"]
+            if ctx.structure.source_kind_label:
+                structure_bits.append(ctx.structure.source_kind_label)
+            st.caption(" • ".join(structure_bits))
+            if ctx.structure.source_label:
+                st.caption(ctx.structure.source_label)
         else:
             st.write("No structure loaded")
 
@@ -66,6 +71,8 @@ def render_sidebar_project_summary(ctx) -> None:
             st.caption(str(ctx.input_files.ui_path))
         elif ctx.input_files.blocker_message:
             st.caption(ctx.input_files.blocker_message)
+        if ctx.input_files.provenance_message:
+            st.caption(ctx.input_files.provenance_message)
 
         st.caption("Run Status")
         st.write(ctx.jobs.latest_status_label)
@@ -79,6 +86,8 @@ def render_sidebar_project_summary(ctx) -> None:
             f"Metadata: {'Yes' if ctx.artifacts.metadata_detected else 'No'}",
         ]
         st.caption(" • ".join(artifact_flags))
+        if ctx.artifacts.provenance_message:
+            st.caption(ctx.artifacts.provenance_message)
 
 
 def render_workflow_indicator(active_title: str) -> None:

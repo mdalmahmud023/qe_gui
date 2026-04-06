@@ -40,6 +40,8 @@ def render_page(ctx: ProjectContext) -> None:
     """Render the Analysis page."""
     st.subheader("Analysis")
     st.caption("Review the generated electronic-property artifacts as a clean results dashboard.")
+    if ctx.artifacts.provenance_message:
+        st.warning(ctx.artifacts.provenance_message)
 
     analysis_files = ctx.analysis_files
     if not analysis_files.has_any_artifact:

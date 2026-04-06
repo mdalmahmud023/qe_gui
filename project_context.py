@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import io
-import os
-import re
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
-from ase.io import read
 
 from electronic_properties import AnalysisFiles, find_available_analysis_files
-from pseudopotentials import get_structure_signature, has_same_element_set
 from qe_runner import (
     RUN_ACTIVE_STATE_KEY,
     RUN_FINISHED_STATE_KEY,
@@ -22,51 +17,73 @@ from qe_runner import (
     RUN_RETURNCODE_STATE_KEY,
     RUN_TAIL_LINES_STATE_KEY,
     initialize_run_state,
-    reset_run_state,
 )
-from structure_tools import make_primitive_atoms
+from structure_state import (
+    ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY,
+    ATOMS_STATE_KEY,
+    AUTO_BAND_PATH_POINTS_WIDGET_KEY,
+    AUTO_BAND_PATH_STATUS_STATE_KEY,
+    BAND_ALIGNMENT_MODE_WIDGET_KEY,
+    BAND_COORDINATE_MODE_WIDGET_KEY,
+    BAND_NBND_WIDGET_KEY,
+    BAND_PATH_WIDGET_KEY,
+    CIF_BYTES_STATE_KEY,
+    DEFAULT_PSEUDO_SETTINGS,
+    DOS_ALIGNMENT_WIDGET_KEY,
+    ERROR_STATE_KEY,
+    FILENAME_STATE_KEY,
+    PSEUDO_DIR_STATE_KEY,
+    PSEUDO_FUNCTIONAL_OPTIONS,
+    PSEUDO_FUNCTIONAL_WIDGET_KEY,
+    PSEUDO_MODE_OPTIONS,
+    PSEUDO_MODE_WIDGET_KEY,
+    PSEUDO_RESOLVED_MAP_STATE_KEY,
+    PSEUDO_RESOLVED_ROWS_STATE_KEY,
+    PSEUDO_RESOLUTION_STATUS_STATE_KEY,
+    PSEUDO_SETTINGS_STATE_KEY,
+    PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY,
+    PSEUDO_USE_CACHE_WIDGET_KEY,
+    PSEUDO_VERSION_OPTIONS,
+    PSEUDO_VERSION_WIDGET_KEY,
+    PROVENANCE_RECORD_BANDS,
+    PROVENANCE_RECORD_BASE_RUN,
+    PROVENANCE_RECORD_DOS,
+    PROVENANCE_RECORD_INPUT,
+    QE_INPUT_INTERNAL_PATH_STATE_KEY,
+    QE_INPUT_TEXT_STATE_KEY,
+    QE_INPUT_UI_PATH_STATE_KEY,
+    RAW_ATOMS_STATE_KEY,
+    SOURCE_FORMAT_STATE_KEY,
+    SOURCE_KIND_STATE_KEY,
+    SOURCE_LABEL_STATE_KEY,
+    STRUCTURE_MODE_OPTIONS,
+    STRUCTURE_MODE_STATE_KEY,
+    STRUCTURE_MODE_STATUS_STATE_KEY,
+    apply_structure_mode_selection,
+    clear_generated_qe_input_state,
+    clear_pseudopotential_state,
+    clear_structure_state,
+    commit_structure_source,
+    compare_current_structure_to_record,
+    get_current_active_structure_signature,
+    get_current_pseudo_settings,
+    get_current_raw_structure_signature,
+    get_structure_mode,
+    has_resolved_pseudopotential_data,
+    load_provenance,
+    mark_pseudopotentials_stale,
+    normalize_structure_mode,
+    record_generated_input_provenance,
+    record_workflow_provenance,
+    set_resolution_status,
+    set_structure_error,
+    sync_pseudopotential_settings_state,
+)
 
 
-ATOMS_STATE_KEY = "structure_atoms"
-RAW_ATOMS_STATE_KEY = "structure_raw_atoms"
-CIF_BYTES_STATE_KEY = "structure_cif_bytes"
-FILENAME_STATE_KEY = "structure_filename"
-ERROR_STATE_KEY = "structure_error"
-STRUCTURE_MODE_STATE_KEY = "structure_mode"
-STRUCTURE_MODE_STATUS_STATE_KEY = "structure_mode_status"
 QE_PARAMS_STATE_KEY = "qe_parameters"
-QE_INPUT_TEXT_STATE_KEY = "qe_input_text"
-QE_INPUT_INTERNAL_PATH_STATE_KEY = "qe_input_internal_path"
-QE_INPUT_UI_PATH_STATE_KEY = "qe_input_ui_path"
-PSEUDO_SETTINGS_STATE_KEY = "pseudo_settings"
-PSEUDO_DIR_STATE_KEY = "pseudo_dir"
-PSEUDO_RESOLVED_MAP_STATE_KEY = "pseudo_resolved_map"
-PSEUDO_RESOLVED_ROWS_STATE_KEY = "pseudo_resolved_rows"
-PSEUDO_RESOLUTION_STATUS_STATE_KEY = "pseudo_resolution_status"
-PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY = "pseudo_structure_signature"
-
-PSEUDO_FUNCTIONAL_WIDGET_KEY = "pseudo_widget_functional"
-PSEUDO_MODE_WIDGET_KEY = "pseudo_widget_mode"
-PSEUDO_VERSION_WIDGET_KEY = "pseudo_widget_version"
-PSEUDO_USE_CACHE_WIDGET_KEY = "pseudo_widget_use_cache"
-BAND_NBND_WIDGET_KEY = "band_nbnd_widget"
-BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
-BAND_PATH_WIDGET_KEY = "band_path_widget"
-AUTO_BAND_PATH_POINTS_WIDGET_KEY = "auto_band_path_points_widget"
-AUTO_BAND_PATH_STATUS_STATE_KEY = "auto_band_path_status"
-BAND_ALIGNMENT_MODE_WIDGET_KEY = "band_alignment_mode_widget"
-DOS_ALIGNMENT_WIDGET_KEY = "dos_align_to_fermi"
-
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
 QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")
-PSEUDO_FUNCTIONAL_OPTIONS = ("PBE", "PBEsol")
-PSEUDO_MODE_OPTIONS = ("efficiency", "precision")
-PSEUDO_VERSION_OPTIONS = ("1.3.0",)
-DEFAULT_PSEUDO_SETTINGS = {
-    "functional": "PBE",
-    "mode": "efficiency",
-    "version": "1.3.0",
-}
 
 QE_RUNS_DIR = Path("qe_runs")
 QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
@@ -91,13 +108,16 @@ BAND_COORDINATE_MODE_OPTIONS = ("crystal_b", "tpiba_b")
 BAND_ALIGNMENT_MODE_OPTIONS = ("vbm", "fermi", "raw")
 DEFAULT_BAND_ALIGNMENT_MODE = "vbm"
 DEFAULT_BAND_PATH_TEXT = "0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 20 ! X\n0.5 0.5 0.5 1 ! L\n"
-STRUCTURE_MODE_OPTIONS = ("uploaded", "primitive")
 
 
 @dataclass(frozen=True)
 class StructureSummary:
     loaded: bool
     filename: str | None
+    source_kind: str | None
+    source_kind_label: str | None
+    source_label: str | None
+    source_format: str | None
     formula: str | None
     atom_count: int
     cell_mode: str
@@ -127,6 +147,8 @@ class InputSummary:
     ui_path: Path
     internal_path: Path
     has_preview: bool
+    provenance_state: str
+    provenance_message: str | None
 
 
 @dataclass(frozen=True)
@@ -150,6 +172,8 @@ class ArtifactSummary:
     band_file: Path | None
     band_input_file: Path | None
     pw_output_file: Path | None
+    provenance_state: str
+    provenance_message: str | None
 
 
 @dataclass(frozen=True)
@@ -165,99 +189,8 @@ class ProjectContext:
     artifacts: ArtifactSummary
 
 
-def clear_generated_qe_input_state() -> None:
-    """Remove generated QE input preview state."""
-    for key in (
-        QE_INPUT_TEXT_STATE_KEY,
-        QE_INPUT_INTERNAL_PATH_STATE_KEY,
-        QE_INPUT_UI_PATH_STATE_KEY,
-        AUTO_BAND_PATH_STATUS_STATE_KEY,
-    ):
-        st.session_state.pop(key, None)
-
-
-def clear_pseudopotential_state(*, clear_structure_signature: bool = True) -> None:
-    """Remove stored pseudopotential resolution state."""
-    clear_generated_qe_input_state()
-    for key in (
-        PSEUDO_DIR_STATE_KEY,
-        PSEUDO_RESOLVED_MAP_STATE_KEY,
-        PSEUDO_RESOLVED_ROWS_STATE_KEY,
-        PSEUDO_RESOLUTION_STATUS_STATE_KEY,
-    ):
-        st.session_state.pop(key, None)
-    if clear_structure_signature:
-        st.session_state.pop(PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY, None)
-
-
-def clear_structure_state() -> None:
-    """Remove stored structure and dependent state."""
-    clear_pseudopotential_state(clear_structure_signature=True)
-    for key in (
-        ATOMS_STATE_KEY,
-        RAW_ATOMS_STATE_KEY,
-        CIF_BYTES_STATE_KEY,
-        FILENAME_STATE_KEY,
-        ERROR_STATE_KEY,
-        STRUCTURE_MODE_STATE_KEY,
-        STRUCTURE_MODE_STATUS_STATE_KEY,
-    ):
-        st.session_state.pop(key, None)
-
-
-def parse_cif_bytes(cif_bytes: bytes):
-    """Parse the first CIF structure block into ASE atoms."""
-    return read(io.BytesIO(cif_bytes), format="cif", index=0)
-
-
-def get_structure_mode() -> str:
-    """Return the current structure-mode selection."""
-    return st.session_state.get(STRUCTURE_MODE_STATE_KEY, "uploaded")
-
-
-def resolve_atoms_for_structure_mode(raw_atoms, mode: str) -> tuple[object, str, str]:
-    """Return the active atoms object for the selected structure mode."""
-    if raw_atoms is None:
-        raise ValueError("No structure is loaded.")
-
-    if mode != "primitive":
-        return raw_atoms.copy(), "uploaded", "Using the uploaded cell."
-
-    try:
-        primitive_result = make_primitive_atoms(raw_atoms)
-    except Exception as exc:
-        return raw_atoms.copy(), "uploaded", f"Primitive-cell reduction failed; using the uploaded cell instead: {exc}"
-    return primitive_result.atoms, "primitive", primitive_result.message
-
-
-def apply_structure_mode_selection(mode: str, *, preserve_resolution_status: bool = True) -> None:
-    """Apply a new active structure mode using the stored raw uploaded structure."""
-    raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
-    if raw_atoms is None:
-        return
-
-    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(raw_atoms, mode)
-    st.session_state[ATOMS_STATE_KEY] = active_atoms
-    st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
-    st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = status_message
-    st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = get_structure_signature(active_atoms)
-    clear_generated_qe_input_state()
-    reset_run_state(st.session_state)
-
-    if preserve_resolution_status and has_resolved_pseudopotential_data():
-        status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY)
-        if status and status.get("state") == "resolved":
-            set_resolution_status(
-                state="resolved",
-                message=status.get("message", "Resolved pseudopotentials are available."),
-                warnings=list(status.get("warnings", [])),
-                resolved_settings=status.get("resolved_settings"),
-                resolved_structure_signature=get_structure_signature(active_atoms),
-            )
-
-
 def format_cell_parameters(atoms) -> str:
-    """Format basic cell parameters for sidebar and structure display."""
+    """Format basic cell parameters for structure display."""
     a, b, c, alpha, beta, gamma = atoms.cell.cellpar()
     return (
         f"a = {a:.3f} A\n"
@@ -267,124 +200,6 @@ def format_cell_parameters(atoms) -> str:
         f"beta = {beta:.2f} deg\n"
         f"gamma = {gamma:.2f} deg"
     )
-
-
-def has_resolved_pseudopotential_data() -> bool:
-    """Return whether resolved pseudopotential data is present in session state."""
-    return bool(
-        st.session_state.get(PSEUDO_DIR_STATE_KEY)
-        and st.session_state.get(PSEUDO_RESOLVED_MAP_STATE_KEY)
-        and st.session_state.get(PSEUDO_RESOLVED_ROWS_STATE_KEY)
-    )
-
-
-def set_resolution_status(
-    *,
-    state: str,
-    message: str,
-    warnings: list[str] | None = None,
-    resolved_settings: dict | None = None,
-    resolved_structure_signature: dict | None = None,
-) -> None:
-    """Store a consistent pseudopotential resolution status payload."""
-    current_status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
-    st.session_state[PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
-        "state": state,
-        "message": message,
-        "warnings": list(warnings or []),
-        "resolved_settings": resolved_settings or current_status.get("resolved_settings"),
-        "resolved_structure_signature": (
-            resolved_structure_signature or current_status.get("resolved_structure_signature")
-        ),
-    }
-
-
-def mark_pseudopotentials_stale(message: str) -> None:
-    """Keep the previous resolution visible, but block new QE generation."""
-    if not has_resolved_pseudopotential_data():
-        return
-    clear_generated_qe_input_state()
-    set_resolution_status(state="stale", message=message)
-
-
-def get_current_pseudo_settings() -> dict:
-    """Return the active pseudopotential selector values."""
-    return {
-        "functional": st.session_state.get(PSEUDO_FUNCTIONAL_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["functional"]),
-        "mode": st.session_state.get(PSEUDO_MODE_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["mode"]),
-        "version": st.session_state.get(PSEUDO_VERSION_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["version"]),
-    }
-
-
-def sync_pseudopotential_settings_state() -> None:
-    """Persist current widget selections and mark stale on supported setting changes."""
-    current_settings = get_current_pseudo_settings()
-    st.session_state[PSEUDO_SETTINGS_STATE_KEY] = current_settings
-
-    status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY)
-    if not status or status.get("state") != "resolved" or not has_resolved_pseudopotential_data():
-        return
-
-    resolved_settings = status.get("resolved_settings") or {}
-    if any(current_settings[key] != resolved_settings.get(key) for key in ("functional", "mode", "version")):
-        mark_pseudopotentials_stale(
-            "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input."
-        )
-
-
-def store_uploaded_structure(uploaded_file) -> bool:
-    """Parse, store, and invalidate dependent state for an uploaded CIF file."""
-    if uploaded_file is None:
-        had_state = any(
-            st.session_state.get(key) is not None
-            for key in (ATOMS_STATE_KEY, RAW_ATOMS_STATE_KEY, CIF_BYTES_STATE_KEY, FILENAME_STATE_KEY, ERROR_STATE_KEY)
-        )
-        clear_structure_state()
-        return had_state
-
-    cif_bytes = uploaded_file.getvalue()
-    if cif_bytes == st.session_state.get(CIF_BYTES_STATE_KEY):
-        return False
-
-    try:
-        raw_atoms = parse_cif_bytes(cif_bytes)
-    except Exception as exc:
-        clear_structure_state()
-        st.session_state[ERROR_STATE_KEY] = f"Failed to parse CIF file: {exc}"
-        return True
-
-    requested_mode = get_structure_mode()
-    try:
-        atoms, resolved_mode, structure_mode_message = resolve_atoms_for_structure_mode(raw_atoms, requested_mode)
-    except Exception as exc:
-        clear_structure_state()
-        st.session_state[ERROR_STATE_KEY] = f"Failed to prepare the selected structure mode: {exc}"
-        return True
-
-    previous_pseudo_signature = st.session_state.get(PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY)
-    new_structure_signature = get_structure_signature(atoms)
-    had_resolved_data = has_resolved_pseudopotential_data()
-
-    clear_generated_qe_input_state()
-    if had_resolved_data and previous_pseudo_signature:
-        if has_same_element_set(previous_pseudo_signature, new_structure_signature):
-            mark_pseudopotentials_stale(
-                "The uploaded structure changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input."
-            )
-        else:
-            clear_pseudopotential_state(clear_structure_signature=False)
-    elif st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY):
-        clear_pseudopotential_state(clear_structure_signature=False)
-
-    st.session_state[RAW_ATOMS_STATE_KEY] = raw_atoms
-    st.session_state[ATOMS_STATE_KEY] = atoms
-    st.session_state[CIF_BYTES_STATE_KEY] = cif_bytes
-    st.session_state[FILENAME_STATE_KEY] = uploaded_file.name
-    st.session_state[ERROR_STATE_KEY] = None
-    st.session_state[STRUCTURE_MODE_STATE_KEY] = resolved_mode
-    st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = structure_mode_message
-    st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = new_structure_signature
-    return True
 
 
 def initialize_job_summaries_state() -> None:
@@ -469,22 +284,15 @@ def build_project_context(run_dir: Path = QE_RUNS_DIR) -> ProjectContext:
     run_dir = Path(run_dir)
     atoms = st.session_state.get(ATOMS_STATE_KEY)
     raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+    current_signature = get_current_active_structure_signature()
+    provenance = load_provenance(run_dir)
     analysis_files = find_available_analysis_files(run_dir)
 
     structure_summary = _build_structure_summary(atoms)
     pseudo_summary = _build_pseudopotential_summary()
-    input_summary = _build_input_summary(atoms, run_dir)
+    input_summary = _build_input_summary(atoms, run_dir, current_signature, provenance)
     job_summary = _build_job_status_summary()
-    artifact_summary = ArtifactSummary(
-        has_any_artifact=analysis_files.has_any_artifact,
-        dos_detected=analysis_files.dos_detected,
-        bands_detected=analysis_files.bands_detected,
-        metadata_detected=analysis_files.metadata_detected,
-        dos_file=analysis_files.dos_file,
-        band_file=analysis_files.band_file,
-        band_input_file=analysis_files.band_input_file,
-        pw_output_file=analysis_files.pw_output_file,
-    )
+    artifact_summary = _build_artifact_summary(analysis_files, current_signature, provenance)
 
     return ProjectContext(
         run_dir=run_dir,
@@ -500,15 +308,24 @@ def build_project_context(run_dir: Path = QE_RUNS_DIR) -> ProjectContext:
 
 
 def _build_structure_summary(atoms) -> StructureSummary:
-    filename = st.session_state.get(FILENAME_STATE_KEY)
+    source_kind = st.session_state.get(SOURCE_KIND_STATE_KEY)
+    source_kind_label = {
+        "file": "Imported File",
+        "manual": "Manual Builder",
+        "prototype": "Prototype Builder",
+    }.get(source_kind)
     cell_mode = get_structure_mode()
     return StructureSummary(
         loaded=atoms is not None,
-        filename=filename,
+        filename=st.session_state.get(FILENAME_STATE_KEY),
+        source_kind=source_kind,
+        source_kind_label=source_kind_label,
+        source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
+        source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
         formula=atoms.get_chemical_formula() if atoms is not None else None,
         atom_count=len(atoms) if atoms is not None else 0,
         cell_mode=cell_mode,
-        cell_mode_label="Primitive Cell" if cell_mode == "primitive" else "Uploaded Cell",
+        cell_mode_label="Primitive Cell" if cell_mode == "primitive" else "Source Cell",
         mode_status=st.session_state.get(STRUCTURE_MODE_STATUS_STATE_KEY),
         cell_parameters=format_cell_parameters(atoms) if atoms is not None else None,
         error_message=st.session_state.get(ERROR_STATE_KEY),
@@ -537,7 +354,12 @@ def _build_pseudopotential_summary() -> PseudopotentialSummary:
     )
 
 
-def _build_input_summary(atoms, run_dir: Path) -> InputSummary:
+def _build_input_summary(
+    atoms,
+    run_dir: Path,
+    current_signature: dict[str, Any] | None,
+    provenance: dict[str, Any],
+) -> InputSummary:
     ui_path = Path(st.session_state.get(QE_INPUT_UI_PATH_STATE_KEY, run_dir / "pw.in"))
     internal_path = Path(st.session_state.get(QE_INPUT_INTERNAL_PATH_STATE_KEY, run_dir / "espresso.pwi"))
     has_session_preview = bool(st.session_state.get(QE_INPUT_TEXT_STATE_KEY))
@@ -551,6 +373,14 @@ def _build_input_summary(atoms, run_dir: Path) -> InputSummary:
         status_label = "Blocked"
     else:
         status_label = "Not generated"
+
+    provenance_state, provenance_message = _resolve_provenance_status(
+        current_signature,
+        provenance.get("records", {}).get(PROVENANCE_RECORD_INPUT),
+        subject_label="QE input files",
+        record_available=available,
+    )
+
     return InputSummary(
         available=available,
         status_label=status_label,
@@ -559,6 +389,8 @@ def _build_input_summary(atoms, run_dir: Path) -> InputSummary:
         ui_path=ui_path,
         internal_path=internal_path,
         has_preview=available,
+        provenance_state=provenance_state,
+        provenance_message=provenance_message,
     )
 
 
@@ -591,9 +423,97 @@ def _build_job_status_summary() -> JobStatusSummary:
     )
 
 
+def _build_artifact_summary(
+    analysis_files: AnalysisFiles,
+    current_signature: dict[str, Any] | None,
+    provenance: dict[str, Any],
+) -> ArtifactSummary:
+    comparisons: list[tuple[str, str | None]] = []
+    records = provenance.get("records", {})
+
+    if analysis_files.pw_output_file is not None:
+        comparisons.append(
+            _resolve_provenance_status(
+                current_signature,
+                records.get(PROVENANCE_RECORD_BASE_RUN),
+                subject_label="base-run artifacts",
+                record_available=True,
+            )
+        )
+    if analysis_files.dos_detected:
+        comparisons.append(
+            _resolve_provenance_status(
+                current_signature,
+                records.get(PROVENANCE_RECORD_DOS),
+                subject_label="DOS artifacts",
+                record_available=True,
+            )
+        )
+    if analysis_files.bands_detected:
+        comparisons.append(
+            _resolve_provenance_status(
+                current_signature,
+                records.get(PROVENANCE_RECORD_BANDS),
+                subject_label="band-structure artifacts",
+                record_available=True,
+            )
+        )
+
+    provenance_state = "unknown"
+    provenance_message = None
+    if comparisons:
+        states = [state for state, _message in comparisons]
+        messages = [message for _state, message in comparisons if message]
+        if any(state == "out_of_sync" for state in states):
+            provenance_state = "out_of_sync"
+            provenance_message = messages[0] if messages else (
+                "One or more saved artifacts belong to a different active structure."
+            )
+        elif all(state == "in_sync" for state in states):
+            provenance_state = "in_sync"
+        elif messages:
+            provenance_state = "unknown"
+            provenance_message = messages[0]
+
+    return ArtifactSummary(
+        has_any_artifact=analysis_files.has_any_artifact,
+        dos_detected=analysis_files.dos_detected,
+        bands_detected=analysis_files.bands_detected,
+        metadata_detected=analysis_files.metadata_detected,
+        dos_file=analysis_files.dos_file,
+        band_file=analysis_files.band_file,
+        band_input_file=analysis_files.band_input_file,
+        pw_output_file=analysis_files.pw_output_file,
+        provenance_state=provenance_state,
+        provenance_message=provenance_message,
+    )
+
+
+def _resolve_provenance_status(
+    current_signature: dict[str, Any] | None,
+    record: dict[str, Any] | None,
+    *,
+    subject_label: str,
+    record_available: bool,
+) -> tuple[str, str | None]:
+    if not record_available or current_signature is None:
+        return "unknown", None
+    if not record or not isinstance(record.get("structure_signature"), dict):
+        return (
+            "unknown",
+            f"Saved {subject_label} exist, but their provenance is unavailable, so QE Studio cannot confirm they match the current structure.",
+        )
+    comparison = compare_current_structure_to_record(
+        current_signature,
+        record.get("structure_signature"),
+        subject_label=subject_label,
+    )
+    return comparison.state, comparison.message
+
+
 def _get_qe_generation_blocker_message(atoms) -> str | None:
     if atoms is None:
-        return "Upload a CIF file before generating a Quantum ESPRESSO input file."
+        return "Load or build a structure before generating a Quantum ESPRESSO input file."
 
     if not has_resolved_pseudopotential_data():
         return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."

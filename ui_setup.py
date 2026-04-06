@@ -36,6 +36,7 @@ from project_context import (
     get_current_pseudo_settings,
     has_resolved_pseudopotential_data,
     mark_pseudopotentials_stale,
+    record_generated_input_provenance,
     set_resolution_status,
     sync_pseudopotential_settings_state,
 )
@@ -56,7 +57,7 @@ def render_page(ctx: ProjectContext) -> None:
 
     if not ctx.structure.loaded:
         st.info(
-            "No structure is loaded in this session. Upload a CIF file on the Structure page to enable pseudopotential resolution and new QE input generation."
+            "No structure is loaded in this session. Load or build a structure on the Structure page to enable pseudopotential resolution and new QE input generation."
         )
         if ctx.input_files.available:
             st.caption("An existing generated input is still available from session state or disk.")
@@ -240,6 +241,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             st.info(blocker_message)
         else:
             st.warning(blocker_message)
+    if ctx.input_files.provenance_message:
+        st.warning(ctx.input_files.provenance_message)
     elif run_active:
         st.info("Wait for the active calculation to finish before generating a new `pw.in` file.")
 
@@ -328,6 +331,11 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
     st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = internal_path
     st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = ui_path
+    record_generated_input_provenance(
+        QE_RUNS_DIR,
+        ui_path=ui_path,
+        internal_path=internal_path,
+    )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
 
@@ -466,7 +474,7 @@ def generate_qe_input_file(
 
 def get_qe_generation_blocker_message(atoms) -> str | None:
     if atoms is None:
-        return "Upload a CIF file before generating a Quantum ESPRESSO input file."
+        return "Load or build a structure before generating a Quantum ESPRESSO input file."
 
     if not has_resolved_pseudopotential_data():
         return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."

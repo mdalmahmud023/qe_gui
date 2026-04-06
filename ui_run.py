@@ -41,6 +41,9 @@ from project_context import (
     JOB_OWNER_BANDS,
     JOB_OWNER_DOS,
     JOB_OWNER_PW,
+    PROVENANCE_RECORD_BANDS,
+    PROVENANCE_RECORD_BASE_RUN,
+    PROVENANCE_RECORD_DOS,
     ProjectContext,
     QE_OUTPUT_FILENAME,
     QE_RUN_COMMAND,
@@ -48,6 +51,7 @@ from project_context import (
     get_active_job_label,
     get_active_job_owner,
     get_job_summary,
+    record_workflow_provenance,
     get_structure_mode,
     sync_active_job_summary_from_run_state,
     update_job_summary,
@@ -84,6 +88,10 @@ def render_page(ctx: ProjectContext) -> None:
 
     if ctx.jobs.run_active and ctx.jobs.latest_status_detail:
         st.info(f"Active job: `{ctx.jobs.latest_status_detail}`. Live console output is available below.")
+    if ctx.input_files.provenance_message:
+        st.warning(ctx.input_files.provenance_message)
+    if ctx.artifacts.provenance_message:
+        st.warning(ctx.artifacts.provenance_message)
 
     render_artifact_status_table(ctx)
     st.divider()
@@ -398,6 +406,8 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
     st.caption(f"Command: `{' '.join(QE_RUN_COMMAND)}`")
     st.caption(f"Input file: `{input_path}`")
     st.caption(f"Full output log: `{output_path_text}`")
+    if ctx.input_files.provenance_message:
+        st.warning(ctx.input_files.provenance_message)
 
     run_clicked = st.button(
         "Run Calculation",
@@ -410,6 +420,14 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
             st.error("Quantum ESPRESSO executable `pw.x` was not found on your PATH.")
         else:
             try:
+                record_workflow_provenance(
+                    QE_RUNS_DIR,
+                    PROVENANCE_RECORD_BASE_RUN,
+                    paths={
+                        "pw.in": str(input_path),
+                        "pw.out": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME),
+                    },
+                )
                 start_managed_qe_job(
                     owner=JOB_OWNER_PW,
                     job_label="Run Calculation",
@@ -517,6 +535,15 @@ def render_dos_runner_subsection() -> None:
                     degauss_ry=degauss_ry if bz_sum == "smearing" else None,
                 )
                 dos_input_path.write_text(dos_input_text, encoding="utf-8")
+                record_workflow_provenance(
+                    QE_RUNS_DIR,
+                    PROVENANCE_RECORD_DOS,
+                    paths={
+                        "dos.in": str(dos_input_path),
+                        "dos.out": str(dos_log_path),
+                        dos_data_name: str(dos_data_path),
+                    },
+                )
                 start_managed_qe_job(
                     owner=JOB_OWNER_DOS,
                     job_label="Density of States (DOS)",
@@ -646,6 +673,18 @@ def render_band_workflow_subsection(ctx: ProjectContext) -> None:
                     band_path_text=band_path_text,
                 )
                 bands_pw_input_path.write_text(bands_pw_text, encoding="utf-8")
+                record_workflow_provenance(
+                    QE_RUNS_DIR,
+                    PROVENANCE_RECORD_BANDS,
+                    paths={
+                        "bands_pw.in": str(bands_pw_input_path),
+                        "bands_pw.out": str(bands_pw_log_path),
+                        "bands_pp.in": str(bands_pp_input_path),
+                        "bands_pp.out": str(bands_pp_log_path),
+                        "filband": str(filband_path),
+                        "filband.gnu": str(filband_gnu_path),
+                    },
+                )
 
                 def prepare_bands_pp_input() -> None:
                     bands_pp_text = build_bands_pp_input_text(
