@@ -113,6 +113,21 @@ class StructureStateTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record["structure_signature"]["hash"], st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY]["hash"])
 
+    def test_commit_structure_source_can_explicitly_reset_to_source_mode(self) -> None:
+        atoms = bulk("Si", "diamond", a=5.43, cubic=True)
+        st.session_state[ss.STRUCTURE_MODE_STATE_KEY] = "primitive"
+
+        ss.commit_structure_source(
+            atoms,
+            source_kind="file",
+            source_label="Si.cif",
+            source_format="cif",
+            requested_mode="source",
+        )
+
+        self.assertEqual(st.session_state[ss.STRUCTURE_MODE_STATE_KEY], "source")
+        self.assertEqual(st.session_state[ss.ATOMS_STATE_KEY].get_chemical_formula(), atoms.get_chemical_formula())
+
 
 if __name__ == "__main__":
     unittest.main()

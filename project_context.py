@@ -53,6 +53,7 @@ from structure_state import (
     QE_INPUT_TEXT_STATE_KEY,
     QE_INPUT_UI_PATH_STATE_KEY,
     RAW_ATOMS_STATE_KEY,
+    SOURCE_DETAILS_STATE_KEY,
     SOURCE_FORMAT_STATE_KEY,
     SOURCE_KIND_STATE_KEY,
     SOURCE_LABEL_STATE_KEY,
@@ -118,6 +119,7 @@ class StructureSummary:
     source_kind_label: str | None
     source_label: str | None
     source_format: str | None
+    source_details: dict[str, Any] | None
     formula: str | None
     atom_count: int
     cell_mode: str
@@ -322,6 +324,7 @@ def _build_structure_summary(atoms) -> StructureSummary:
         source_kind_label=source_kind_label,
         source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
         source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
+        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
         formula=atoms.get_chemical_formula() if atoms is not None else None,
         atom_count=len(atoms) if atoms is not None else 0,
         cell_mode=cell_mode,

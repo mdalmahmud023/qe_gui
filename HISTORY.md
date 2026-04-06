@@ -23,11 +23,16 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - ASE-backed file import for CIF, VASP `POSCAR` / `CONTCAR`, XSF, and periodic XYZ / extXYZ
   - a manual crystal builder for lattice parameters plus atomic positions
   - a prototype builder for ordered cubic double perovskites `A2BB'X6`
+- The `Structure` page now separates draft vs active work more clearly through:
+  - a compact active-structure banner
+  - a centered draft import/build panel
+  - a full-width active inspection panel with a larger viewer and a smaller settings column
 - Structure parsing, builder validation, and prototype generation now live in `structure_sources.py`.
 - Structure commit logic, deterministic structure signatures, provenance tracking, and invalidation rules now live in `structure_state.py`.
+- Viewer-only rendering helpers now live in `structure_viewer.py`.
 - Source and active ASE `Atoms` objects are stored in `st.session_state`.
 - The active structure can be switched between the source cell and a symmetry-reduced primitive cell.
-- The `Structure` page renders the active structure with `py3Dmol`.
+- The `Structure` page renders the active structure with `py3Dmol` and exposes viewer-only controls for labels, style mode, heuristic bonds, unit-cell visibility, species filtering, and small supercell repeats.
 - The `Setup` page handles:
   - SSSP pseudopotential resolution
   - QE input parameter collection
@@ -52,6 +57,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `project_context.py`: lightweight cross-page state and disk summary helpers
 - `structure_sources.py`: structure import adapters, manual-builder validation, and prototype generation
 - `structure_state.py`: structure state, signatures, provenance, cell-mode switching, and invalidation helpers
+- `structure_viewer.py`: viewer-only filtering, repeat expansion, and `py3Dmol` rendering helpers
 - `ui_structure.py`: Structure page UI
 - `ui_setup.py`: Setup page UI
 - `ui_run.py`: Run page UI
@@ -67,6 +73,37 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-04-07
+
+- Reworked the `Structure` page into a more explicit draft-vs-active workspace.
+- Added a compact active-structure banner that keeps the current committed structure visible while users work in the draft area.
+- Split the page into:
+  - `Import / Build Draft`
+  - `Inspect Active Structure`
+- Moved the inspection workspace below the draft panel and centered the draft builder in the page.
+- Expanded the draft panel so its outer box matches the width of the other major Structure-page panels while keeping the form content centered inside it.
+- Rebalanced the inspection workspace so the visualization area is larger than the settings area.
+- Tightened the settings panel layout so label/style selectors stay readable and the bond/unit-cell toggles sit below them instead of wrapping awkwardly.
+- Fixed draft reset actions so file, manual, and prototype drafts reset through nonce-based rerendering instead of mutating active Streamlit widget keys after instantiation.
+- Moved the active `Clear Structure` action and active warnings into the active banner instead of the draft source panel.
+- Changed draft apply behavior so newly applied structures always become active in `Source Cell`.
+- Added `structure_viewer.py` to hold viewer-only rendering logic and keep `ui_structure.py` from mixing scientific structure state with display state.
+- Upgraded the `py3Dmol` viewer with:
+  - label modes
+  - style modes
+  - heuristic bond toggle
+  - unit-cell toggle
+  - species visibility filters
+  - small viewer-only supercell repeats
+  - optional axes in advanced controls
+- Added explicit UI messaging that bonds and supercell repeats are viewer-only and do not change QE inputs or committed structure state.
+- Lightened the shared workflow indicator so it behaves more like a compact progress strip than a set of large dashboard cards.
+- Added tests for:
+  - viewer filtering
+  - viewer repeat expansion
+  - viewer HTML generation
+  - explicit reset-to-source behavior when applying a new structure
 
 ### 2026-04-06
 
@@ -301,11 +338,13 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - The prototype builder currently supports only ordered cubic double perovskites `A2BB'X6`.
 - Database-backed import, pasted structure text, and QE-input import are not implemented yet.
 - No persistent storage exists for the active structure or builder drafts beyond the active Streamlit session.
+- Viewer controls are session-only and do not persist beyond the active Streamlit session.
 - A hard browser refresh resets Streamlit session state.
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
 - Live UI streaming depends on QE executables flushing stdout/stderr as they run.
 - V1 analysis does not support PDOS, fat bands, or projected band weights.
+- Advanced structure-inspection overlays such as coordination polyhedra and local-environment highlighting are not implemented yet.
 - The shared sidebar intentionally shows only lightweight summaries; full DOS/band parsing happens only on the `Analysis` page.
 
 ## Next Likely Steps
@@ -314,6 +353,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Add pasted-structure-text and QE-input import adapters under the same source-selector workflow.
 - Add more crystal prototypes after the ordered cubic double perovskite builder is stable.
 - Add support for selecting among multiple structures in supported multi-structure files if needed.
+- Add advanced structure-inspection overlays such as coordination polyhedra, local environment highlighting, and perovskite-octahedra views.
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
 - Continue polishing the shared shell styling and card layouts for a more dashboard-like presentation.
 - Add manual pseudopotential override controls.
