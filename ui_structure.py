@@ -322,7 +322,6 @@ def _render_manual_builder_mode() -> None:
     gamma_key = _draft_widget_key(MANUAL_GAMMA_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     coordinate_mode_key = _draft_widget_key(MANUAL_COORDINATE_MODE_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     atom_table_key = _draft_widget_key(MANUAL_ATOM_TABLE_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
-    atom_table_rows = st.session_state.setdefault(atom_table_key, _default_manual_atom_rows())
     with st.form("structure_manual_builder_form"):
         formula_text = st.text_input(
             "Formula (optional validation only)",
@@ -348,7 +347,7 @@ def _render_manual_builder_mode() -> None:
             format_func=lambda value: "Fractional" if value == MANUAL_COORDINATE_MODE_FRACTIONAL else "Cartesian",
         )
         atom_rows = st.data_editor(
-            atom_table_rows,
+            _default_manual_atom_rows(),
             key=atom_table_key,
             num_rows="dynamic",
             use_container_width=True,

@@ -86,6 +86,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Rebalanced the inspection workspace so the visualization area is larger than the settings area.
 - Tightened the settings panel layout so label/style selectors stay readable and the bond/unit-cell toggles sit below them instead of wrapping awkwardly.
 - Fixed draft reset actions so file, manual, and prototype drafts reset through nonce-based rerendering instead of mutating active Streamlit widget keys after instantiation.
+- Fixed the manual-builder atom table so `st.data_editor` owns its widget state instead of receiving a plain list through the same session-state key, resolving a crash when opening the manual builder after the nonce-based reset refactor.
 - Moved the active `Clear Structure` action and active warnings into the active banner instead of the draft source panel.
 - Changed draft apply behavior so newly applied structures always become active in `Source Cell`.
 - Added `structure_viewer.py` to hold viewer-only rendering logic and keep `ui_structure.py` from mixing scientific structure state with display state.
