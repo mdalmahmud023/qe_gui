@@ -124,6 +124,38 @@ class StructureSourcesTests(unittest.TestCase):
         self.assertIn(len(result.atoms), {10, 40})
         self.assertGreaterEqual(reduced_formula_units, 1)
         self.assertEqual(atom_counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "H": 6 * reduced_formula_units}))
+        self.assertEqual(result.source_details["prototype_family"], "Ordered Double Perovskite")
+        self.assertEqual(result.source_details["formula_template"], "A2BB'X6")
+
+    def test_build_cubic_perovskite_returns_expected_counts(self) -> None:
+        result = sources.build_cubic_perovskite(
+            a_site="Cs",
+            b_site="Pb",
+            x_site="I",
+            lattice_parameter=6.2,
+        )
+
+        self.assertEqual(result.source_kind, "prototype")
+        self.assertEqual(result.source_label, "Cubic Perovskite (ABX3)")
+        self.assertEqual(Counter(result.atoms.get_chemical_symbols()), Counter({"Cs": 1, "Pb": 1, "I": 3}))
+        self.assertEqual(result.source_details["prototype_family"], "Cubic Perovskite")
+        self.assertEqual(result.source_details["formula_template"], "ABX3")
+
+    def test_build_rocksalt_returns_expected_counts(self) -> None:
+        result = sources.build_rocksalt(
+            a_site="Na",
+            b_site="Cl",
+            lattice_parameter=5.6,
+        )
+
+        self.assertEqual(result.source_kind, "prototype")
+        self.assertEqual(result.source_label, "Rocksalt (AB)")
+        atom_counts = Counter(result.atoms.get_chemical_symbols())
+        reduced_formula_units = atom_counts["Na"]
+        self.assertGreaterEqual(reduced_formula_units, 1)
+        self.assertEqual(atom_counts, Counter({"Na": reduced_formula_units, "Cl": reduced_formula_units}))
+        self.assertEqual(result.source_details["prototype_family"], "Rocksalt")
+        self.assertEqual(result.source_details["formula_template"], "AB")
 
 
 if __name__ == "__main__":

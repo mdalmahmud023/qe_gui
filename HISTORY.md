@@ -22,11 +22,15 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - The `Structure` page now provides a shared `Import / Build Structure` workflow with:
   - ASE-backed file import for CIF, VASP `POSCAR` / `CONTCAR`, XSF, and periodic XYZ / extXYZ
   - a manual crystal builder for lattice parameters plus atomic positions
-  - a prototype builder for ordered cubic double perovskites `A2BB'X6`
+  - a curated prototype builder with:
+    - ordered cubic double perovskites `A2BB'X6`
+    - cubic perovskites `ABX3`
+    - rocksalt `AB`
 - The `Structure` page now separates draft vs active work more clearly through:
   - a compact active-structure banner
   - a centered draft import/build panel
   - a full-width active inspection panel with a larger viewer and a smaller settings column
+- Prototype family registry and shared prototype UI/build definitions now live in `prototype_catalog.py`.
 - Structure parsing, builder validation, and prototype generation now live in `structure_sources.py`.
 - Structure commit logic, deterministic structure signatures, provenance tracking, and invalidation rules now live in `structure_state.py`.
 - Viewer-only rendering helpers now live in `structure_viewer.py`.
@@ -55,6 +59,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - `app.py`: shared Streamlit shell, navigation, workflow indicator, and persistent sidebar summary
 - `project_context.py`: lightweight cross-page state and disk summary helpers
+- `prototype_catalog.py`: curated prototype-family registry and shared prototype UI/build definitions
 - `structure_sources.py`: structure import adapters, manual-builder validation, and prototype generation
 - `structure_state.py`: structure state, signatures, provenance, cell-mode switching, and invalidation helpers
 - `structure_viewer.py`: viewer-only filtering, repeat expansion, and `py3Dmol` rendering helpers
@@ -77,6 +82,14 @@ When future work is done, append a new dated entry and keep the "Current State" 
 ### 2026-04-07
 
 - Reworked the `Structure` page into a more explicit draft-vs-active workspace.
+- Expanded the Prototype Builder from one hardcoded form into a curated family system backed by `prototype_catalog.py`.
+- Added curated prototype families for:
+  - ordered cubic double perovskite `A2BB'X6`
+  - cubic perovskite `ABX3`
+  - rocksalt `AB`
+- Refactored the Prototype Builder UI so users choose a prototype family first and then see only that family’s fields.
+- Added family-scoped prototype draft state so switching prototype families preserves each family’s inputs and reset only clears the current family draft.
+- Standardized prototype metadata so active-structure summaries show human-facing family details instead of raw internal prototype keys.
 - Added a compact active-structure banner that keeps the current committed structure visible while users work in the draft area.
 - Split the page into:
   - `Import / Build Draft`
@@ -336,7 +349,10 @@ When future work is done, append a new dated entry and keep the "Current State" 
 ## Known Limitations
 
 - Only the first structure in a supported multi-structure file is loaded.
-- The prototype builder currently supports only ordered cubic double perovskites `A2BB'X6`.
+- The prototype builder is intentionally curated and currently supports only:
+  - ordered cubic double perovskites `A2BB'X6`
+  - cubic perovskites `ABX3`
+  - rocksalt `AB`
 - Database-backed import, pasted structure text, and QE-input import are not implemented yet.
 - No persistent storage exists for the active structure or builder drafts beyond the active Streamlit session.
 - Viewer controls are session-only and do not persist beyond the active Streamlit session.
@@ -352,7 +368,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Add database-backed structure import through Materials Project, COD, or OPTIMADE.
 - Add pasted-structure-text and QE-input import adapters under the same source-selector workflow.
-- Add more crystal prototypes after the ordered cubic double perovskite builder is stable.
+- Add the next curated prototype families only if they stay low-risk, especially fluorite `AX2` and carefully scoped anti-perovskite support.
 - Add support for selecting among multiple structures in supported multi-structure files if needed.
 - Add advanced structure-inspection overlays such as coordination polyhedra, local environment highlighting, and perovskite-octahedra views.
 - Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.

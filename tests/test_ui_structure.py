@@ -32,13 +32,14 @@ class UIStructureTests(unittest.TestCase):
         self.assertEqual(st.session_state[ui.MANUAL_DRAFT_NONCE_STATE_KEY], 1)
 
     def test_reset_prototype_builder_draft_increments_nonce(self) -> None:
-        original_key = ui._draft_widget_key(ui.PROTOTYPE_A_SITE_WIDGET_KEY, ui.PROTOTYPE_DRAFT_NONCE_STATE_KEY)
+        family_key = "ordered_double_perovskite_a2bbx6"
+        original_key = ui._prototype_family_field_widget_key(family_key, "a_site")
 
-        ui._reset_prototype_builder_draft()
+        ui._reset_prototype_builder_draft(family_key)
 
-        updated_key = ui._draft_widget_key(ui.PROTOTYPE_A_SITE_WIDGET_KEY, ui.PROTOTYPE_DRAFT_NONCE_STATE_KEY)
+        updated_key = ui._prototype_family_field_widget_key(family_key, "a_site")
         self.assertNotEqual(original_key, updated_key)
-        self.assertEqual(st.session_state[ui.PROTOTYPE_DRAFT_NONCE_STATE_KEY], 1)
+        self.assertEqual(st.session_state[ui._prototype_family_nonce_state_key(family_key)], 1)
 
     def test_reset_file_import_draft_increments_nonce(self) -> None:
         original_key = ui._draft_widget_key(ui.FILE_FORMAT_WIDGET_KEY, ui.FILE_DRAFT_NONCE_STATE_KEY)
@@ -81,6 +82,38 @@ class UIStructureTests(unittest.TestCase):
         self.assertEqual(observed["data"], ui._default_manual_atom_rows())
         self.assertIsNone(observed["session_value"])
         self.assertNotIn(expected_key, st.session_state)
+
+    def test_build_source_detail_rows_skips_hidden_internal_keys(self) -> None:
+        rows = ui._build_source_detail_rows(
+            {
+                "_prototype_family_key": "ordered_double_perovskite_a2bbx6",
+                "prototype_family": "Ordered Double Perovskite",
+                "formula_template": "A2BB'X6",
+            }
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                {"Field": "Prototype Family", "Value": "Ordered Double Perovskite"},
+                {"Field": "Formula Template", "Value": "A2BB'X6"},
+            ],
+        )
+
+    def test_prototype_family_widget_keys_are_scoped_per_family(self) -> None:
+        first_key = ui._prototype_family_field_widget_key("ordered_double_perovskite_a2bbx6", "a_site")
+        second_key = ui._prototype_family_field_widget_key("cubic_perovskite_abx3", "a_site")
+
+        self.assertNotEqual(first_key, second_key)
+
+    def test_resetting_one_prototype_family_draft_does_not_touch_another(self) -> None:
+        first_family = "ordered_double_perovskite_a2bbx6"
+        second_family = "cubic_perovskite_abx3"
+
+        ui._reset_prototype_builder_draft(first_family)
+
+        self.assertEqual(st.session_state[ui._prototype_family_nonce_state_key(first_family)], 1)
+        self.assertNotIn(ui._prototype_family_nonce_state_key(second_family), st.session_state)
 
 
 if __name__ == "__main__":

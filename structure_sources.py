@@ -327,13 +327,13 @@ def build_ordered_double_perovskite(
         cellpar=[float(lattice_parameter), float(lattice_parameter), float(lattice_parameter), 90.0, 90.0, 90.0],
     )
     atoms = _validate_periodic_atoms(atoms, source_description="The prototype structure")
-    return StructureSourceResult(
-        atoms=atoms,
-        source_kind="prototype",
+    return _build_prototype_result(
+        atoms,
         source_label="Ordered Double Perovskite (A2BB'X6)",
-        source_format=None,
+        family_key="ordered_double_perovskite_a2bbx6",
+        family_label="Ordered Double Perovskite",
+        formula_template="A2BB'X6",
         source_details={
-            "prototype_key": "ordered_double_perovskite_a2bbx6",
             "a_site": a_symbol,
             "b_site": b_symbol,
             "b_prime_site": b_prime_symbol,
@@ -341,4 +341,106 @@ def build_ordered_double_perovskite(
             "lattice_parameter": float(lattice_parameter),
             "x_parameter": float(x_parameter),
         },
+    )
+
+
+def build_cubic_perovskite(
+    *,
+    a_site: str,
+    b_site: str,
+    x_site: str,
+    lattice_parameter: float,
+) -> StructureSourceResult:
+    """Build an ideal cubic perovskite `ABX3` model."""
+    a_symbol = _validate_chemical_symbol(a_site)
+    b_symbol = _validate_chemical_symbol(b_site)
+    x_symbol = _validate_chemical_symbol(x_site)
+
+    if float(lattice_parameter) <= 0.0:
+        raise ValueError("The cubic lattice parameter `a` must be positive.")
+
+    atoms = crystal(
+        symbols=(a_symbol, b_symbol, x_symbol),
+        basis=[
+            (0.0, 0.0, 0.0),
+            (0.5, 0.5, 0.5),
+            (0.5, 0.5, 0.0),
+        ],
+        spacegroup=221,
+        cellpar=[float(lattice_parameter), float(lattice_parameter), float(lattice_parameter), 90.0, 90.0, 90.0],
+    )
+    atoms = _validate_periodic_atoms(atoms, source_description="The prototype structure")
+    return _build_prototype_result(
+        atoms,
+        source_label="Cubic Perovskite (ABX3)",
+        family_key="cubic_perovskite_abx3",
+        family_label="Cubic Perovskite",
+        formula_template="ABX3",
+        source_details={
+            "a_site": a_symbol,
+            "b_site": b_symbol,
+            "x_site": x_symbol,
+            "lattice_parameter": float(lattice_parameter),
+        },
+    )
+
+
+def build_rocksalt(
+    *,
+    a_site: str,
+    b_site: str,
+    lattice_parameter: float,
+) -> StructureSourceResult:
+    """Build a cubic rocksalt `AB` model."""
+    a_symbol = _validate_chemical_symbol(a_site)
+    b_symbol = _validate_chemical_symbol(b_site)
+
+    if float(lattice_parameter) <= 0.0:
+        raise ValueError("The cubic lattice parameter `a` must be positive.")
+
+    atoms = crystal(
+        symbols=(a_symbol, b_symbol),
+        basis=[
+            (0.0, 0.0, 0.0),
+            (0.5, 0.5, 0.5),
+        ],
+        spacegroup=225,
+        cellpar=[float(lattice_parameter), float(lattice_parameter), float(lattice_parameter), 90.0, 90.0, 90.0],
+    )
+    atoms = _validate_periodic_atoms(atoms, source_description="The prototype structure")
+    return _build_prototype_result(
+        atoms,
+        source_label="Rocksalt (AB)",
+        family_key="rocksalt_ab",
+        family_label="Rocksalt",
+        formula_template="AB",
+        source_details={
+            "a_site": a_symbol,
+            "b_site": b_symbol,
+            "lattice_parameter": float(lattice_parameter),
+        },
+    )
+
+
+def _build_prototype_result(
+    atoms: Atoms,
+    *,
+    source_label: str,
+    family_key: str,
+    family_label: str,
+    formula_template: str,
+    source_details: dict[str, Any],
+) -> StructureSourceResult:
+    details = {
+        "_prototype_family_key": family_key,
+        "prototype_family": family_label,
+        "formula_template": formula_template,
+    }
+    details.update(source_details)
+    return StructureSourceResult(
+        atoms=atoms,
+        source_kind="prototype",
+        source_label=source_label,
+        source_format=None,
+        source_details=details,
     )

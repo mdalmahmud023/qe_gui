@@ -9,7 +9,10 @@ The current version can:
   - `.xsf`
   - `.xyz` / `extxyz` when a usable 3D periodic cell is present
 - build periodic crystal structures manually from lattice parameters, species, and atomic positions
-- generate an ordered cubic double perovskite `A2BB'X6` prototype as a starting structure
+- generate curated prototype starting structures for:
+  - ordered cubic double perovskite `A2BB'X6`
+  - cubic perovskite `ABX3`
+  - rocksalt `AB`
 - store the source and active ASE `Atoms` objects in Streamlit session state
 - show a persistent project summary in the sidebar across all pages
 - use a clean 4-page workflow with top navigation: `Structure`, `Setup`, `Run`, and `Analysis`
@@ -145,49 +148,50 @@ Before using `Run Calculation` or the post-processing runners, make sure `pw.x`,
    - `Import File`
    - `Manual Builder`
    - `Prototype Builder`
-5. Confirm the active-structure banner updates only after explicit apply and shows:
+5. If you use `Prototype Builder`, choose a prototype family and build it explicitly.
+6. Confirm the active-structure banner updates only after explicit apply and shows:
    - formula
    - atom count
    - source type
    - source label
    - active cell mode
-6. Confirm the sidebar shows:
+7. Confirm the sidebar shows:
    - source label
    - source type
    - chemical formula
    - atom count
    - unit cell parameters
-7. Confirm the `Structure` page shows the interactive 3D structure viewer.
-8. Change viewer controls such as labels, style mode, bonds, unit-cell visibility, and species visibility, and confirm the viewer updates without changing the active-structure summary.
-9. Optionally switch `Cell Representation` to `Primitive Cell` and confirm the active structure metadata updates.
-10. Open the `Setup` page and confirm the `Pseudopotentials` section shows the detected elements.
-11. Click `Resolve Pseudopotentials`.
-12. Confirm the selected SSSP manifest and archive are cached under `qe_runs/pseudopotentials/sssp/1.3.0/...`.
-13. Confirm a success message and resolved pseudopotential table appear.
-14. Confirm the QE input form appears on the `Setup` page.
-15. Change a few values and click `Generate Input File`.
-16. Confirm `qe_runs/espresso.pwi` and `qe_runs/pw.in` are created and the generated preview appears.
-17. Open the `Run` page and click `Run Calculation`.
-18. Confirm live Quantum ESPRESSO output appears in the `Run` page while the process runs.
-19. Confirm the final full output is saved to `qe_runs/pw.out`.
-20. Confirm the `Run` page shows the post-processing sections for DOS and band structure.
-21. Use `Auto-Fill High-Symmetry Path` in the band workflow and confirm the band-path textarea is populated with `crystal_b` rows.
-22. Run the DOS workflow and confirm `qe_runs/dos.in`, `qe_runs/dos.out`, and the selected DOS data file are created.
-23. Confirm live DOS output appears in the DOS console while `dos.x` runs.
-24. Run the band-structure workflow and confirm `qe_runs/bands_pw.in`, `qe_runs/bands_pw.out`, `qe_runs/bands_pp.in`, `qe_runs/bands_pp.out`, `qe_runs/filband`, and `qe_runs/filband.gnu` are created.
-25. Confirm live output clearly labels the `bands pw.x` and `bands.x` phases.
-26. Open the `Analysis` page.
-27. Confirm the top summary row reports DOS detection, band detection, Fermi source, and the run directory.
-28. If only `pw.out` or QE XML metadata exists, confirm the page shows an explicit empty-state message explaining that no plottable DOS or band data is available yet.
-29. If a DOS file from `dos.x` exists, confirm the interactive DOS plot renders with Plotly and a Fermi-alignment toggle.
-30. If a `filband.gnu` file exists, confirm the interactive band-structure plot renders with Plotly and optional high-symmetry separators from the matching band input file.
+8. Confirm the `Structure` page shows the interactive 3D structure viewer.
+9. Change viewer controls such as labels, style mode, bonds, unit-cell visibility, and species visibility, and confirm the viewer updates without changing the active-structure summary.
+10. Optionally switch `Cell Representation` to `Primitive Cell` and confirm the active structure metadata updates.
+11. Open the `Setup` page and confirm the `Pseudopotentials` section shows the detected elements.
+12. Click `Resolve Pseudopotentials`.
+13. Confirm the selected SSSP manifest and archive are cached under `qe_runs/pseudopotentials/sssp/1.3.0/...`.
+14. Confirm a success message and resolved pseudopotential table appear.
+15. Confirm the QE input form appears on the `Setup` page.
+16. Change a few values and click `Generate Input File`.
+17. Confirm `qe_runs/espresso.pwi` and `qe_runs/pw.in` are created and the generated preview appears.
+18. Open the `Run` page and click `Run Calculation`.
+19. Confirm live Quantum ESPRESSO output appears in the `Run` page while the process runs.
+20. Confirm the final full output is saved to `qe_runs/pw.out`.
+21. Confirm the `Run` page shows the post-processing sections for DOS and band structure.
+22. Use `Auto-Fill High-Symmetry Path` in the band workflow and confirm the band-path textarea is populated with `crystal_b` rows.
+23. Run the DOS workflow and confirm `qe_runs/dos.in`, `qe_runs/dos.out`, and the selected DOS data file are created.
+24. Confirm live DOS output appears in the DOS console while `dos.x` runs.
+25. Run the band-structure workflow and confirm `qe_runs/bands_pw.in`, `qe_runs/bands_pw.out`, `qe_runs/bands_pp.in`, `qe_runs/bands_pp.out`, `qe_runs/filband`, and `qe_runs/filband.gnu` are created.
+26. Confirm live output clearly labels the `bands pw.x` and `bands.x` phases.
+27. Open the `Analysis` page.
+28. Confirm the top summary row reports DOS detection, band detection, Fermi source, and the run directory.
+29. If only `pw.out` or QE XML metadata exists, confirm the page shows an explicit empty-state message explaining that no plottable DOS or band data is available yet.
+30. If a DOS file from `dos.x` exists, confirm the interactive DOS plot renders with Plotly and a Fermi-alignment toggle.
+31. If a `filband.gnu` file exists, confirm the interactive band-structure plot renders with Plotly and optional high-symmetry separators from the matching band input file.
 
 ## Useful Checks
 
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py project_context.py structure_sources.py structure_state.py structure_tools.py structure_viewer.py ui_structure.py ui_setup.py ui_run.py ui_analysis.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
+python3 -m py_compile app.py project_context.py prototype_catalog.py structure_sources.py structure_state.py structure_tools.py structure_viewer.py ui_structure.py ui_setup.py ui_run.py ui_analysis.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
 ```
 
 Unit tests:
@@ -206,6 +210,7 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 
 - `app.py`: Streamlit app entrypoint
 - `project_context.py`: lightweight shared session/disk summaries and cross-page helpers
+- `prototype_catalog.py`: curated prototype-family registry and shared prototype UI/build definitions
 - `structure_sources.py`: structure import, manual-builder parsing, prototype generation, and source validation
 - `structure_state.py`: structure commit helpers, cell-mode switching, signatures, provenance, and stale-state invalidation
 - `structure_viewer.py`: viewer-only structure filtering, repeat expansion, and `py3Dmol` rendering helpers

@@ -15,6 +15,15 @@ from project_context import (
     get_structure_mode,
     set_structure_error,
 )
+from prototype_catalog import (
+    DEFAULT_PROTOTYPE_FAMILY_KEY,
+    FIELD_KIND_FLOAT,
+    PrototypeFamilyDefinition,
+    PrototypeFieldDefinition,
+    build_prototype_family,
+    get_prototype_family,
+    get_prototype_family_keys,
+)
 from structure_sources import (
     FILE_FORMAT_AUTO,
     FILE_FORMAT_CIF,
@@ -24,7 +33,6 @@ from structure_sources import (
     MANUAL_COORDINATE_MODE_CARTESIAN,
     MANUAL_COORDINATE_MODE_FRACTIONAL,
     build_manual_structure,
-    build_ordered_double_perovskite,
     import_structure_file,
 )
 from structure_viewer import (
@@ -80,12 +88,8 @@ MANUAL_GAMMA_WIDGET_KEY = "structure_manual_gamma"
 MANUAL_COORDINATE_MODE_WIDGET_KEY = "structure_manual_coordinate_mode"
 MANUAL_ATOM_TABLE_WIDGET_KEY = "structure_manual_atom_table"
 MANUAL_DRAFT_NONCE_STATE_KEY = "structure_manual_draft_nonce"
-PROTOTYPE_A_SITE_WIDGET_KEY = "structure_prototype_a_site"
-PROTOTYPE_B_SITE_WIDGET_KEY = "structure_prototype_b_site"
-PROTOTYPE_B_PRIME_SITE_WIDGET_KEY = "structure_prototype_b_prime_site"
-PROTOTYPE_X_SITE_WIDGET_KEY = "structure_prototype_x_site"
-PROTOTYPE_A_PARAM_WIDGET_KEY = "structure_prototype_lattice_a"
-PROTOTYPE_X_PARAM_WIDGET_KEY = "structure_prototype_x_parameter"
+PROTOTYPE_FAMILY_WIDGET_KEY = "structure_prototype_family"
+PROTOTYPE_FIELD_WIDGET_KEY_PREFIX = "structure_prototype_field"
 PROTOTYPE_DRAFT_NONCE_STATE_KEY = "structure_prototype_draft_nonce"
 
 ACTIVE_BANNER_CONTAINER_KEY = "structure_active_banner"
@@ -383,63 +387,92 @@ def _render_manual_builder_mode() -> None:
 
 
 def _render_prototype_builder_mode() -> None:
-    st.caption("Draft only until applied. Build an ordered cubic double perovskite / elpasolite source cell for `A2BB'X6`.")
-    a_site_key = _draft_widget_key(PROTOTYPE_A_SITE_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
-    x_site_key = _draft_widget_key(PROTOTYPE_X_SITE_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
-    b_site_key = _draft_widget_key(PROTOTYPE_B_SITE_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
-    b_prime_site_key = _draft_widget_key(PROTOTYPE_B_PRIME_SITE_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
-    lattice_parameter_key = _draft_widget_key(PROTOTYPE_A_PARAM_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
-    x_parameter_key = _draft_widget_key(PROTOTYPE_X_PARAM_WIDGET_KEY, PROTOTYPE_DRAFT_NONCE_STATE_KEY)
+    family_keys = get_prototype_family_keys()
+    selected_family_key = st.session_state.get(PROTOTYPE_FAMILY_WIDGET_KEY, DEFAULT_PROTOTYPE_FAMILY_KEY)
+    if selected_family_key not in family_keys:
+        selected_family_key = DEFAULT_PROTOTYPE_FAMILY_KEY
+        st.session_state[PROTOTYPE_FAMILY_WIDGET_KEY] = selected_family_key
+
+    selected_family_key = st.selectbox(
+        "Prototype Family",
+        options=family_keys,
+        key=PROTOTYPE_FAMILY_WIDGET_KEY,
+        format_func=lambda family_key: get_prototype_family(family_key).source_label,
+    )
+    family = get_prototype_family(selected_family_key)
+    st.caption(f"Draft only until applied. {family.short_description}")
+    st.caption(f"Formula template: `{family.formula_template}`")
+
     with st.form("structure_prototype_builder_form"):
-        row_one_col1, row_one_col2 = st.columns(2)
-        row_one_col1.text_input("A site", value="Na", key=a_site_key)
-        row_one_col2.text_input("X site", value="H", key=x_site_key)
-
-        row_two_col1, row_two_col2 = st.columns(2)
-        row_two_col1.text_input("B site", value="Ca", key=b_site_key)
-        row_two_col2.text_input("B' site", value="Cd", key=b_prime_site_key)
-
-        st.number_input(
-            "Cubic lattice parameter a (A)",
-            min_value=0.0,
-            value=8.0,
-            step=0.1,
-            key=lattice_parameter_key,
-        )
-        with st.expander("Advanced prototype options", expanded=False):
-            st.number_input(
-                "Anion Wyckoff x parameter",
-                min_value=0.0,
-                max_value=0.5,
-                value=0.25,
-                step=0.01,
-                key=x_parameter_key,
-                help="The ideal cubic double-perovskite value is 0.25.",
-            )
+        _render_prototype_family_fields(family)
         action_col, reset_col = st.columns(2)
         apply_clicked = action_col.form_submit_button("Build and Set Active", use_container_width=True)
         reset_clicked = reset_col.form_submit_button("Reset Draft", use_container_width=True)
 
     if reset_clicked:
-        _reset_prototype_builder_draft()
+        _reset_prototype_builder_draft(selected_family_key)
         st.rerun()
         return
     if not apply_clicked:
         return
 
     try:
-        result = build_ordered_double_perovskite(
-            a_site=st.session_state.get(a_site_key, "Na"),
-            b_site=st.session_state.get(b_site_key, "Ca"),
-            b_prime_site=st.session_state.get(b_prime_site_key, "Cd"),
-            x_site=st.session_state.get(x_site_key, "H"),
-            lattice_parameter=float(st.session_state.get(lattice_parameter_key, 8.0)),
-            x_parameter=float(st.session_state.get(x_parameter_key, 0.25)),
-        )
+        result = build_prototype_family(selected_family_key, _collect_prototype_family_values(family))
         _commit_structure_result(result)
     except Exception as exc:
         set_structure_error(f"Failed to build the prototype structure: {exc}")
     st.rerun()
+
+
+def _render_prototype_family_fields(family: PrototypeFamilyDefinition) -> None:
+    text_fields = [field for field in family.core_fields if field.input_kind != FIELD_KIND_FLOAT]
+    numeric_fields = [field for field in family.core_fields if field.input_kind == FIELD_KIND_FLOAT]
+
+    if text_fields:
+        for start in range(0, len(text_fields), 2):
+            field_pair = text_fields[start : start + 2]
+            columns = st.columns(2)
+            for column, field in zip(columns, field_pair):
+                with column:
+                    _render_prototype_field_input(family, field)
+
+    for field in numeric_fields:
+        _render_prototype_field_input(family, field)
+
+    if family.advanced_fields:
+        with st.expander("Advanced prototype options", expanded=False):
+            for field in family.advanced_fields:
+                _render_prototype_field_input(family, field)
+
+
+def _render_prototype_field_input(family: PrototypeFamilyDefinition, field: PrototypeFieldDefinition) -> None:
+    widget_key = _prototype_family_field_widget_key(family.key, field.key)
+    if field.input_kind == FIELD_KIND_FLOAT:
+        st.number_input(
+            field.label,
+            min_value=field.min_value,
+            max_value=field.max_value,
+            value=float(field.default),
+            step=field.step or 0.1,
+            key=widget_key,
+            help=field.help_text,
+        )
+        return
+
+    st.text_input(
+        field.label,
+        value=str(field.default),
+        key=widget_key,
+        help=field.help_text,
+    )
+
+
+def _collect_prototype_family_values(family: PrototypeFamilyDefinition) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for field in family.all_fields:
+        widget_key = _prototype_family_field_widget_key(family.key, field.key)
+        values[field.key] = st.session_state.get(widget_key, field.default)
+    return values
 
 
 def _render_active_structure_inspector(ctx: ProjectContext) -> None:
@@ -658,7 +691,7 @@ def _render_structure_metadata(ctx: ProjectContext) -> None:
 def _build_source_detail_rows(source_details: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for key, value in source_details.items():
-        if value is None:
+        if value is None or key.startswith("_"):
             continue
         label = key.replace("_", " ").strip().title()
         if isinstance(value, float):
@@ -712,6 +745,18 @@ def _reset_manual_builder_draft() -> None:
     set_structure_error(None)
 
 
-def _reset_prototype_builder_draft() -> None:
-    _increment_draft_nonce(PROTOTYPE_DRAFT_NONCE_STATE_KEY)
+def _prototype_family_nonce_state_key(family_key: str) -> str:
+    return f"{PROTOTYPE_DRAFT_NONCE_STATE_KEY}_{family_key}"
+
+
+def _prototype_family_field_widget_key(family_key: str, field_key: str) -> str:
+    return _draft_widget_key(
+        f"{PROTOTYPE_FIELD_WIDGET_KEY_PREFIX}_{family_key}_{field_key}",
+        _prototype_family_nonce_state_key(family_key),
+    )
+
+
+def _reset_prototype_builder_draft(family_key: str | None = None) -> None:
+    resolved_family_key = family_key or st.session_state.get(PROTOTYPE_FAMILY_WIDGET_KEY, DEFAULT_PROTOTYPE_FAMILY_KEY)
+    _increment_draft_nonce(_prototype_family_nonce_state_key(resolved_family_key))
     set_structure_error(None)
