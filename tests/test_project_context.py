@@ -6,8 +6,8 @@ from unittest import mock
 from ase import Atoms
 import streamlit as st
 
-import project_context as pc
-import structure_state as ss
+from qe_studio.core import project_context as pc
+from qe_studio.core import structure_state as ss
 
 
 class ProjectContextTests(unittest.TestCase):
@@ -29,14 +29,14 @@ class ProjectContextTests(unittest.TestCase):
 
     def test_build_project_context_with_structure_populates_structure_summary(self) -> None:
         atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
-        st.session_state[pc.ATOMS_STATE_KEY] = atoms
-        st.session_state[pc.RAW_ATOMS_STATE_KEY] = atoms.copy()
-        st.session_state[pc.FILENAME_STATE_KEY] = "Si.cif"
-        st.session_state[pc.SOURCE_KIND_STATE_KEY] = "file"
-        st.session_state[pc.SOURCE_LABEL_STATE_KEY] = "Si.cif"
-        st.session_state[pc.SOURCE_FORMAT_STATE_KEY] = "cif"
-        st.session_state[pc.STRUCTURE_MODE_STATE_KEY] = "primitive"
-        st.session_state[pc.STRUCTURE_MODE_STATUS_STATE_KEY] = "Using the primitive cell."
+        st.session_state[ss.ATOMS_STATE_KEY] = atoms
+        st.session_state[ss.RAW_ATOMS_STATE_KEY] = atoms.copy()
+        st.session_state[ss.FILENAME_STATE_KEY] = "Si.cif"
+        st.session_state[ss.SOURCE_KIND_STATE_KEY] = "file"
+        st.session_state[ss.SOURCE_LABEL_STATE_KEY] = "Si.cif"
+        st.session_state[ss.SOURCE_FORMAT_STATE_KEY] = "cif"
+        st.session_state[ss.STRUCTURE_MODE_STATE_KEY] = "primitive"
+        st.session_state[ss.STRUCTURE_MODE_STATUS_STATE_KEY] = "Using the primitive cell."
 
         with TemporaryDirectory() as tmp_dir:
             ctx = pc.build_project_context(Path(tmp_dir))
@@ -50,10 +50,10 @@ class ProjectContextTests(unittest.TestCase):
         self.assertIn("a =", ctx.structure.cell_parameters or "")
 
     def test_build_project_context_reports_resolved_and_stale_pseudopotential_states(self) -> None:
-        st.session_state[pc.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
-        st.session_state[pc.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
-        st.session_state[pc.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"Element": "Si"}]
-        st.session_state[pc.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"Element": "Si"}]
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
             "state": "resolved",
             "message": "Resolved pseudopotentials.",
             "warnings": [],
@@ -65,7 +65,7 @@ class ProjectContextTests(unittest.TestCase):
         self.assertTrue(resolved_ctx.pseudopotentials.ready)
         self.assertEqual(resolved_ctx.pseudopotentials.status_label, "Resolved")
 
-        st.session_state[pc.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
             "state": "stale",
             "message": "Refresh required.",
             "warnings": ["Changed structure."],
@@ -80,14 +80,14 @@ class ProjectContextTests(unittest.TestCase):
     def test_build_project_context_prefers_session_preview_and_falls_back_to_disk(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
-            st.session_state[pc.QE_INPUT_TEXT_STATE_KEY] = "&CONTROL\n/\n"
-            st.session_state[pc.QE_INPUT_UI_PATH_STATE_KEY] = str(run_dir / "pw.in")
+            st.session_state[ss.QE_INPUT_TEXT_STATE_KEY] = "&CONTROL\n/\n"
+            st.session_state[ss.QE_INPUT_UI_PATH_STATE_KEY] = str(run_dir / "pw.in")
 
             session_ctx = pc.build_project_context(run_dir)
             self.assertTrue(session_ctx.input_files.available)
             self.assertEqual(session_ctx.input_files.preview_source, "session")
 
-            st.session_state.pop(pc.QE_INPUT_TEXT_STATE_KEY, None)
+            st.session_state.pop(ss.QE_INPUT_TEXT_STATE_KEY, None)
             (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
 
             disk_ctx = pc.build_project_context(run_dir)
@@ -99,8 +99,8 @@ class ProjectContextTests(unittest.TestCase):
             run_dir = Path(tmp_dir)
             current_atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
             stale_atoms = Atoms("Si2", positions=[[0, 0, 0], [2.0, 2.0, 2.0]], cell=[5.43, 5.43, 5.43], pbc=True)
-            st.session_state[pc.ATOMS_STATE_KEY] = current_atoms
-            st.session_state[pc.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(current_atoms)
+            st.session_state[ss.ATOMS_STATE_KEY] = current_atoms
+            st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(current_atoms)
             (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
             ss.update_provenance_record(
                 run_dir,
@@ -132,8 +132,8 @@ class ProjectContextTests(unittest.TestCase):
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
             atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
-            st.session_state[pc.ATOMS_STATE_KEY] = atoms
-            st.session_state[pc.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(atoms)
+            st.session_state[ss.ATOMS_STATE_KEY] = atoms
+            st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(atoms)
             (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
             (run_dir / "pw.out").write_text("pw output\n", encoding="utf-8")
 
@@ -160,8 +160,8 @@ class ProjectContextTests(unittest.TestCase):
     def test_build_project_context_does_not_call_heavy_dos_or_band_parsers(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
-            with mock.patch("electronic_properties.parse_qe_dos", side_effect=AssertionError("heavy DOS parse called")), mock.patch(
-                "electronic_properties.parse_qe_band_structure",
+            with mock.patch("qe_studio.services.electronic_properties.parse_qe_dos", side_effect=AssertionError("heavy DOS parse called")), mock.patch(
+                "qe_studio.services.electronic_properties.parse_qe_band_structure",
                 side_effect=AssertionError("heavy band parse called"),
             ):
                 ctx = pc.build_project_context(run_dir)

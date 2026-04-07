@@ -6,8 +6,44 @@ from typing import Any
 
 import streamlit as st
 
-from electronic_properties import AnalysisFiles, find_available_analysis_files
-from qe_runner import (
+from .state_keys import (
+    ATOMS_STATE_KEY,
+    ERROR_STATE_KEY,
+    FILENAME_STATE_KEY,
+    PSEUDO_DIR_STATE_KEY,
+    PSEUDO_RESOLVED_ROWS_STATE_KEY,
+    PSEUDO_RESOLUTION_STATUS_STATE_KEY,
+    QE_INPUT_INTERNAL_PATH_STATE_KEY,
+    QE_INPUT_TEXT_STATE_KEY,
+    QE_INPUT_UI_PATH_STATE_KEY,
+    RAW_ATOMS_STATE_KEY,
+    SOURCE_DETAILS_STATE_KEY,
+    SOURCE_FORMAT_STATE_KEY,
+    SOURCE_KIND_STATE_KEY,
+    SOURCE_LABEL_STATE_KEY,
+    STRUCTURE_MODE_STATUS_STATE_KEY,
+)
+from .structure_state import (
+    compare_current_structure_to_record,
+    get_current_active_structure_signature,
+    get_qe_generation_blocker_message,
+    get_structure_mode,
+    has_resolved_pseudopotential_data,
+    load_provenance,
+)
+from .workspace import (
+    JOB_OWNER_BANDS,
+    JOB_OWNER_DOS,
+    JOB_OWNER_PW,
+    JOB_SUMMARIES_STATE_KEY,
+    PROVENANCE_RECORD_BANDS,
+    PROVENANCE_RECORD_BASE_RUN,
+    PROVENANCE_RECORD_DOS,
+    PROVENANCE_RECORD_INPUT,
+    QE_RUNS_DIR,
+)
+from ..services.electronic_properties import AnalysisFiles, find_available_analysis_files
+from ..services.qe_runner import (
     RUN_ACTIVE_STATE_KEY,
     RUN_FINISHED_STATE_KEY,
     RUN_JOB_LABEL_STATE_KEY,
@@ -18,97 +54,6 @@ from qe_runner import (
     RUN_TAIL_LINES_STATE_KEY,
     initialize_run_state,
 )
-from structure_state import (
-    ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY,
-    ATOMS_STATE_KEY,
-    AUTO_BAND_PATH_POINTS_WIDGET_KEY,
-    AUTO_BAND_PATH_STATUS_STATE_KEY,
-    BAND_ALIGNMENT_MODE_WIDGET_KEY,
-    BAND_COORDINATE_MODE_WIDGET_KEY,
-    BAND_NBND_WIDGET_KEY,
-    BAND_PATH_WIDGET_KEY,
-    CIF_BYTES_STATE_KEY,
-    DEFAULT_PSEUDO_SETTINGS,
-    DOS_ALIGNMENT_WIDGET_KEY,
-    ERROR_STATE_KEY,
-    FILENAME_STATE_KEY,
-    PSEUDO_DIR_STATE_KEY,
-    PSEUDO_FUNCTIONAL_OPTIONS,
-    PSEUDO_FUNCTIONAL_WIDGET_KEY,
-    PSEUDO_MODE_OPTIONS,
-    PSEUDO_MODE_WIDGET_KEY,
-    PSEUDO_RESOLVED_MAP_STATE_KEY,
-    PSEUDO_RESOLVED_ROWS_STATE_KEY,
-    PSEUDO_RESOLUTION_STATUS_STATE_KEY,
-    PSEUDO_SETTINGS_STATE_KEY,
-    PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY,
-    PSEUDO_USE_CACHE_WIDGET_KEY,
-    PSEUDO_VERSION_OPTIONS,
-    PSEUDO_VERSION_WIDGET_KEY,
-    PROVENANCE_RECORD_BANDS,
-    PROVENANCE_RECORD_BASE_RUN,
-    PROVENANCE_RECORD_DOS,
-    PROVENANCE_RECORD_INPUT,
-    QE_INPUT_INTERNAL_PATH_STATE_KEY,
-    QE_INPUT_TEXT_STATE_KEY,
-    QE_INPUT_UI_PATH_STATE_KEY,
-    RAW_ATOMS_STATE_KEY,
-    SOURCE_DETAILS_STATE_KEY,
-    SOURCE_FORMAT_STATE_KEY,
-    SOURCE_KIND_STATE_KEY,
-    SOURCE_LABEL_STATE_KEY,
-    STRUCTURE_MODE_OPTIONS,
-    STRUCTURE_MODE_STATE_KEY,
-    STRUCTURE_MODE_STATUS_STATE_KEY,
-    apply_structure_mode_selection,
-    clear_generated_qe_input_state,
-    clear_pseudopotential_state,
-    clear_structure_state,
-    commit_structure_source,
-    compare_current_structure_to_record,
-    get_current_active_structure_signature,
-    get_current_pseudo_settings,
-    get_current_raw_structure_signature,
-    get_structure_mode,
-    has_resolved_pseudopotential_data,
-    load_provenance,
-    mark_pseudopotentials_stale,
-    normalize_structure_mode,
-    record_generated_input_provenance,
-    record_workflow_provenance,
-    set_resolution_status,
-    set_structure_error,
-    sync_pseudopotential_settings_state,
-)
-
-
-QE_PARAMS_STATE_KEY = "qe_parameters"
-QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
-QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")
-
-QE_RUNS_DIR = Path("qe_runs")
-QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
-QE_OUTPUT_FILENAME = "pw.out"
-DOS_COMMAND = ("dos.x", "-i", "dos.in")
-BANDS_PW_COMMAND = ("pw.x", "-in", "bands_pw.in")
-BANDS_PP_COMMAND = ("bands.x", "-i", "bands_pp.in")
-DOS_INPUT_FILENAME = "dos.in"
-DOS_OUTPUT_FILENAME = "dos.out"
-BANDS_PW_INPUT_FILENAME = "bands_pw.in"
-BANDS_PW_OUTPUT_FILENAME = "bands_pw.out"
-BANDS_PP_INPUT_FILENAME = "bands_pp.in"
-BANDS_PP_OUTPUT_FILENAME = "bands_pp.out"
-FILBAND_FILENAME = "filband"
-FILBAND_GNU_FILENAME = "filband.gnu"
-JOB_SUMMARIES_STATE_KEY = "qe_job_summaries"
-JOB_OWNER_PW = "pw"
-JOB_OWNER_DOS = "dos"
-JOB_OWNER_BANDS = "bands"
-DOS_BZ_SUM_OPTIONS = ("smearing", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt")
-BAND_COORDINATE_MODE_OPTIONS = ("crystal_b", "tpiba_b")
-BAND_ALIGNMENT_MODE_OPTIONS = ("vbm", "fermi", "raw")
-DEFAULT_BAND_ALIGNMENT_MODE = "vbm"
-DEFAULT_BAND_PATH_TEXT = "0.0 0.0 0.0 20 ! G\n0.5 0.0 0.0 20 ! X\n0.5 0.5 0.5 1 ! L\n"
 
 
 @dataclass(frozen=True)
@@ -369,7 +314,7 @@ def _build_input_summary(
     ui_exists = ui_path.is_file()
     preview_source = "session" if has_session_preview else "disk" if ui_exists else "none"
     available = has_session_preview or ui_exists
-    blocker_message = _get_qe_generation_blocker_message(atoms)
+    blocker_message = get_qe_generation_blocker_message(atoms)
     if available:
         status_label = "Generated"
     elif blocker_message:
@@ -512,24 +457,3 @@ def _resolve_provenance_status(
         subject_label=subject_label,
     )
     return comparison.state, comparison.message
-
-
-def _get_qe_generation_blocker_message(atoms) -> str | None:
-    if atoms is None:
-        return "Load or build a structure before generating a Quantum ESPRESSO input file."
-
-    if not has_resolved_pseudopotential_data():
-        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
-
-    status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
-    if status.get("state") == "stale":
-        return status.get(
-            "message",
-            "Pseudopotentials are stale. Re-resolve them before generating a runnable Quantum ESPRESSO input file.",
-        )
-    if status.get("state") == "error":
-        return status.get("message", "Pseudopotentials are not ready for runnable Quantum ESPRESSO input generation.")
-    if status.get("state") != "resolved":
-        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
-
-    return None

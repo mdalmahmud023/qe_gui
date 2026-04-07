@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import postprocessing as pp
+from qe_studio.services import postprocessing as pp
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 

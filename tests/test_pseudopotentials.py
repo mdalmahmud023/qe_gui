@@ -7,7 +7,7 @@ from unittest import mock
 
 from ase import Atoms
 
-import pseudopotentials as pseudo
+from qe_studio.services import pseudopotentials as pseudo
 
 
 class PseudopotentialHelperTests(unittest.TestCase):
@@ -100,7 +100,7 @@ class PseudopotentialHelperTests(unittest.TestCase):
         with TemporaryDirectory() as tmp_dir:
             cache_root = Path(tmp_dir)
             with mock.patch(
-                "pseudopotentials.download_file",
+                "qe_studio.services.pseudopotentials.download_file",
                 side_effect=self._fake_download_factory(self.manifest),
             ):
                 result = pseudo.resolve_sssp_pseudopotentials(
@@ -138,7 +138,7 @@ class PseudopotentialHelperTests(unittest.TestCase):
             (family_dir / "manifest.json").write_text("{broken json")
 
             with mock.patch(
-                "pseudopotentials.download_file",
+                "qe_studio.services.pseudopotentials.download_file",
                 side_effect=self._fake_download_factory(self.manifest),
             ):
                 result = pseudo.resolve_sssp_pseudopotentials(
@@ -158,7 +158,7 @@ class PseudopotentialHelperTests(unittest.TestCase):
             cache_root = Path(tmp_dir)
             download_side_effect = self._fake_download_factory(self.manifest)
 
-            with mock.patch("pseudopotentials.download_file", side_effect=download_side_effect) as mocked_download:
+            with mock.patch("qe_studio.services.pseudopotentials.download_file", side_effect=download_side_effect) as mocked_download:
                 first_result = pseudo.resolve_sssp_pseudopotentials(
                     self.atoms,
                     version="1.3.0",

@@ -1,7 +1,7 @@
 import unittest
 from collections import Counter
 
-import prototype_catalog as catalog
+from qe_studio.services import prototype_catalog as catalog
 
 
 class PrototypeCatalogTests(unittest.TestCase):

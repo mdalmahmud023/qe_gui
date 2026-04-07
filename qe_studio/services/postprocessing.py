@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
-from electronic_properties import parse_qe_band_structure, parse_qe_dos
+from .electronic_properties import parse_qe_band_structure, parse_qe_dos
 
 
 DEFAULT_PREFIX = "pwscf"

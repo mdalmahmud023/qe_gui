@@ -5,17 +5,16 @@ from typing import Any
 import streamlit as st
 import streamlit.components.v1 as components
 
-from project_context import (
-    ERROR_STATE_KEY,
-    ProjectContext,
-    STRUCTURE_MODE_OPTIONS,
+from ..core.project_context import ProjectContext
+from ..core.state_keys import ERROR_STATE_KEY, STRUCTURE_MODE_OPTIONS
+from ..core.structure_state import (
     apply_structure_mode_selection,
     clear_structure_state,
     commit_structure_source,
     get_structure_mode,
     set_structure_error,
 )
-from prototype_catalog import (
+from ..services.prototype_catalog import (
     DEFAULT_PROTOTYPE_FAMILY_KEY,
     FIELD_KIND_FLOAT,
     PrototypeFamilyDefinition,
@@ -24,7 +23,7 @@ from prototype_catalog import (
     get_prototype_family,
     get_prototype_family_keys,
 )
-from structure_sources import (
+from ..services.structure_sources import (
     FILE_FORMAT_AUTO,
     FILE_FORMAT_CIF,
     FILE_FORMAT_VASP,
@@ -35,7 +34,7 @@ from structure_sources import (
     build_manual_structure,
     import_structure_file,
 )
-from structure_viewer import (
+from ..services.structure_viewer import (
     LABEL_MODE_ELEMENT,
     LABEL_MODE_ELEMENT_INDEX,
     LABEL_MODE_OFF,
@@ -66,6 +65,7 @@ from structure_viewer import (
     normalize_visible_species,
     style_supports_bond_toggle,
 )
+from .shared import render_status_messages
 
 
 SOURCE_MODE_FILE = "file"
@@ -204,11 +204,7 @@ def _render_active_structure_banner(ctx: ProjectContext) -> None:
             elif structure.mode_status not in {"Using the source cell.", "The source structure already looks like a primitive cell."}:
                 st.caption(structure.mode_status)
 
-        for message_type, message in _collect_active_structure_messages(ctx):
-            if message_type == "warning":
-                st.warning(message)
-            else:
-                st.caption(message)
+        render_status_messages(_collect_active_structure_messages(ctx))
 
 
 def _render_compact_metadata(column, label: str, value: str) -> None:
@@ -221,7 +217,7 @@ def _collect_active_structure_messages(ctx: ProjectContext) -> list[tuple[str, s
     messages: list[tuple[str, str]] = []
     for notice in st.session_state.get(ACTIVE_NOTICE_STATE_KEY, []) or []:
         if notice:
-            messages.append(("info", str(notice)))
+            messages.append(("caption", str(notice)))
 
     if ctx.pseudopotentials.state == "stale" and ctx.pseudopotentials.message:
         messages.append(("warning", ctx.pseudopotentials.message))

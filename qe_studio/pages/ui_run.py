@@ -5,26 +5,24 @@ from pathlib import Path
 
 import streamlit as st
 
-from postprocessing import (
-    build_bands_pp_input_text,
-    build_dos_input_text,
-    get_effective_band_nbnd,
-    resolve_qe_run_context,
-    sanitize_leaf_filename,
-    summarize_artifacts,
-    transform_input_to_bands_pw,
-    validate_band_output_file,
-    validate_bands_prerequisites,
-    validate_dos_output_file,
-    validate_dos_prerequisites,
+from ..core.project_context import (
+    ProjectContext,
+    get_active_job_label,
+    get_active_job_owner,
+    get_job_summary,
+    sync_active_job_summary_from_run_state,
+    update_job_summary,
 )
-from project_context import (
+from ..core.state_keys import (
     AUTO_BAND_PATH_POINTS_WIDGET_KEY,
     AUTO_BAND_PATH_STATUS_STATE_KEY,
-    BAND_COORDINATE_MODE_OPTIONS,
     BAND_COORDINATE_MODE_WIDGET_KEY,
     BAND_NBND_WIDGET_KEY,
     BAND_PATH_WIDGET_KEY,
+)
+from ..core.structure_state import get_structure_mode, record_workflow_provenance
+from ..core.workspace import (
+    BAND_COORDINATE_MODE_OPTIONS,
     BANDS_PP_COMMAND,
     BANDS_PP_INPUT_FILENAME,
     BANDS_PP_OUTPUT_FILENAME,
@@ -44,19 +42,24 @@ from project_context import (
     PROVENANCE_RECORD_BANDS,
     PROVENANCE_RECORD_BASE_RUN,
     PROVENANCE_RECORD_DOS,
-    ProjectContext,
     QE_OUTPUT_FILENAME,
     QE_RUN_COMMAND,
     QE_RUNS_DIR,
-    get_active_job_label,
-    get_active_job_owner,
-    get_job_summary,
-    record_workflow_provenance,
-    get_structure_mode,
-    sync_active_job_summary_from_run_state,
-    update_job_summary,
 )
-from qe_runner import (
+from ..services.postprocessing import (
+    build_bands_pp_input_text,
+    build_dos_input_text,
+    get_effective_band_nbnd,
+    resolve_qe_run_context,
+    sanitize_leaf_filename,
+    summarize_artifacts,
+    transform_input_to_bands_pw,
+    validate_band_output_file,
+    validate_bands_prerequisites,
+    validate_dos_output_file,
+    validate_dos_prerequisites,
+)
+from ..services.qe_runner import (
     ACTIVE_RUN_ID_STATE_KEY,
     DEFAULT_MAX_TAIL_LINES,
     RUN_ACTIVE_STATE_KEY,
@@ -78,7 +81,8 @@ from qe_runner import (
     run_external_job,
     set_run_started,
 )
-from structure_tools import generate_band_path_rows
+from ..services.structure_tools import generate_band_path_rows
+from .shared import render_code_output, render_path_captions, render_status_messages, render_table
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -112,8 +116,7 @@ def render_artifact_status_table(ctx: ProjectContext) -> None:
         {"Artifact": "DOS data", "Path": str(ctx.artifacts.dos_file) if ctx.artifacts.dos_file else "Unavailable", "Present": "Yes" if ctx.artifacts.dos_detected else "No"},
         {"Artifact": "filband.gnu", "Path": str(ctx.artifacts.band_file) if ctx.artifacts.band_file else "Unavailable", "Present": "Yes" if ctx.artifacts.bands_detected else "No"},
     ]
-    st.markdown("### Artifacts")
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    render_table(rows, title="### Artifacts")
 
 
 def format_run_output_text() -> str:
@@ -208,9 +211,9 @@ def render_job_console(owner: str, *, empty_message: str) -> None:
     summary = get_job_summary(owner)
     tail_lines = summary.get("tail_lines") or []
     if tail_lines:
-        st.code("".join(tail_lines), language="text")
+        render_code_output("".join(tail_lines))
     else:
-        st.code(f"{empty_message}\n", language="text")
+        render_code_output(f"{empty_message}\n")
 
 
 def render_job_output_panel(owner: str, *, title: str, empty_message: str) -> None:
@@ -224,8 +227,7 @@ def render_job_log_paths(owner: str) -> None:
     """Show persisted log paths for a section summary."""
     summary = get_job_summary(owner)
     log_paths = summary.get("log_paths") or {}
-    for label, path in log_paths.items():
-        st.caption(f"{label}: `{path}`")
+    render_path_captions([(label, path) for label, path in log_paths.items()])
 
 
 def render_job_artifact_summary(owner: str) -> None:
@@ -236,11 +238,7 @@ def render_job_artifact_summary(owner: str) -> None:
 
     artifacts = summary.get("artifacts") or {}
     if artifacts:
-        st.dataframe(
-            summarize_artifacts({label: Path(path) for label, path in artifacts.items()}),
-            use_container_width=True,
-            hide_index=True,
-        )
+        render_table(summarize_artifacts({label: Path(path) for label, path in artifacts.items()}))
 
 
 def start_managed_qe_job(
@@ -329,10 +327,8 @@ def render_saved_run_context(context) -> None:
 
 def render_prerequisite_feedback(check) -> None:
     """Render blockers and warnings for a prerequisite check."""
-    for blocker in check.blockers:
-        st.error(blocker)
-    for warning in check.warnings:
-        st.warning(warning)
+    render_status_messages([("error", blocker) for blocker in check.blockers])
+    render_status_messages([("warning", warning) for warning in check.warnings])
     if check.ok and not check.warnings:
         st.success("Prerequisites are satisfied.")
 

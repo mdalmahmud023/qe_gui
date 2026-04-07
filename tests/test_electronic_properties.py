@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import electronic_properties as ep
+from qe_studio.services import electronic_properties as ep
 
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"

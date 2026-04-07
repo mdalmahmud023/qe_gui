@@ -4,7 +4,7 @@ from unittest import mock
 
 import streamlit as st
 
-import ui_structure as ui
+from qe_studio.pages import ui_structure as ui
 
 
 class _FakeColumn:

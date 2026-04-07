@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-import qe_runner as runner
+from qe_studio.services import qe_runner as runner
 
 
 class FakeProcess:
@@ -28,7 +28,7 @@ class QERunnerTests(unittest.TestCase):
             run_dir = Path(tmp_dir)
             output_path = run_dir / "dos.out"
             with mock.patch(
-                "qe_runner.subprocess.Popen",
+                "qe_studio.services.qe_runner.subprocess.Popen",
                 return_value=FakeProcess(["first line\n", "second line\n"], returncode=0),
             ) as mocked_popen:
                 run_id, output_paths = runner.run_external_job(
@@ -85,7 +85,7 @@ class QERunnerTests(unittest.TestCase):
                 validator_calls.append("validated")
 
             with mock.patch(
-                "qe_runner.subprocess.Popen",
+                "qe_studio.services.qe_runner.subprocess.Popen",
                 side_effect=[
                     FakeProcess(["pw line\n"], returncode=0),
                     FakeProcess(["bands line\n"], returncode=0),
@@ -133,7 +133,7 @@ class QERunnerTests(unittest.TestCase):
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
             with mock.patch(
-                "qe_runner.subprocess.Popen",
+                "qe_studio.services.qe_runner.subprocess.Popen",
                 side_effect=[FakeProcess(["pw failed\n"], returncode=7)],
             ) as mocked_popen:
                 run_id, _output_paths = runner.run_chained_jobs(

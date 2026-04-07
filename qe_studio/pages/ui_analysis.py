@@ -4,7 +4,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from electronic_properties import (
+from ..core.project_context import ProjectContext
+from ..core.state_keys import BAND_ALIGNMENT_MODE_WIDGET_KEY, DOS_ALIGNMENT_WIDGET_KEY
+from ..core.workspace import BAND_ALIGNMENT_MODE_OPTIONS
+from ..services.electronic_properties import (
     DEFAULT_PLOTLY_CONFIG,
     AnalysisParseError,
     BandData,
@@ -19,12 +22,6 @@ from electronic_properties import (
     make_dos_figure,
     parse_qe_band_structure,
     parse_qe_dos,
-)
-from project_context import (
-    BAND_ALIGNMENT_MODE_OPTIONS,
-    BAND_ALIGNMENT_MODE_WIDGET_KEY,
-    DOS_ALIGNMENT_WIDGET_KEY,
-    ProjectContext,
 )
 
 ANALYSIS_PLOT_COLUMN_WEIGHTS = [0.85, 5.3, 0.85]

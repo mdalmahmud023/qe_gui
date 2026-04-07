@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from ase import Atoms
 from ase.io import write
 
-import structure_sources as sources
+from qe_studio.services import structure_sources as sources
 
 
 class StructureSourcesTests(unittest.TestCase):

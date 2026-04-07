@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from structure_sources import (
+from .structure_sources import (
     StructureSourceResult,
     build_cubic_perovskite,
     build_ordered_double_perovskite,

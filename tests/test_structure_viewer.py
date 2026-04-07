@@ -2,7 +2,7 @@ import unittest
 
 from ase import Atoms
 
-import structure_viewer as sv
+from qe_studio.services import structure_viewer as sv
 
 
 class StructureViewerTests(unittest.TestCase):

@@ -191,7 +191,7 @@ Before using `Run Calculation` or the post-processing runners, make sure `pw.x`,
 Syntax check:
 
 ```bash
-python3 -m py_compile app.py project_context.py prototype_catalog.py structure_sources.py structure_state.py structure_tools.py structure_viewer.py ui_structure.py ui_setup.py ui_run.py ui_analysis.py electronic_properties.py postprocessing.py pseudopotentials.py qe_runner.py
+python3 -m compileall qe_studio tests app.py
 ```
 
 Unit tests:
@@ -208,20 +208,13 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 
 ## Current Files
 
-- `app.py`: Streamlit app entrypoint
-- `project_context.py`: lightweight shared session/disk summaries and cross-page helpers
-- `prototype_catalog.py`: curated prototype-family registry and shared prototype UI/build definitions
-- `structure_sources.py`: structure import, manual-builder parsing, prototype generation, and source validation
-- `structure_state.py`: structure commit helpers, cell-mode switching, signatures, provenance, and stale-state invalidation
-- `structure_viewer.py`: viewer-only structure filtering, repeat expansion, and `py3Dmol` rendering helpers
-- `ui_structure.py`: Structure page UI
-- `ui_setup.py`: Setup page UI
-- `ui_run.py`: Run page UI
-- `ui_analysis.py`: Analysis page UI
-- `electronic_properties.py`: QE analysis artifact discovery, parsing, and Plotly figure helpers
-- `postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
-- `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
-- `structure_tools.py`: primitive-cell reduction and automatic band-path helpers
+- `app.py`: thin Streamlit entry shim that preserves `streamlit run app.py`
+- `qe_studio/core/`: session-state keys, structure/provenance state helpers, workspace constants, and project-context assembly
+- `qe_studio/pages/`: Structure, Setup, Run, and Analysis page UIs plus shared page helpers
+- `qe_studio/services/electronic_properties.py`: QE analysis artifact discovery, parsing, and Plotly figure helpers
+- `qe_studio/services/postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
+- `qe_studio/services/pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
+- `qe_studio/services/`: QE workflow services such as runner, structure import/build helpers, viewer helpers, and prototype catalog
 - `requirements.txt`: Python dependencies
 - `HISTORY.md`: running project history and AI context handoff
 

@@ -10,60 +10,46 @@ from typing import Any
 import numpy as np
 import streamlit as st
 
-from qe_runner import reset_run_state
-from structure_tools import make_primitive_atoms
-
-
-ATOMS_STATE_KEY = "structure_atoms"
-RAW_ATOMS_STATE_KEY = "structure_raw_atoms"
-STRUCTURE_FILE_BYTES_STATE_KEY = "structure_file_bytes"
-CIF_BYTES_STATE_KEY = STRUCTURE_FILE_BYTES_STATE_KEY
-FILENAME_STATE_KEY = "structure_filename"
-SOURCE_KIND_STATE_KEY = "structure_source_kind"
-SOURCE_LABEL_STATE_KEY = "structure_source_label"
-SOURCE_FORMAT_STATE_KEY = "structure_source_format"
-SOURCE_DETAILS_STATE_KEY = "structure_source_details"
-RAW_STRUCTURE_SIGNATURE_STATE_KEY = "structure_raw_signature"
-ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY = "structure_active_signature"
-ERROR_STATE_KEY = "structure_error"
-STRUCTURE_MODE_STATE_KEY = "structure_mode"
-STRUCTURE_MODE_STATUS_STATE_KEY = "structure_mode_status"
-QE_INPUT_TEXT_STATE_KEY = "qe_input_text"
-QE_INPUT_INTERNAL_PATH_STATE_KEY = "qe_input_internal_path"
-QE_INPUT_UI_PATH_STATE_KEY = "qe_input_ui_path"
-PSEUDO_SETTINGS_STATE_KEY = "pseudo_settings"
-PSEUDO_DIR_STATE_KEY = "pseudo_dir"
-PSEUDO_RESOLVED_MAP_STATE_KEY = "pseudo_resolved_map"
-PSEUDO_RESOLVED_ROWS_STATE_KEY = "pseudo_resolved_rows"
-PSEUDO_RESOLUTION_STATUS_STATE_KEY = "pseudo_resolution_status"
-PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY = "pseudo_structure_signature"
-
-PSEUDO_FUNCTIONAL_WIDGET_KEY = "pseudo_widget_functional"
-PSEUDO_MODE_WIDGET_KEY = "pseudo_widget_mode"
-PSEUDO_VERSION_WIDGET_KEY = "pseudo_widget_version"
-PSEUDO_USE_CACHE_WIDGET_KEY = "pseudo_widget_use_cache"
-BAND_NBND_WIDGET_KEY = "band_nbnd_widget"
-BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
-BAND_PATH_WIDGET_KEY = "band_path_widget"
-AUTO_BAND_PATH_POINTS_WIDGET_KEY = "auto_band_path_points_widget"
-AUTO_BAND_PATH_STATUS_STATE_KEY = "auto_band_path_status"
-BAND_ALIGNMENT_MODE_WIDGET_KEY = "band_alignment_mode_widget"
-DOS_ALIGNMENT_WIDGET_KEY = "dos_align_to_fermi"
-
-PSEUDO_FUNCTIONAL_OPTIONS = ("PBE", "PBEsol")
-PSEUDO_MODE_OPTIONS = ("efficiency", "precision")
-PSEUDO_VERSION_OPTIONS = ("1.3.0",)
-DEFAULT_PSEUDO_SETTINGS = {
-    "functional": "PBE",
-    "mode": "efficiency",
-    "version": "1.3.0",
-}
-STRUCTURE_MODE_OPTIONS = ("source", "primitive")
-STRUCTURE_MODE_ALIASES = {
-    "uploaded": "source",
-    "source": "source",
-    "primitive": "primitive",
-}
+from .state_keys import (
+    ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY,
+    ATOMS_STATE_KEY,
+    AUTO_BAND_PATH_STATUS_STATE_KEY,
+    DEFAULT_PSEUDO_SETTINGS,
+    ERROR_STATE_KEY,
+    FILENAME_STATE_KEY,
+    PSEUDO_DIR_STATE_KEY,
+    PSEUDO_FUNCTIONAL_WIDGET_KEY,
+    PSEUDO_MODE_WIDGET_KEY,
+    PSEUDO_RESOLVED_MAP_STATE_KEY,
+    PSEUDO_RESOLVED_ROWS_STATE_KEY,
+    PSEUDO_RESOLUTION_STATUS_STATE_KEY,
+    PSEUDO_SETTINGS_STATE_KEY,
+    PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY,
+    PSEUDO_VERSION_WIDGET_KEY,
+    QE_INPUT_INTERNAL_PATH_STATE_KEY,
+    QE_INPUT_TEXT_STATE_KEY,
+    QE_INPUT_UI_PATH_STATE_KEY,
+    RAW_ATOMS_STATE_KEY,
+    RAW_STRUCTURE_SIGNATURE_STATE_KEY,
+    SOURCE_DETAILS_STATE_KEY,
+    SOURCE_FORMAT_STATE_KEY,
+    SOURCE_KIND_STATE_KEY,
+    SOURCE_LABEL_STATE_KEY,
+    STRUCTURE_FILE_BYTES_STATE_KEY,
+    STRUCTURE_MODE_OPTIONS,
+    STRUCTURE_MODE_STATE_KEY,
+    STRUCTURE_MODE_STATUS_STATE_KEY,
+)
+from .workspace import (
+    PROVENANCE_RECORD_BANDS,
+    PROVENANCE_RECORD_BASE_RUN,
+    PROVENANCE_RECORD_DOS,
+    PROVENANCE_RECORD_INPUT,
+    QE_STUDIO_PROVENANCE_FILENAME,
+    QE_STUDIO_PROVENANCE_VERSION,
+)
+from ..services.qe_runner import reset_run_state
+from ..services.structure_tools import make_primitive_atoms
 
 STRUCTURE_SIGNATURE_VERSION = 1
 STRUCTURE_SIGNATURE_DIGITS = 8
@@ -84,8 +70,8 @@ class ProvenanceComparison:
 
 
 def normalize_structure_mode(mode: str | None) -> str:
-    """Normalize legacy and invalid cell-mode values onto supported options."""
-    normalized = STRUCTURE_MODE_ALIASES.get((mode or "").strip().lower())
+    """Normalize invalid cell-mode values onto supported options."""
+    normalized = (mode or "").strip().lower()
     return normalized if normalized in STRUCTURE_MODE_OPTIONS else "source"
 
 
@@ -251,6 +237,28 @@ def has_resolved_pseudopotential_data() -> bool:
         and st.session_state.get(PSEUDO_RESOLVED_MAP_STATE_KEY)
         and st.session_state.get(PSEUDO_RESOLVED_ROWS_STATE_KEY)
     )
+
+
+def get_qe_generation_blocker_message(atoms) -> str | None:
+    """Return the current reason QE input generation is blocked, if any."""
+    if atoms is None:
+        return "Load or build a structure before generating a Quantum ESPRESSO input file."
+
+    if not has_resolved_pseudopotential_data():
+        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
+
+    status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
+    if status.get("state") == "stale":
+        return status.get(
+            "message",
+            "Pseudopotentials are stale. Re-resolve them before generating a runnable Quantum ESPRESSO input file.",
+        )
+    if status.get("state") == "error":
+        return status.get("message", "Pseudopotentials are not ready for runnable Quantum ESPRESSO input generation.")
+    if status.get("state") != "resolved":
+        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
+
+    return None
 
 
 def set_resolution_status(

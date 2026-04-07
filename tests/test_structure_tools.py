@@ -2,7 +2,7 @@ import unittest
 
 from ase.build import bulk
 
-import structure_tools as stt
+from qe_studio.services import structure_tools as stt
 
 
 class StructureToolsTests(unittest.TestCase):

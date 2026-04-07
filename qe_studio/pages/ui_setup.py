@@ -7,7 +7,8 @@ from pathlib import Path
 from ase.calculators.espresso import Espresso, EspressoProfile
 import streamlit as st
 
-from project_context import (
+from ..core.project_context import ProjectContext
+from ..core.state_keys import (
     ATOMS_STATE_KEY,
     DEFAULT_PSEUDO_SETTINGS,
     PSEUDO_DIR_STATE_KEY,
@@ -28,26 +29,27 @@ from project_context import (
     QE_INPUT_TEXT_STATE_KEY,
     QE_INPUT_UI_PATH_STATE_KEY,
     QE_PARAMS_STATE_KEY,
-    QE_RUNS_DIR,
     QE_SMEARING_OPTIONS,
-    ProjectContext,
+)
+from ..core.structure_state import (
     clear_generated_qe_input_state,
     clear_pseudopotential_state,
     get_current_pseudo_settings,
-    has_resolved_pseudopotential_data,
-    mark_pseudopotentials_stale,
+    get_qe_generation_blocker_message,
     record_generated_input_provenance,
     set_resolution_status,
     sync_pseudopotential_settings_state,
 )
-from pseudopotentials import (
+from ..core.workspace import QE_RUNS_DIR
+from ..services.pseudopotentials import (
     PseudopotentialResolutionError,
     clear_sssp_family_cache,
     get_structure_signature,
     get_unique_elements,
     resolve_sssp_pseudopotentials,
 )
-from qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
+from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
+from .shared import render_status_messages
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -73,22 +75,25 @@ def render_pseudopotential_status() -> None:
     """Render pseudopotential status messaging and the resolved table."""
     status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY)
     rows = st.session_state.get(PSEUDO_RESOLVED_ROWS_STATE_KEY, [])
+    messages: list[tuple[str, str]] = []
 
     if status:
         message = status.get("message")
         if status.get("state") == "resolved" and message:
-            st.success(message)
+            messages.append(("success", message))
         elif status.get("state") == "stale" and message:
-            st.warning(message)
+            messages.append(("warning", message))
         elif status.get("state") == "error" and message:
-            st.error(message)
+            messages.append(("error", message))
 
         for warning_message in status.get("warnings", []):
-            st.warning(warning_message)
+            messages.append(("warning", warning_message))
     elif rows:
-        st.info("Resolved pseudopotential data is available.")
+        messages.append(("info", "Resolved pseudopotential data is available."))
     else:
-        st.info("Resolve pseudopotentials to enable runnable Quantum ESPRESSO input generation.")
+        messages.append(("info", "Resolve pseudopotentials to enable runnable Quantum ESPRESSO input generation."))
+
+    render_status_messages(messages)
 
     if rows:
         with st.expander("Resolved Pseudopotential Table", expanded=True):
@@ -470,24 +475,3 @@ def generate_qe_input_file(
     ui_path.write_text(preview_text)
 
     return preview_text, str(internal_path), str(ui_path)
-
-
-def get_qe_generation_blocker_message(atoms) -> str | None:
-    if atoms is None:
-        return "Load or build a structure before generating a Quantum ESPRESSO input file."
-
-    if not has_resolved_pseudopotential_data():
-        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
-
-    status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
-    if status.get("state") == "stale":
-        return status.get(
-            "message",
-            "Pseudopotentials are stale. Re-resolve them before generating a runnable Quantum ESPRESSO input file.",
-        )
-    if status.get("state") == "error":
-        return status.get("message", "Pseudopotentials are not ready for runnable Quantum ESPRESSO input generation.")
-    if status.get("state") != "resolved":
-        return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
-
-    return None

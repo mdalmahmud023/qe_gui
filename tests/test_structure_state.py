@@ -6,7 +6,7 @@ from ase import Atoms
 from ase.build import bulk
 import streamlit as st
 
-import structure_state as ss
+from qe_studio.core import structure_state as ss
 
 
 class StructureStateTests(unittest.TestCase):
