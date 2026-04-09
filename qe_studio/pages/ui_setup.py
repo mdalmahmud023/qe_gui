@@ -356,6 +356,31 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         ky = row_three_col2.number_input("K-Points Y", min_value=1, value=int(default_k_grid[1]), step=1)
         kz = row_three_col3.number_input("K-Points Z", min_value=1, value=int(default_k_grid[2]), step=1)
 
+        if ctx.atoms is not None and "classification" in locals():
+            suspicious = False
+            reasons = []
+            if 0 in classification.vacuum_directions and kx > 1:
+                suspicious = True
+                reasons.append(f"X is a vacuum direction for {classification.dimensionality.value} structure")
+            if 1 in classification.vacuum_directions and ky > 1:
+                suspicious = True
+                reasons.append(f"Y is a vacuum direction for {classification.dimensionality.value} structure")
+            if 2 in classification.vacuum_directions and kz > 1:
+                suspicious = True
+                reasons.append(f"Z is a vacuum direction for {classification.dimensionality.value} structure")
+            
+            total_k = kx * ky * kz
+            if total_k > 5000 and calculation == "scf":
+                suspicious = True
+                reasons.append(f"{total_k} total k-points is unusually dense for a basic SCF calculation")
+                
+            if suspicious:
+                st.warning(
+                    f"**Suspicious K-Point Mesh**: You have selected [{kx}, {ky}, {kz}]. "
+                    f"Possible issues: {', '.join(reasons)}. "
+                    "Make sure this is intended before generating!"
+                )
+
         with st.expander("Advanced numerical settings", expanded=False):
             adv_col1, adv_col2 = st.columns(2)
             conv_thr = adv_col1.number_input(

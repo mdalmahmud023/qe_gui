@@ -140,8 +140,10 @@ _REQUIRED_NAMELISTS: dict[str, frozenset[str]] = {
 FALLBACK_ECUTWFC_RY: float = HEURISTIC_ECUTWFC_RY
 FALLBACK_ECUTRHO_RY: float = HEURISTIC_ECUTRHO_RY
 
-#: Default k-point density (2π/Δk in Å⁻¹) for automatic MP grid suggestion.
-DEFAULT_KPOINT_DENSITY: float = 0.04
+#: Default k-point spacing (Δk in Å⁻¹) for automatic MP grid suggestion for standard workflows (SCF/relax).
+DEFAULT_KPOINT_SPACING_SCF: float = 0.15
+#: Default k-point spacing (Δk in Å⁻¹) for dense workflows (NSCF/DOS).
+DEFAULT_KPOINT_SPACING_DOS: float = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -726,33 +728,37 @@ def suggest_cutoffs_from_pseudo_entries(
 def suggest_kpoints_from_cell(
     atoms: "Atoms",
     *,
-    target_kpoint_density: float = DEFAULT_KPOINT_DENSITY,
+    classification: StructureClassification | None = None,
+    target_kpoint_spacing: float = DEFAULT_KPOINT_SPACING_SCF,
 ) -> list[int]:
     """
     Suggest a Monkhorst-Pack k-point grid from cell geometry.
 
-    The grid is computed so that the reciprocal-space k-point density is
-    approximately ``target_kpoint_density`` points per Å⁻¹ along each
-    reciprocal lattice vector.
+    The grid is computed so that the reciprocal-space k-point spacing is
+    appropriately bounded by ``target_kpoint_spacing`` (in Å⁻¹).
 
-    For non-periodic directions (vacuum slab, molecule), the grid is set to 1.
+    For non-periodic / vacuum directions, the grid is strictly set to 1.
 
     Parameters
     ----------
     atoms:
         The structure for which to suggest a grid.
-    target_kpoint_density:
-        Desired number of k-points per Å⁻¹ of reciprocal-space length.
-        The default 0.04 Å⁻¹ gives roughly 8×8×8 for a 3 Å cubic cell
-        (typical metal) and 4×4×4 for a 6 Å cell.
+    classification:
+        Optional structure classification. If provided, its ``vacuum_directions``
+        are aggressively used to force purely Gamma-point (kz=1) integration
+        across non-periodic bounds.
+    target_kpoint_spacing:
+        Desired maximum spacing between k-points in reciprocal space (Å⁻¹).
+        The default 0.15 Å⁻¹ gives roughly 4×4×4 for a 6 Å cell. Dense
+        workflows like DOS or NSCF typically use 0.05 Å⁻¹.
 
     Returns
     -------
     [kx, ky, kz]:
         Suggested Monkhorst-Pack grid.  Each component is at least 1.
     """
-    if target_kpoint_density <= 0:
-        raise ValueError(f"target_kpoint_density must be positive, got {target_kpoint_density}")
+    if target_kpoint_spacing <= 0:
+        raise ValueError(f"target_kpoint_spacing must be positive, got {target_kpoint_spacing}")
 
     pbc = list(atoms.pbc)
     cell = atoms.cell.array  # 3×3 in Å
@@ -762,7 +768,8 @@ def suggest_kpoints_from_cell(
     # slightly over-samples, but is safe).
     grid: list[int] = []
     for axis in range(3):
-        if not pbc[axis]:
+        # Force 1 if explicitly vacuum/non-periodic
+        if not pbc[axis] or (classification and axis in classification.vacuum_directions):
             grid.append(1)
             continue
 
@@ -773,7 +780,7 @@ def suggest_kpoints_from_cell(
 
         # |b_i| ≈ 2π / |a_i|
         reciprocal_length = 2.0 * math.pi / vector_length
-        k_count = max(1, int(math.ceil(reciprocal_length / target_kpoint_density)))
+        k_count = max(1, int(math.ceil(reciprocal_length / target_kpoint_spacing)))
         grid.append(k_count)
 
     return grid
@@ -1044,7 +1051,7 @@ def make_default_context(
     calculation: str = "scf",
     resolved_entries: dict[str, dict[str, Any]] | None = None,
     preset: CutoffPreset = CutoffPreset.STANDARD,
-    target_kpoint_density: float = DEFAULT_KPOINT_DENSITY,
+    target_kpoint_spacing: float | None = None,
     apply_policy: bool = True,
 ) -> CalculationContext:
     """
@@ -1086,8 +1093,9 @@ def make_default_context(
     preset:
         Quality tier for cutoff selection.  Defaults to
         :attr:`CutoffPreset.STANDARD`.
-    target_kpoint_density:
-        Reciprocal-space k-point density for the grid suggestion.
+    target_kpoint_spacing:
+        Reciprocal-space k-point spacing (Å⁻¹) for the grid suggestion. If None,
+        a sensible default is chosen based on the calculation type (0.15 for scf, 0.05 for nscf).
     apply_policy:
         If True, calls :func:`apply_default_policy` to apply classification-
         driven adjustments on top of the raw defaults.
@@ -1109,7 +1117,17 @@ def make_default_context(
     # The publication preset implies a tighter SCF convergence threshold.
     suggested_conv_thr = PRESET_CONV_THR[preset]
 
-    kgrid = suggest_kpoints_from_cell(atoms, target_kpoint_density=target_kpoint_density)
+    if target_kpoint_spacing is None:
+        if calculation in ("nscf", "dos"):
+            target_kpoint_spacing = DEFAULT_KPOINT_SPACING_DOS
+        else:
+            target_kpoint_spacing = DEFAULT_KPOINT_SPACING_SCF
+
+    kgrid = suggest_kpoints_from_cell(
+        atoms,
+        classification=classification,
+        target_kpoint_spacing=target_kpoint_spacing,
+    )
 
     numerical = NumericalSettings(
         ecutwfc=ecutwfc,

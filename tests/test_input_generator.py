@@ -49,7 +49,7 @@ from ase.build import bulk, molecule
 
 from qe_studio.services.cutoff_presets import CutoffDecision, CutoffPreset
 from qe_studio.services.input_generator import (
-    DEFAULT_KPOINT_DENSITY,
+    DEFAULT_KPOINT_SPACING_SCF,
     FALLBACK_ECUTRHO_RY,
     FALLBACK_ECUTWFC_RY,
     CalculationContext,
@@ -324,23 +324,40 @@ class TestKpointSuggestion:
         # Larger cell → smaller reciprocal-space length → fewer k-points
         assert all(sk >= lk for sk, lk in zip(small_k, large_k))
 
-    def test_higher_density_gives_more_k_points(self):
+    def test_smaller_spacing_gives_more_k_points(self):
         si = _make_bulk_silicon()
-        coarse = suggest_kpoints_from_cell(si, target_kpoint_density=0.10)
-        fine = suggest_kpoints_from_cell(si, target_kpoint_density=0.03)
+        coarse = suggest_kpoints_from_cell(si, target_kpoint_spacing=0.20)
+        fine = suggest_kpoints_from_cell(si, target_kpoint_spacing=0.05)
+        # Smaller spacing means a finer real-space sampling, hence more k-points
         assert all(f >= c for f, c in zip(fine, coarse))
 
-    def test_invalid_density_raises(self):
+    def test_invalid_spacing_raises(self):
         si = _make_bulk_silicon()
         with pytest.raises(ValueError):
-            suggest_kpoints_from_cell(si, target_kpoint_density=0.0)
+            suggest_kpoints_from_cell(si, target_kpoint_spacing=0.0)
         with pytest.raises(ValueError):
-            suggest_kpoints_from_cell(si, target_kpoint_density=-1.0)
+            suggest_kpoints_from_cell(si, target_kpoint_spacing=-1.0)
 
     def test_returns_list_of_ints(self):
         si = _make_bulk_silicon()
         kgrid = suggest_kpoints_from_cell(si)
         assert all(isinstance(k, int) for k in kgrid)
+
+    def test_classification_flattens_vacuum_directions(self):
+        # A slab modeled in a 3D box, pbc=[True, True, True] nominally
+        slab = Atoms("Al", cell=[3, 3, 20], pbc=True)
+        # But classification knows Z is vacuum
+        from qe_studio.services.input_generator import StructureClassification, Dimensionality, ElectronicCharacter, MagneticCharacter
+        cls = StructureClassification(
+            dimensionality=Dimensionality.D2,
+            periodic_directions=(True, True, False),
+            vacuum_directions=(2,),
+            electronic_character=ElectronicCharacter.METAL,
+            magnetic_character=MagneticCharacter.NONMAGNETIC,
+            notes=[],
+        )
+        kgrid = suggest_kpoints_from_cell(slab, classification=cls)
+        assert kgrid[2] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +507,7 @@ class TestDefaultPolicy:
         cls = StructureClassification(
             dimensionality=Dimensionality.D3,
             periodic_directions=(True, True, True),
-            vacuum_directions=(False, False, False),
+            vacuum_directions=(),
             electronic_character=ElectronicCharacter.METAL,
             magnetic_character=MagneticCharacter.NONMAGNETIC,
             notes=[],
@@ -506,7 +523,7 @@ class TestDefaultPolicy:
         cls = StructureClassification(
             dimensionality=Dimensionality.D3,
             periodic_directions=(True, True, True),
-            vacuum_directions=(False, False, False),
+            vacuum_directions=(),
             electronic_character=ElectronicCharacter.INSULATOR,
             magnetic_character=MagneticCharacter.NONMAGNETIC,
             notes=[],
@@ -520,7 +537,7 @@ class TestDefaultPolicy:
         cls = StructureClassification(
             dimensionality=Dimensionality.D3,
             periodic_directions=(True, True, True),
-            vacuum_directions=(False, False, False),
+            vacuum_directions=(),
             electronic_character=ElectronicCharacter.UNKNOWN,
             magnetic_character=MagneticCharacter.UNKNOWN,
             notes=[],
@@ -805,10 +822,10 @@ class TestMakeDefaultContext:
         ctx = make_default_context(h2, apply_policy=True)
         assert ctx.physical.k_points_grid == [1, 1, 1]
 
-    def test_custom_kpoint_density(self):
+    def test_custom_kpoint_spacing(self):
         si = _make_bulk_silicon()
-        ctx_coarse = make_default_context(si, target_kpoint_density=0.15)
-        ctx_fine = make_default_context(si, target_kpoint_density=0.02)
+        ctx_coarse = make_default_context(si, target_kpoint_spacing=0.20)
+        ctx_fine = make_default_context(si, target_kpoint_spacing=0.05)
         assert all(
             f >= c
             for f, c in zip(
@@ -816,6 +833,20 @@ class TestMakeDefaultContext:
                 ctx_coarse.physical.k_points_grid,
             )
         )
+
+    def test_dos_gets_finer_mesh_than_scf(self):
+        si = _make_bulk_silicon()
+        ctx_scf = make_default_context(si, calculation="scf")
+        ctx_dos = make_default_context(si, calculation="dos")
+        # Ensure DOS spacing (0.05) yields more points than SCF (0.15)
+        assert all(
+            d >= s
+            for d, s in zip(
+                ctx_dos.physical.k_points_grid,
+                ctx_scf.physical.k_points_grid,
+            )
+        )
+        assert ctx_dos.physical.k_points_grid != ctx_scf.physical.k_points_grid
 
     def test_fallback_cutoffs_without_entries(self):
         si = _make_bulk_silicon()
