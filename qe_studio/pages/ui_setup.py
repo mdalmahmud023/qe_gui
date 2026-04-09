@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
 
-from ase.calculators.espresso import Espresso, EspressoProfile
 import streamlit as st
 
 from ..core.project_context import ProjectContext
@@ -41,6 +38,13 @@ from ..core.structure_state import (
     sync_pseudopotential_settings_state,
 )
 from ..core.workspace import QE_RUNS_DIR
+from ..services.input_generator import (
+    CalculationContext,
+    NumericalSettings,
+    PhysicalOptions,
+    generate_qe_input_text,
+    suggest_cutoffs_from_pseudo_entries,
+)
 from ..services.pseudopotentials import (
     PseudopotentialResolutionError,
     clear_sssp_family_cache,
@@ -50,6 +54,12 @@ from ..services.pseudopotentials import (
 )
 from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
 from .shared import render_status_messages
+
+# Internal state key for the conv_thr widget (not yet in state_keys.py to
+# avoid a breaking migration; added here as a local constant).
+_QE_CONV_THR_STATE_KEY = "qe_conv_thr"
+_DEFAULT_CONV_THR = 1.0e-6
+_DEFAULT_MIXING_BETA = 0.7
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -217,6 +227,9 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             st.session_state[PSEUDO_RESOLVED_ROWS_STATE_KEY] = resolution_result["table_rows"]
             st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = resolution_result["structure_signature"]
             st.session_state[PSEUDO_SETTINGS_STATE_KEY] = resolution_result["settings"]
+            # Store raw manifest entries so the input form can display SSSP-
+            # recommended cutoffs as caption hints without a separate lookup.
+            st.session_state["pseudo_resolved_entries"] = resolution_result["resolved_entries"]
             set_resolution_status(
                 state="resolved",
                 message=(
@@ -237,6 +250,16 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     default_k_grid = defaults["k_points_grid"]
     blocker_message = get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
+
+    # --- SSSP-suggested cutoff hints (shown as captions when available) ---
+    resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
+    suggested_ecutwfc: float | None = None
+    suggested_ecutrho: float | None = None
+    if resolved_entries and ctx.atoms is not None:
+        try:
+            suggested_ecutwfc, suggested_ecutrho = suggest_cutoffs_from_pseudo_entries(resolved_entries)
+        except Exception:
+            pass
 
     st.markdown("### QE Input Parameters")
     st.caption("Configure the base `pw.x` input for the current structure.")
@@ -279,6 +302,11 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             step=5.0,
             format="%.1f",
         )
+        if suggested_ecutwfc is not None:
+            row_two_col1.caption(
+                f"SSSP suggestion: **{suggested_ecutwfc:.0f} Ry** "
+                "(max across resolved elements)"
+            )
         ecutrho = row_two_col2.number_input(
             "Kinetic Energy Cutoff for Charge Density (ecutrho, Ry)",
             min_value=0.0,
@@ -286,12 +314,44 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             step=5.0,
             format="%.1f",
         )
+        if suggested_ecutrho is not None:
+            row_two_col2.caption(
+                f"SSSP suggestion: **{suggested_ecutrho:.0f} Ry** "
+                "(ecutwfc × dual factor)"
+            )
 
         st.markdown("**K-Points Grid**")
         row_three_col1, row_three_col2, row_three_col3 = st.columns(3)
         kx = row_three_col1.number_input("K-Points X", min_value=1, value=int(default_k_grid[0]), step=1)
         ky = row_three_col2.number_input("K-Points Y", min_value=1, value=int(default_k_grid[1]), step=1)
         kz = row_three_col3.number_input("K-Points Z", min_value=1, value=int(default_k_grid[2]), step=1)
+
+        with st.expander("Advanced numerical settings", expanded=False):
+            adv_col1, adv_col2 = st.columns(2)
+            conv_thr = adv_col1.number_input(
+                "SCF Convergence Threshold (conv_thr, Ry)",
+                min_value=1.0e-14,
+                max_value=1.0e-2,
+                value=float(defaults.get("conv_thr", _DEFAULT_CONV_THR)),
+                step=1.0e-8,
+                format="%.2e",
+                help=(
+                    "Energy convergence criterion for the SCF cycle.  "
+                    "1e-6 Ry is typical for energies; tighten to 1e-8 Ry for forces or phonons."
+                ),
+            )
+            mixing_beta = adv_col2.number_input(
+                "Charge Density Mixing (mixing_beta)",
+                min_value=0.01,
+                max_value=1.0,
+                value=float(defaults.get("mixing_beta", _DEFAULT_MIXING_BETA)),
+                step=0.05,
+                format="%.2f",
+                help=(
+                    "Linear mixing coefficient.  Reduce to 0.3–0.4 for magnetic, "
+                    "oxide, or defect systems."
+                ),
+            )
 
         submitted = st.form_submit_button(
             "Generate Input File",
@@ -309,6 +369,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "smearing": smearing,
         "degauss": degauss,
         "k_points_grid": [kx, ky, kz],
+        "conv_thr": conv_thr,
+        "mixing_beta": mixing_beta,
     }
     st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
 
@@ -321,7 +383,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     try:
-        qe_input_text, internal_path, ui_path = generate_qe_input_file(
+        qe_input_text, internal_path, ui_path = _generate_qe_input_via_context(
             atoms,
             qe_parameters,
             pseudopotentials,
@@ -334,12 +396,12 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
 
     reset_run_state(st.session_state)
     st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
-    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = internal_path
-    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = ui_path
+    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(internal_path)
+    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(ui_path)
     record_generated_input_provenance(
         QE_RUNS_DIR,
-        ui_path=ui_path,
-        internal_path=internal_path,
+        ui_path=str(ui_path),
+        internal_path=str(internal_path),
     )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
@@ -376,6 +438,12 @@ def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
 
 
 def default_qe_parameters() -> dict:
+    """Return hardcoded fallback defaults for the QE input form.
+
+    These values are used when no saved parameters exist in session state.
+    The :func:`render_qe_input_form` will display SSSP-derived suggestions
+    as captions alongside the ecutwfc/ecutrho fields.
+    """
     return {
         "calculation": "scf",
         "ecutwfc": 40.0,
@@ -383,95 +451,49 @@ def default_qe_parameters() -> dict:
         "smearing": "gaussian",
         "degauss": 0.01,
         "k_points_grid": [4, 4, 4],
+        "conv_thr": _DEFAULT_CONV_THR,
+        "mixing_beta": _DEFAULT_MIXING_BETA,
     }
 
 
 def get_qe_parameters() -> dict:
+    """Return the current QE parameters from session state or defaults."""
     return st.session_state.get(QE_PARAMS_STATE_KEY, default_qe_parameters())
 
 
-def build_qe_input_data(qe_parameters: dict) -> dict:
-    calc_type = qe_parameters["calculation"]
-
-    system_data = {
-        "ecutwfc": qe_parameters["ecutwfc"],
-        "ecutrho": qe_parameters["ecutrho"],
-        "smearing": qe_parameters["smearing"],
-        "degauss": qe_parameters["degauss"],
-    }
-    if qe_parameters["degauss"] > 0:
-        system_data["occupations"] = "smearing"
-
-    input_data = {
-        "control": {
-            "calculation": calc_type,
-        },
-        "system": system_data,
-        "electrons": {
-            "conv_thr": 1.0e-6,
-            "mixing_beta": 0.7,
-        },
-    }
-
-    if calc_type in ("relax", "md", "vc-relax", "vc-md"):
-        input_data["ions"] = {"ion_dynamics": "bfgs"}
-
-    if calc_type in ("vc-relax", "vc-md"):
-        input_data["cell"] = {"cell_dynamics": "bfgs"}
-
-    return input_data
-
-
-def clean_generated_qe_input_text(input_text: str) -> str:
-    calc_match = re.search(r"calculation\s*=\s*['\"]([^'\"]+)['\"]", input_text, re.IGNORECASE)
-    calc_type = calc_match.group(1).lower() if calc_match else "scf"
-
-    required_namelists = {"&CONTROL", "&SYSTEM", "&ELECTRONS"}
-    if calc_type in ("relax", "md", "vc-relax", "vc-md"):
-        required_namelists.add("&IONS")
-    if calc_type in ("vc-relax", "vc-md"):
-        required_namelists.add("&CELL")
-
-    def replacer(match):
-        namelist_name = match.group(1).upper()
-        if namelist_name in required_namelists:
-            return match.group(0)
-        return ""
-
-    cleaned = re.sub(r"(?ms)^(&[A-Z_]+)\n(?:\s*\n)*\s*/\n", replacer, input_text)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    return f"{cleaned}\n"
-
-
-def generate_qe_input_file(
+def _generate_qe_input_via_context(
     atoms,
     qe_parameters: dict,
     pseudopotentials: dict[str, str],
     pseudo_dir: str,
-) -> tuple[str, str, str]:
-    QE_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+) -> tuple[str, Path, Path]:
+    """Delegate pw.in generation to the modular input_generator service.
 
-    input_data = build_qe_input_data(qe_parameters)
-    pseudo_dir_path = Path(pseudo_dir)
-    relative_pseudo_dir = Path(os.path.relpath(pseudo_dir_path, QE_RUNS_DIR))
-    profile = EspressoProfile(command="pw.x", pseudo_dir=relative_pseudo_dir)
-    calculator = Espresso(
-        directory=QE_RUNS_DIR,
-        profile=profile,
-        input_data=input_data,
-        kpts=tuple(qe_parameters["k_points_grid"]),
-        pseudopotentials=pseudopotentials,
+    This adapter converts the flat ``qe_parameters`` dict (as stored in
+    session state) into a :class:`CalculationContext` and calls
+    :func:`generate_qe_input_text`.  This keeps all ASE and namelist
+    logic out of the UI layer.
+    """
+    numerical = NumericalSettings(
+        ecutwfc=float(qe_parameters["ecutwfc"]),
+        ecutrho=float(qe_parameters["ecutrho"]),
+        conv_thr=float(qe_parameters.get("conv_thr", _DEFAULT_CONV_THR)),
+        mixing_beta=float(qe_parameters.get("mixing_beta", _DEFAULT_MIXING_BETA)),
     )
-
-    atoms_copy = atoms.copy()
-    atoms_copy.calc = calculator
-    calculator.write_inputfiles(atoms_copy, properties=["energy"])
-
-    internal_path = QE_RUNS_DIR / "espresso.pwi"
-    ui_path = QE_RUNS_DIR / "pw.in"
-
-    generated_text = internal_path.read_text()
-    preview_text = clean_generated_qe_input_text(generated_text)
-    ui_path.write_text(preview_text)
-
-    return preview_text, str(internal_path), str(ui_path)
+    physical = PhysicalOptions(
+        smearing=qe_parameters["smearing"],
+        degauss=float(qe_parameters["degauss"]),
+        k_points_grid=list(qe_parameters["k_points_grid"]),
+    )
+    ctx = CalculationContext(
+        calculation=qe_parameters["calculation"],
+        numerical=numerical,
+        physical=physical,
+    )
+    return generate_qe_input_text(
+        atoms,
+        ctx,
+        pseudopotentials,
+        pseudo_dir,
+        run_dir=QE_RUNS_DIR,
+    )

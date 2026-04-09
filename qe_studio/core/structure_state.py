@@ -198,6 +198,7 @@ def clear_pseudopotential_state(*, clear_structure_signature: bool = True) -> No
         PSEUDO_RESOLVED_MAP_STATE_KEY,
         PSEUDO_RESOLVED_ROWS_STATE_KEY,
         PSEUDO_RESOLUTION_STATUS_STATE_KEY,
+        "pseudo_resolved_entries",  # raw SSSP manifest data used for cutoff hints
     ):
         st.session_state.pop(key, None)
     if clear_structure_signature:
