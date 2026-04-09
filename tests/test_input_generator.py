@@ -47,6 +47,7 @@ import pytest
 from ase import Atoms
 from ase.build import bulk, molecule
 
+from qe_studio.services.cutoff_presets import CutoffDecision, CutoffPreset
 from qe_studio.services.input_generator import (
     DEFAULT_KPOINT_DENSITY,
     FALLBACK_ECUTRHO_RY,
@@ -63,6 +64,7 @@ from qe_studio.services.input_generator import (
     classify_structure,
     clean_qe_input_text,
     make_default_context,
+    select_cutoffs,
     suggest_cutoffs_from_pseudo_entries,
     suggest_kpoints_from_cell,
 )
@@ -210,61 +212,82 @@ class TestStructureClassification:
 
 
 class TestCutoffSuggestion:
+    """Tests for the backward-compatible suggest_cutoffs_from_pseudo_entries() wrapper.
+
+    NOTE on field names: The SSSP manifest uses ``cutoff_wfc`` and ``cutoff_rho``
+    (direct Ry values), **not** ``cutoff`` / ``dual``.  All fixtures in this class
+    use the correct field names.  The old ``cutoff``/``dual`` fields were a bug in
+    the previous implementation and are not read by the current code.
+    """
+
     def test_empty_entries_returns_fallback(self):
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries({})
         assert ecutwfc == FALLBACK_ECUTWFC_RY
         assert ecutrho == FALLBACK_ECUTRHO_RY
 
-    def test_single_element_with_cutoff_and_dual(self):
+    def test_single_element_with_cutoff_wfc_and_cutoff_rho(self):
+        # Standard preset (1.00x): expects ≥ manifest value
         entries = {
-            "Si": {"cutoff": 30.0, "dual": 8.0},
+            "Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0},
         }
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
         assert ecutwfc >= 30.0
-        assert ecutrho >= 30.0 * 8.0
+        assert ecutrho >= 240.0
 
     def test_multi_element_takes_max(self):
         entries = {
-            "Si": {"cutoff": 30.0, "dual": 8.0},
-            "O": {"cutoff": 50.0, "dual": 8.0},
+            "Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0},
+            "O":  {"cutoff_wfc": 75.0, "cutoff_rho": 600.0},
         }
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
-        assert ecutwfc >= 50.0
-        assert ecutrho >= 400.0
+        assert ecutwfc >= 75.0
+        assert ecutrho >= 600.0
 
-    def test_missing_dual_defaults_to_4x(self):
-        entries = {"Fe": {"cutoff": 60.0}}
+    def test_missing_cutoff_rho_defaults_to_4x(self):
+        """When cutoff_rho is absent a 4× heuristic is used, not a dual ratio."""
+        entries = {"Fe": {"cutoff_wfc": 60.0}}
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
         assert ecutwfc >= 60.0
         assert ecutrho >= 60.0 * 4.0
 
     def test_returns_floats(self):
-        entries = {"Al": {"cutoff": 25.0, "dual": 4.0}}
+        entries = {"Al": {"cutoff_wfc": 25.0, "cutoff_rho": 200.0}}
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
         assert isinstance(ecutwfc, float)
         assert isinstance(ecutrho, float)
 
-    def test_ignores_entry_without_cutoff(self):
-        entries = {"X": {"dual": 8.0}, "Si": {"cutoff": 30.0, "dual": 8.0}}
+    def test_ignores_entry_without_cutoff_wfc(self):
+        entries = {
+            "X":  {"cutoff_rho": 200.0},          # missing cutoff_wfc
+            "Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0},
+        }
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
         assert ecutwfc >= 30.0
 
-    def test_rounds_to_nearest_5(self):
-        entries = {"Si": {"cutoff": 33.0, "dual": 4.0}}
+    def test_rounds_to_nearest_5_ry(self):
+        entries = {"Si": {"cutoff_wfc": 33.0, "cutoff_rho": 240.0}}
         ecutwfc, _ = suggest_cutoffs_from_pseudo_entries(entries)
         assert ecutwfc % 5 == 0
 
     def test_never_returns_zero_or_negative(self):
-        entries = {"Bad": {"cutoff": 0.0, "dual": 4.0}}
+        entries = {"Bad": {"cutoff_wfc": 0.0, "cutoff_rho": 0.0}}
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
         assert ecutwfc > 0
         assert ecutrho > 0
 
-    def test_invalid_cutoff_string_is_skipped(self):
-        entries = {"Si": {"cutoff": "not_a_number", "dual": 4.0}}
+    def test_invalid_cutoff_wfc_string_is_skipped(self):
+        entries = {"Si": {"cutoff_wfc": "not_a_number", "cutoff_rho": 240.0}}
         ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(entries)
-        # Falls back to defaults
+        # Falls back to defaults when the only entry is invalid
         assert ecutwfc == FALLBACK_ECUTWFC_RY
+
+    def test_wrapper_delegates_to_select_cutoffs(self):
+        """The wrapper must return the same values as select_cutoffs(STANDARD)."""
+        entries = {"Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0}}
+        wrapper_wfc, wrapper_rho = suggest_cutoffs_from_pseudo_entries(entries)
+        decision = select_cutoffs(entries, preset=CutoffPreset.STANDARD)
+        assert wrapper_wfc == decision.ecutwfc_ry
+        assert wrapper_rho == decision.ecutrho_ry
 
 
 # ---------------------------------------------------------------------------
@@ -707,10 +730,11 @@ class TestMakeDefaultContext:
 
     def test_with_resolved_entries_uses_suggested_cutoffs(self):
         si = _make_bulk_silicon()
-        entries = {"Si": {"cutoff": 55.0, "dual": 8.0}}
+        # Use correct SSSP field names: cutoff_wfc / cutoff_rho
+        entries = {"Si": {"cutoff_wfc": 55.0, "cutoff_rho": 440.0}}
         ctx = make_default_context(si, resolved_entries=entries)
         assert ctx.numerical.ecutwfc >= 55.0
-        assert ctx.numerical.ecutrho >= 55.0 * 8.0
+        assert ctx.numerical.ecutrho >= 440.0
 
     def test_classification_is_attached(self):
         si = _make_bulk_silicon()
@@ -750,3 +774,40 @@ class TestMakeDefaultContext:
         ctx = make_default_context(si, resolved_entries=None)
         assert ctx.numerical.ecutwfc == FALLBACK_ECUTWFC_RY
         assert ctx.numerical.ecutrho == FALLBACK_ECUTRHO_RY
+
+    # --- CutoffDecision attached to CalculationContext ---
+
+    def test_cutoff_decision_is_attached(self):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        assert ctx.cutoff_decision is not None
+        assert isinstance(ctx.cutoff_decision, CutoffDecision)
+
+    def test_no_entries_labels_heuristic_fallback(self):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si, resolved_entries=None)
+        assert ctx.cutoff_decision.source == "heuristic_fallback"
+
+    def test_entries_label_sssp_metadata(self):
+        si = _make_bulk_silicon()
+        entries = {"Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0}}
+        ctx = make_default_context(si, resolved_entries=entries)
+        assert ctx.cutoff_decision.source == "sssp_metadata"
+
+    def test_default_preset_on_decision_is_standard(self):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        assert ctx.cutoff_decision.preset == CutoffPreset.STANDARD
+
+    def test_publication_preset_tightens_conv_thr(self):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si, preset=CutoffPreset.PUBLICATION)
+        assert ctx.numerical.conv_thr <= 1.0e-7  # publication uses 1e-8
+
+    def test_quick_preset_lowers_cutoffs_vs_standard(self):
+        si = _make_bulk_silicon()
+        entries = {"Si": {"cutoff_wfc": 30.0, "cutoff_rho": 240.0}}
+        ctx_q = make_default_context(si, resolved_entries=entries, preset=CutoffPreset.QUICK)
+        ctx_s = make_default_context(si, resolved_entries=entries, preset=CutoffPreset.STANDARD)
+        assert ctx_q.numerical.ecutwfc <= ctx_s.numerical.ecutwfc
+        assert ctx_q.numerical.ecutrho <= ctx_s.numerical.ecutrho

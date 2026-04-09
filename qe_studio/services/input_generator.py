@@ -12,10 +12,10 @@ Pipeline overview::
     atoms (ASE)                 resolved SSSP entries (dict)
         │                             │
         ▼                             ▼
-    classify_structure()      suggest_cutoffs_from_pseudo_entries()
+    classify_structure()      select_cutoffs(entries, preset=STANDARD)
         │                     suggest_kpoints_from_cell()
-        ▼
-    CalculationContext          ← assembled by the caller
+        ▼                             │
+    CalculationContext  ◄─────────────┘   (includes CutoffDecision)
         │
         ▼
     build_qe_input_namelist()   ← pure dict from context
@@ -30,17 +30,23 @@ Pipeline overview::
 Public API (stable)
 -------------------
 Data models:
-    Dimensionality          Enum  — 0D / 1D / 2D / 3D
-    ElectronicCharacter     Enum  — metal / insulator / unknown
-    MagneticCharacter       Enum  — magnetic / nonmagnetic / unknown
+    Dimensionality           Enum  — 0D / 1D / 2D / 3D
+    ElectronicCharacter      Enum  — metal / insulator / unknown
+    MagneticCharacter        Enum  — magnetic / nonmagnetic / unknown
     StructureClassification  dataclass — output of classify_structure()
-    NumericalSettings       dataclass — convergence / mixing knobs
-    PhysicalOptions         dataclass — smearing, magnetism, etc.
-    CalculationContext      dataclass — full input to the builder
+    NumericalSettings        dataclass — convergence / mixing knobs
+    PhysicalOptions          dataclass — smearing, magnetism, etc.
+    CalculationContext        dataclass — full input to the builder
+
+Re-exported from cutoff_presets (import directly from there for type hints):
+    CutoffPreset             Enum — quick / standard / publication
+    CutoffDecision           dataclass — full provenance of a cutoff choice
 
 Service functions:
     classify_structure(atoms) -> StructureClassification
+    select_cutoffs(resolved_entries, *, preset) -> CutoffDecision
     suggest_cutoffs_from_pseudo_entries(resolved_entries) -> tuple[float, float]
+        (backward-compatible wrapper around select_cutoffs)
     suggest_kpoints_from_cell(atoms, *, target_kpoint_density) -> list[int]
     build_qe_input_namelist(ctx) -> dict
     generate_qe_input_text(atoms, ctx, pseudopotentials, pseudo_dir, *, run_dir)
@@ -56,6 +62,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from .cutoff_presets import (
+    HEURISTIC_ECUTRHO_RY,
+    HEURISTIC_ECUTWFC_RY,
+    PRESET_CONV_THR,
+    PRESET_DESCRIPTIONS,
+    PRESET_MULTIPLIERS,
+    CutoffDecision,
+    CutoffPreset,
+)
 
 # ASE types are used for type hints only; the actual import is deferred to the
 # caller so that tests without ASE can still import the data models.
@@ -119,8 +135,10 @@ _REQUIRED_NAMELISTS: dict[str, frozenset[str]] = {
 }
 
 #: Conservative fallback energy cutoffs (Ry) when no SSSP data is available.
-FALLBACK_ECUTWFC_RY: float = 40.0
-FALLBACK_ECUTRHO_RY: float = 160.0
+#: These are heuristic values — not derived from any specific pseudopotential.
+#: They match the heuristic defaults defined in :mod:`cutoff_presets`.
+FALLBACK_ECUTWFC_RY: float = HEURISTIC_ECUTWFC_RY
+FALLBACK_ECUTRHO_RY: float = HEURISTIC_ECUTRHO_RY
 
 #: Default k-point density (2π/Δk in Å⁻¹) for automatic MP grid suggestion.
 DEFAULT_KPOINT_DENSITY: float = 0.04
@@ -312,12 +330,22 @@ class CalculationContext:
     classification:
         Optional heuristic classification of the structure.  Used by the
         default-policy helpers to set smarter defaults but not required.
+    cutoff_decision:
+        Full provenance record for the ``ecutwfc`` / ``ecutrho`` selection.
+        Set by :func:`make_default_context` when pseudopotential entries are
+        available.  ``None`` when the context was constructed manually without
+        invoking :func:`select_cutoffs`.
+
+        Inspect :attr:`CutoffDecision.source` to distinguish metadata-driven
+        (``"sssp_metadata"``) from heuristic (``"heuristic_fallback"``)
+        decisions.
     """
 
     calculation: str
     numerical: NumericalSettings
     physical: PhysicalOptions
     classification: StructureClassification | None = None
+    cutoff_decision: CutoffDecision | None = None
 
     def validate(self) -> None:
         """Raise ValueError if the context is inconsistent."""
@@ -470,22 +498,210 @@ def _is_vacuum_axis(atoms: "Atoms", axis: int, vector_length: float) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def select_cutoffs(
+    resolved_entries: dict[str, dict[str, Any]],
+    *,
+    preset: CutoffPreset = CutoffPreset.STANDARD,
+) -> CutoffDecision:
+    """
+    Select ``ecutwfc`` and ``ecutrho`` from SSSP manifest data with quality-preset control.
+
+    This is the **primary** cutoff-selection function.  It reads the
+    ``cutoff_wfc`` and ``cutoff_rho`` fields that the SSSP manifest stores for
+    each element, takes the element-wise maxima (the conservative choice
+    recommended by the SSSP documentation), and then scales both values by the
+    preset multiplier.
+
+    The full decision — including per-element attribution, the preset applied,
+    and whether metadata or a heuristic was used — is returned as a
+    :class:`~qe_studio.services.cutoff_presets.CutoffDecision` so that callers
+    can surface it in provenance records and UI displays.
+
+    SSSP manifest field names
+    -------------------------
+    The SSSP 1.x manifest JSON uses **``cutoff_wfc``** and **``cutoff_rho``**
+    (both in Ry) as direct recommended values.  This function reads these fields
+    exactly as stored — it does **not** assume ``ecutrho = 4 × ecutwfc`` unless
+    ``cutoff_rho`` is absent from an entry (in which case a conservative 4×
+    fallback is applied and a warning is recorded).
+
+    Parameters
+    ----------
+    resolved_entries:
+        Mapping of element symbol → manifest entry dict as returned by
+        :func:`~qe_studio.services.pseudopotentials.resolve_manifest_entries`.
+        Each entry must contain ``"cutoff_wfc"`` (wavefunction cutoff in Ry)
+        and ideally ``"cutoff_rho"`` (charge-density cutoff in Ry).  Entries
+        missing ``cutoff_wfc`` are skipped with a warning.
+    preset:
+        Quality tier to apply.  Determines the multiplier applied to the
+        recommended cutoffs and the suggested SCF convergence threshold.
+        Defaults to :attr:`CutoffPreset.STANDARD`.
+
+    Returns
+    -------
+    CutoffDecision:
+        Frozen dataclass with ``ecutwfc_ry``, ``ecutrho_ry``, ``preset``,
+        ``source``, ``method``, per-element attribution, and any warnings.
+
+    Notes
+    -----
+    When ``resolved_entries`` is empty or all entries lack ``cutoff_wfc``,
+    the function falls back to heuristic defaults (40 Ry / 160 Ry for
+    *standard*) and sets ``source = "heuristic_fallback"``.
+    """
+    multiplier = PRESET_MULTIPLIERS[preset]
+    warnings: list[str] = []
+    per_element: dict[str, dict[str, Any]] = {}
+
+    # --- Pass 1: read and validate per-element SSSP data ---
+    candidate_ecutwfc: float | None = None
+    candidate_ecutrho: float | None = None
+    limiting_element_wfc: str | None = None
+    limiting_element_rho: str | None = None
+
+    for element, entry in resolved_entries.items():
+        raw_wfc = entry.get("cutoff_wfc")
+        raw_rho = entry.get("cutoff_rho")
+
+        # --- Parse wavefunction cutoff ---
+        if raw_wfc is None:
+            warnings.append(
+                f"[{element}] Missing 'cutoff_wfc' in SSSP manifest entry — element skipped."
+            )
+            continue
+        try:
+            elem_wfc = float(raw_wfc)
+        except (TypeError, ValueError):
+            warnings.append(
+                f"[{element}] 'cutoff_wfc' = {raw_wfc!r} is not a valid number — element skipped."
+            )
+            continue
+        if elem_wfc <= 0:
+            warnings.append(
+                f"[{element}] 'cutoff_wfc' = {elem_wfc} is not positive — element skipped."
+            )
+            continue
+
+        # --- Parse charge-density cutoff ---
+        if raw_rho is None:
+            # SSSP metadata missing cutoff_rho: apply conservative 4× heuristic
+            elem_rho = elem_wfc * 4.0
+            warnings.append(
+                f"[{element}] 'cutoff_rho' absent in SSSP manifest. "
+                f"Using heuristic 4× fallback: {elem_rho:.1f} Ry."
+            )
+        else:
+            try:
+                elem_rho = float(raw_rho)
+            except (TypeError, ValueError):
+                elem_rho = elem_wfc * 4.0
+                warnings.append(
+                    f"[{element}] 'cutoff_rho' = {raw_rho!r} is not a valid number. "
+                    f"Using heuristic 4× fallback: {elem_rho:.1f} Ry."
+                )
+
+        # --- Track per-element data ---
+        per_element[element] = {
+            "cutoff_wfc_ry": elem_wfc,
+            "cutoff_rho_ry": elem_rho,
+            "pseudopotential": entry.get("pseudopotential", "unknown"),
+            "filename": entry.get("filename", "unknown"),
+            "limiting": False,  # updated after finding maxima
+        }
+
+        # --- Track running maxima ---
+        if candidate_ecutwfc is None or elem_wfc > candidate_ecutwfc:
+            candidate_ecutwfc = elem_wfc
+            limiting_element_wfc = element
+        if candidate_ecutrho is None or elem_rho > candidate_ecutrho:
+            candidate_ecutrho = elem_rho
+            limiting_element_rho = element
+
+    # --- Pass 2: apply preset multiplier and round ---
+    if candidate_ecutwfc is None or candidate_ecutrho is None:
+        # No usable SSSP data — full heuristic fallback
+        if resolved_entries:
+            warnings.append(
+                "All SSSP manifest entries were skipped (missing or invalid 'cutoff_wfc'). "
+                "Using conservative heuristic fallback values."
+            )
+        scaled_wfc = HEURISTIC_ECUTWFC_RY * multiplier
+        scaled_rho = HEURISTIC_ECUTRHO_RY * multiplier
+        ecutwfc_ry = _round_to_nearest(scaled_wfc, 5.0)
+        ecutrho_ry = _round_to_nearest(scaled_rho, 5.0)
+        source = "heuristic_fallback"
+        method = (
+            f"Heuristic fallback ({preset.value} preset, {multiplier:.2f}×): "
+            f"ecutwfc = {scaled_wfc:.1f} Ry → {ecutwfc_ry:.0f} Ry, "
+            f"ecutrho = {scaled_rho:.1f} Ry → {ecutrho_ry:.0f} Ry. "
+            "No SSSP metadata was available — these values are conservative "
+            "estimates not tied to any specific pseudopotential."
+        )
+    else:
+        # Metadata-driven path
+        scaled_wfc = candidate_ecutwfc * multiplier
+        scaled_rho = candidate_ecutrho * multiplier
+        ecutwfc_ry = _round_to_nearest(scaled_wfc, 5.0)
+        ecutrho_ry = _round_to_nearest(scaled_rho, 5.0)
+        source = "sssp_metadata"
+        n_elements = len(per_element)
+        method = (
+            f"SSSP metadata ({preset.value} preset, {multiplier:.2f}×): "
+            f"max over {n_elements} element(s) — "
+            f"ecutwfc limited by {limiting_element_wfc} "
+            f"({candidate_ecutwfc:.1f} Ry → {ecutwfc_ry:.0f} Ry), "
+            f"ecutrho limited by {limiting_element_rho} "
+            f"({candidate_ecutrho:.1f} Ry → {ecutrho_ry:.0f} Ry)."
+        )
+        # Mark limiting elements
+        if limiting_element_wfc and limiting_element_wfc in per_element:
+            per_element[limiting_element_wfc] = dict(
+                per_element[limiting_element_wfc], limiting=True
+            )
+        if (
+            limiting_element_rho
+            and limiting_element_rho in per_element
+            and limiting_element_rho != limiting_element_wfc
+        ):
+            per_element[limiting_element_rho] = dict(
+                per_element[limiting_element_rho], limiting=True
+            )
+
+    return CutoffDecision(
+        ecutwfc_ry=ecutwfc_ry,
+        ecutrho_ry=ecutrho_ry,
+        preset=preset,
+        source=source,
+        method=method,
+        per_element=per_element,
+        warnings=warnings,
+    )
+
+
 def suggest_cutoffs_from_pseudo_entries(
     resolved_entries: dict[str, dict[str, Any]],
 ) -> tuple[float, float]:
     """
     Suggest ecutwfc and ecutrho from SSSP manifest data.
 
-    The SSSP manifest stores per-element recommended energy cutoffs.  This
-    function reads those values and returns the **element-wise maxima**, which
-    is the conservative choice recommended by the SSSP documentation.
+    .. deprecated::
+        Prefer :func:`select_cutoffs` which returns a full
+        :class:`~qe_studio.services.cutoff_presets.CutoffDecision` with
+        provenance.  This wrapper is kept for backward compatibility.
+
+    The SSSP manifest stores per-element recommended energy cutoffs in the
+    ``cutoff_wfc`` and ``cutoff_rho`` fields.  This function reads those values
+    and returns the **element-wise maxima** (standard-preset, 1.00× multiplier),
+    which is the conservative choice recommended by the SSSP documentation.
 
     Parameters
     ----------
     resolved_entries:
-        Mapping of element symbol → manifest entry dict.  Each entry may
-        contain ``"cutoff"`` (wavefunction cutoff in Ry) and ``"dual"``
-        (ratio ecutrho / ecutwfc).  If both are absent, falls back to the
+        Mapping of element symbol → manifest entry dict.  Each entry should
+        contain ``"cutoff_wfc"`` (wavefunction cutoff in Ry) and
+        ``"cutoff_rho"`` (charge-density cutoff in Ry) as stored in the SSSP
+        manifest JSON.  If these fields are absent, falls back to heuristic
         module-level defaults.
 
     Returns
@@ -493,45 +709,8 @@ def suggest_cutoffs_from_pseudo_entries(
     (ecutwfc_ry, ecutrho_ry):
         Suggested wavefunction and charge-density cutoffs in Ry.
     """
-    if not resolved_entries:
-        return FALLBACK_ECUTWFC_RY, FALLBACK_ECUTRHO_RY
-
-    max_ecutwfc = FALLBACK_ECUTWFC_RY
-    max_ecutrho = FALLBACK_ECUTRHO_RY
-
-    for element, entry in resolved_entries.items():
-        # SSSP manifest stores cutoffs in Ry
-        raw_cutoff = entry.get("cutoff")
-        raw_dual = entry.get("dual")
-
-        if raw_cutoff is None:
-            continue
-
-        try:
-            ecutwfc = float(raw_cutoff)
-        except (TypeError, ValueError):
-            continue
-
-        if ecutwfc <= 0:
-            continue
-
-        max_ecutwfc = max(max_ecutwfc, ecutwfc)
-
-        if raw_dual is not None:
-            try:
-                dual = float(raw_dual)
-                max_ecutrho = max(max_ecutrho, ecutwfc * dual)
-            except (TypeError, ValueError):
-                max_ecutrho = max(max_ecutrho, ecutwfc * 4.0)
-        else:
-            # SSSP default dual is 4 for norm-conserving, 8 for ultrasoft
-            max_ecutrho = max(max_ecutrho, ecutwfc * 4.0)
-
-    # Round to clean values (nearest 5 Ry)
-    ecutwfc_ry = _round_to_nearest(max_ecutwfc, 5.0)
-    ecutrho_ry = _round_to_nearest(max_ecutrho, 5.0)
-
-    return ecutwfc_ry, ecutrho_ry
+    decision = select_cutoffs(resolved_entries, preset=CutoffPreset.STANDARD)
+    return decision.ecutwfc_ry, decision.ecutrho_ry
 
 
 def suggest_kpoints_from_cell(
@@ -852,6 +1031,7 @@ def make_default_context(
     *,
     calculation: str = "scf",
     resolved_entries: dict[str, dict[str, Any]] | None = None,
+    preset: CutoffPreset = CutoffPreset.STANDARD,
     target_kpoint_density: float = DEFAULT_KPOINT_DENSITY,
     apply_policy: bool = True,
 ) -> CalculationContext:
@@ -862,6 +1042,25 @@ def make_default_context(
     batch scripts).  The UI page uses it as a starting point and then applies
     user widget overrides on top.
 
+    Cutoff selection
+    ----------------
+    When ``resolved_entries`` are provided this function calls
+    :func:`select_cutoffs` to derive ``ecutwfc`` / ``ecutrho`` directly from
+    the SSSP manifest data (``cutoff_wfc`` / ``cutoff_rho`` fields).  The
+    ``preset`` argument controls the quality tier:
+
+    - ``CutoffPreset.QUICK``       — 0.90× SSSP recommended, conv_thr = 1e-6
+    - ``CutoffPreset.STANDARD``    — 1.00× SSSP recommended, conv_thr = 1e-6
+    - ``CutoffPreset.PUBLICATION`` — 1.25× SSSP recommended, conv_thr = 1e-8
+
+    When ``resolved_entries`` is ``None`` or empty, conservative heuristic
+    defaults (scaled by the preset multiplier) are used and the decision is
+    labeled ``source = "heuristic_fallback"`` in the returned context.
+
+    The full :class:`~qe_studio.services.cutoff_presets.CutoffDecision` is
+    stored in :attr:`CalculationContext.cutoff_decision` so callers can surface
+    the decision in provenance records and UI displays.
+
     Parameters
     ----------
     atoms:
@@ -869,7 +1068,12 @@ def make_default_context(
     calculation:
         QE calculation type.
     resolved_entries:
-        Optional SSSP manifest entries for cutoff suggestion.
+        Optional SSSP manifest entries for cutoff suggestion.  Should be the
+        ``"resolved_entries"`` value returned by
+        :func:`~qe_studio.services.pseudopotentials.resolve_sssp_pseudopotentials`.
+    preset:
+        Quality tier for cutoff selection.  Defaults to
+        :attr:`CutoffPreset.STANDARD`.
     target_kpoint_density:
         Reciprocal-space k-point density for the grid suggestion.
     apply_policy:
@@ -878,20 +1082,27 @@ def make_default_context(
 
     Returns
     -------
-    CalculationContext
+    CalculationContext:
+        Fully populated context with ``cutoff_decision`` attached.
     """
+    import dataclasses
+
     classification = classify_structure(atoms)
 
-    if resolved_entries:
-        ecutwfc, ecutrho = suggest_cutoffs_from_pseudo_entries(resolved_entries)
-    else:
-        ecutwfc, ecutrho = FALLBACK_ECUTWFC_RY, FALLBACK_ECUTRHO_RY
+    # --- Cutoff selection ---
+    cutoff_decision = select_cutoffs(resolved_entries or {}, preset=preset)
+    ecutwfc = cutoff_decision.ecutwfc_ry
+    ecutrho = cutoff_decision.ecutrho_ry
+
+    # The publication preset implies a tighter SCF convergence threshold.
+    suggested_conv_thr = PRESET_CONV_THR[preset]
 
     kgrid = suggest_kpoints_from_cell(atoms, target_kpoint_density=target_kpoint_density)
 
     numerical = NumericalSettings(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
+        conv_thr=suggested_conv_thr,
     )
     physical = PhysicalOptions(
         k_points_grid=kgrid,
@@ -905,6 +1116,7 @@ def make_default_context(
         numerical=numerical,
         physical=physical,
         classification=classification,
+        cutoff_decision=cutoff_decision,
     )
 
 

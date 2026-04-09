@@ -43,7 +43,8 @@ from ..services.input_generator import (
     NumericalSettings,
     PhysicalOptions,
     generate_qe_input_text,
-    suggest_cutoffs_from_pseudo_entries,
+    select_cutoffs,
+    suggest_kpoints_from_cell,
 )
 from ..services.pseudopotentials import (
     PseudopotentialResolutionError,
@@ -230,6 +231,9 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             # Store raw manifest entries so the input form can display SSSP-
             # recommended cutoffs as caption hints without a separate lookup.
             st.session_state["pseudo_resolved_entries"] = resolution_result["resolved_entries"]
+            # Clear previously saved form values so the fields re-initialise
+            # from the freshly resolved SSSP cutoffs on re-render.
+            st.session_state.pop(QE_PARAMS_STATE_KEY, None)
             set_resolution_status(
                 state="resolved",
                 message=(
@@ -246,18 +250,22 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
 
 def render_qe_input_form(ctx: ProjectContext) -> None:
     """Render the QE input form and gate runnable generation on pseudo resolution."""
-    defaults = get_qe_parameters()
+    # Resolve SSSP entries first so defaults can use them
+    _resolved_entries_for_defaults = st.session_state.get("pseudo_resolved_entries") or {}
+    defaults = get_qe_parameters(
+        resolved_entries=_resolved_entries_for_defaults or None,
+        atoms=ctx.atoms,
+    )
     default_k_grid = defaults["k_points_grid"]
     blocker_message = get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
 
-    # --- SSSP-suggested cutoff hints (shown as captions when available) ---
+    # --- SSSP-suggested cutoff hints via CutoffDecision ---
     resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
-    suggested_ecutwfc: float | None = None
-    suggested_ecutrho: float | None = None
+    cutoff_decision = None
     if resolved_entries and ctx.atoms is not None:
         try:
-            suggested_ecutwfc, suggested_ecutrho = suggest_cutoffs_from_pseudo_entries(resolved_entries)
+            cutoff_decision = select_cutoffs(resolved_entries)
         except Exception:
             pass
 
@@ -302,10 +310,11 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             step=5.0,
             format="%.1f",
         )
-        if suggested_ecutwfc is not None:
+        if cutoff_decision is not None:
+            source_label = "SSSP metadata" if cutoff_decision.source == "sssp_metadata" else "heuristic fallback"
             row_two_col1.caption(
-                f"SSSP suggestion: **{suggested_ecutwfc:.0f} Ry** "
-                "(max across resolved elements)"
+                f"Auto-set from {source_label}: **{cutoff_decision.ecutwfc_ry:.0f} Ry** "
+                f"(max across {len(cutoff_decision.per_element)} element(s))"
             )
         ecutrho = row_two_col2.number_input(
             "Kinetic Energy Cutoff for Charge Density (ecutrho, Ry)",
@@ -314,10 +323,10 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             step=5.0,
             format="%.1f",
         )
-        if suggested_ecutrho is not None:
+        if cutoff_decision is not None:
             row_two_col2.caption(
-                f"SSSP suggestion: **{suggested_ecutrho:.0f} Ry** "
-                "(ecutwfc × dual factor)"
+                f"Auto-set from {source_label}: **{cutoff_decision.ecutrho_ry:.0f} Ry** "
+                f"(cutoff_rho from SSSP manifest, not assumed 4× ecutwfc)"
             )
 
         st.markdown("**K-Points Grid**")
@@ -437,28 +446,65 @@ def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
     return None
 
 
-def default_qe_parameters() -> dict:
-    """Return hardcoded fallback defaults for the QE input form.
+def default_qe_parameters(
+    resolved_entries: dict | None = None,
+    atoms=None,
+) -> dict:
+    """Return physics-aware defaults for the QE input form.
 
-    These values are used when no saved parameters exist in session state.
-    The :func:`render_qe_input_form` will display SSSP-derived suggestions
-    as captions alongside the ecutwfc/ecutrho fields.
+    When ``resolved_entries`` are available (after pseudopotential resolution),
+    ``ecutwfc`` and ``ecutrho`` are derived from the SSSP manifest using
+    :func:`~qe_studio.services.input_generator.select_cutoffs` at the
+    *standard* preset so that the input fields are pre-populated with
+    scientifically appropriate values.
+
+    When k-point suggestions are available (via ``atoms``), the k-grid is
+    also initialised from cell geometry.
+
+    All other parameters remain at conservative defaults.
     """
+    ecutwfc = 40.0
+    ecutrho = 160.0
+    k_grid = [4, 4, 4]
+
+    if resolved_entries:
+        try:
+            decision = select_cutoffs(resolved_entries)
+            ecutwfc = decision.ecutwfc_ry
+            ecutrho = decision.ecutrho_ry
+        except Exception:
+            pass
+
+    if atoms is not None:
+        try:
+            from ..services.input_generator import suggest_kpoints_from_cell
+            k_grid = suggest_kpoints_from_cell(atoms)
+        except Exception:
+            pass
+
     return {
         "calculation": "scf",
-        "ecutwfc": 40.0,
-        "ecutrho": 160.0,
+        "ecutwfc": ecutwfc,
+        "ecutrho": ecutrho,
         "smearing": "gaussian",
         "degauss": 0.01,
-        "k_points_grid": [4, 4, 4],
+        "k_points_grid": k_grid,
         "conv_thr": _DEFAULT_CONV_THR,
         "mixing_beta": _DEFAULT_MIXING_BETA,
     }
 
 
-def get_qe_parameters() -> dict:
-    """Return the current QE parameters from session state or defaults."""
-    return st.session_state.get(QE_PARAMS_STATE_KEY, default_qe_parameters())
+def get_qe_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:
+    """Return the current QE parameters from session state or physics-aware defaults.
+
+    If no user-saved parameters exist yet, computes defaults from the
+    resolved SSSP entries so that the input fields are pre-populated with
+    the correct SSSP-recommended cutoffs rather than hardcoded fallbacks.
+    """
+    saved = st.session_state.get(QE_PARAMS_STATE_KEY)
+    if saved is not None:
+        return saved
+    return default_qe_parameters(resolved_entries=resolved_entries, atoms=atoms)
 
 
 def _generate_qe_input_via_context(
