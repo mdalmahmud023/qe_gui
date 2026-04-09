@@ -48,4 +48,5 @@ DEFAULT_PSEUDO_SETTINGS = {
 STRUCTURE_MODE_OPTIONS = ("source", "primitive")
 
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
+QE_OCCUPATIONS_OPTIONS = ("smearing", "fixed", "tetrahedra")
 QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")

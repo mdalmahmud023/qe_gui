@@ -25,6 +25,7 @@ from ..core.state_keys import (
     QE_INPUT_INTERNAL_PATH_STATE_KEY,
     QE_INPUT_TEXT_STATE_KEY,
     QE_INPUT_UI_PATH_STATE_KEY,
+    QE_OCCUPATIONS_OPTIONS,
     QE_PARAMS_STATE_KEY,
     QE_SMEARING_OPTIONS,
 )
@@ -40,9 +41,12 @@ from ..core.structure_state import (
 from ..core.workspace import QE_RUNS_DIR
 from ..services.input_generator import (
     CalculationContext,
+    ElectronicCharacter,
     NumericalSettings,
     PhysicalOptions,
+    classify_structure,
     generate_qe_input_text,
+    make_default_context,
     select_cutoffs,
     suggest_kpoints_from_cell,
 )
@@ -282,17 +286,33 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     elif run_active:
         st.info("Wait for the active calculation to finish before generating a new `pw.in` file.")
 
+    if ctx.atoms is not None:
+        classification = classify_structure(ctx.atoms)
+        if classification.electronic_character == ElectronicCharacter.UNKNOWN:
+            st.warning(
+                "The structure's electronic character (metal vs insulator) could not be "
+                "confidently determined. Occupations and smearing have been set to a "
+                "heuristic default. Please verify these settings."
+            )
+
     with st.form("qe_input_form"):
-        row_one_col1, row_one_col2, row_one_col3 = st.columns(3)
+        row_one_col1, row_one_col1_5, row_one_col2, row_one_col3 = st.columns(4)
         calculation = row_one_col1.selectbox(
             "Calculation Type",
             options=QE_CALCULATION_OPTIONS,
             index=QE_CALCULATION_OPTIONS.index(defaults["calculation"]),
         )
+        occupations = row_one_col1_5.selectbox(
+            "Occupations",
+            options=QE_OCCUPATIONS_OPTIONS,
+            index=QE_OCCUPATIONS_OPTIONS.index(defaults.get("occupations", "smearing")),
+        )
+        smearing_disabled = (occupations != "smearing")
         smearing = row_one_col2.selectbox(
             "Smearing Type",
             options=QE_SMEARING_OPTIONS,
             index=QE_SMEARING_OPTIONS.index(defaults["smearing"]),
+            disabled=smearing_disabled,
         )
         degauss = row_one_col3.number_input(
             "Smearing Width (degauss)",
@@ -300,6 +320,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             value=float(defaults["degauss"]),
             step=0.001,
             format="%.4f",
+            disabled=smearing_disabled,
         )
 
         row_two_col1, row_two_col2 = st.columns(2)
@@ -375,6 +396,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "calculation": calculation,
         "ecutwfc": ecutwfc,
         "ecutrho": ecutrho,
+        "occupations": occupations,
         "smearing": smearing,
         "degauss": degauss,
         "k_points_grid": [kx, ky, kz],
@@ -450,19 +472,27 @@ def default_qe_parameters(
     resolved_entries: dict | None = None,
     atoms=None,
 ) -> dict:
-    """Return physics-aware defaults for the QE input form.
-
-    When ``resolved_entries`` are available (after pseudopotential resolution),
-    ``ecutwfc`` and ``ecutrho`` are derived from the SSSP manifest using
-    :func:`~qe_studio.services.input_generator.select_cutoffs` at the
-    *standard* preset so that the input fields are pre-populated with
-    scientifically appropriate values.
-
-    When k-point suggestions are available (via ``atoms``), the k-grid is
-    also initialised from cell geometry.
-
-    All other parameters remain at conservative defaults.
+    """Return physics-aware defaults for the QE input form. When ``atoms`` are available, uses :func:`~qe_studio.services.input_generator.make_default_context`
+    which applies chemistry-aware policies (occupations, smearing, k-grid) based
+    on the structure classification.
     """
+    if atoms is not None:
+        try:
+            ctx = make_default_context(atoms, resolved_entries=resolved_entries)
+            return {
+                "calculation": "scf",
+                "ecutwfc": ctx.numerical.ecutwfc,
+                "ecutrho": ctx.numerical.ecutrho,
+                "occupations": ctx.physical.occupations,
+                "smearing": ctx.physical.smearing,
+                "degauss": ctx.physical.degauss,
+                "k_points_grid": ctx.physical.k_points_grid,
+                "conv_thr": ctx.numerical.conv_thr,
+                "mixing_beta": ctx.numerical.mixing_beta,
+            }
+        except Exception:
+            pass
+
     ecutwfc = 40.0
     ecutrho = 160.0
     k_grid = [4, 4, 4]
@@ -475,17 +505,11 @@ def default_qe_parameters(
         except Exception:
             pass
 
-    if atoms is not None:
-        try:
-            from ..services.input_generator import suggest_kpoints_from_cell
-            k_grid = suggest_kpoints_from_cell(atoms)
-        except Exception:
-            pass
-
     return {
         "calculation": "scf",
         "ecutwfc": ecutwfc,
         "ecutrho": ecutrho,
+        "occupations": "smearing",
         "smearing": "gaussian",
         "degauss": 0.01,
         "k_points_grid": k_grid,
@@ -527,6 +551,7 @@ def _generate_qe_input_via_context(
         mixing_beta=float(qe_parameters.get("mixing_beta", _DEFAULT_MIXING_BETA)),
     )
     physical = PhysicalOptions(
+        occupations=qe_parameters.get("occupations", "smearing"),
         smearing=qe_parameters["smearing"],
         degauss=float(qe_parameters["degauss"]),
         k_points_grid=list(qe_parameters["k_points_grid"]),

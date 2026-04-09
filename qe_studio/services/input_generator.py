@@ -263,10 +263,12 @@ class PhysicalOptions:
 
     Parameters
     ----------
+    occupations:
+        Electronic occupations: ``"smearing"``, ``"fixed"``, or ``"tetrahedra"``.
     smearing:
-        Occupation smearing type.  Use ``"gaussian"`` for insulators,
-        ``"methfessel-paxton"`` for metals, or ``"marzari-vanderbilt"`` (cold
-        smearing) for metals where high accuracy matters.
+        Occupation smearing type (ignored if occupations is not ``"smearing"``).
+        Use ``"gaussian"`` for insulators, ``"methfessel-paxton"`` for metals,
+        or ``"marzari-vanderbilt"`` (cold smearing) for metals where high accuracy matters.
     degauss:
         Smearing width in Ry.  Typical values: 0.01–0.02 for metals,
         0.001–0.005 for insulators with smearing forced by spin.
@@ -278,6 +280,7 @@ class PhysicalOptions:
         is 0 (unshifted) or 1 (shifted by half a mesh spacing).
     """
 
+    occupations: str = "smearing"
     smearing: str = "gaussian"
     degauss: float = 0.01
     k_points_grid: list[int] = field(default_factory=lambda: [4, 4, 4])
@@ -285,6 +288,13 @@ class PhysicalOptions:
 
     def validate(self) -> None:
         """Raise ValueError on clearly invalid settings."""
+        valid_occupations = {"smearing", "fixed", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt"}
+        if self.occupations not in valid_occupations:
+            raise ValueError(
+                f"Unknown occupations type {self.occupations!r}. "
+                f"Valid choices: {', '.join(sorted(valid_occupations))}"
+            )
+
         valid_smearing = {
             "gaussian",
             "methfessel-paxton",
@@ -790,10 +800,10 @@ def apply_default_policy(
     Current rules
     -------------
     - 0D structures → k-grid forced to [1, 1, 1] (Γ only)
-    - Likely metals → switch smearing to ``"methfessel-paxton"``, degauss 0.02
-    - Likely insulators → keep ``"gaussian"``, tighten degauss to 0.005
-    - Mixed / unknown → keep ``"gaussian"`` smearing with default degauss
-    - No changes to cutoffs (caller should use suggest_cutoffs_from_pseudo_entries)
+    - Likely insulators → switch occupations to ``"fixed"``
+    - Likely metals → switch occupations to ``"smearing"``, smearing to ``"methfessel-paxton"``, degauss 0.02
+    - Mixed / unknown → switch occupations to ``"smearing"``, keep ``"gaussian"`` with default degauss
+    - No changes to cutoffs (caller should use suggest_cutoffs_from_pseudo_entries / select_cutoffs)
 
     Parameters
     ----------
@@ -820,14 +830,16 @@ def apply_default_policy(
 
     # Smearing policy based on electronic character
     if classification.electronic_character == ElectronicCharacter.METAL:
+        phys_updates["occupations"] = "smearing"
         if physical.smearing == "gaussian":
             # Methfessel-Paxton reduces Pulay noise for metals
             phys_updates["smearing"] = "methfessel-paxton"
             phys_updates["degauss"] = 0.02
     elif classification.electronic_character == ElectronicCharacter.INSULATOR:
-        # Tighter degauss prevents artificial broadening of the gap
-        if physical.smearing == "gaussian" and physical.degauss > 0.005:
-            phys_updates["degauss"] = 0.005
+        phys_updates["occupations"] = "fixed"
+    elif classification.electronic_character == ElectronicCharacter.UNKNOWN:
+        if physical.occupations != "smearing":
+            phys_updates["occupations"] = "smearing"
 
     if phys_updates:
         physical = dataclasses.replace(physical, **phys_updates)
@@ -879,11 +891,11 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
     system: dict[str, Any] = {
         "ecutwfc": num.ecutwfc,
         "ecutrho": num.ecutrho,
-        "smearing": phys.smearing,
-        "degauss": phys.degauss,
+        "occupations": phys.occupations,
     }
-    if phys.degauss > 0:
-        system["occupations"] = "smearing"
+    if phys.occupations == "smearing":
+        system["smearing"] = phys.smearing
+        system["degauss"] = phys.degauss
 
     # &ELECTRONS
     electrons: dict[str, Any] = {

@@ -400,10 +400,19 @@ class TestNumericalSettings:
 class TestPhysicalOptions:
     def test_default_values(self):
         po = PhysicalOptions()
+        assert po.occupations == "smearing"
         assert po.smearing == "gaussian"
         assert po.degauss == 0.01
         assert po.k_points_grid == [4, 4, 4]
         assert po.k_points_shift == [0, 0, 0]
+
+    def test_validate_accepts_all_occupations_types(self):
+        for occ in ("smearing", "fixed", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt"):
+            PhysicalOptions(occupations=occ).validate()
+
+    def test_validate_rejects_unknown_occupations(self):
+        with pytest.raises(ValueError, match="occupations"):
+            PhysicalOptions(occupations="magic").validate()
 
     def test_validate_accepts_all_smearing_types(self):
         for smearing in ("gaussian", "methfessel-paxton", "marzari-vanderbilt", "fermi-dirac"):
@@ -411,7 +420,7 @@ class TestPhysicalOptions:
 
     def test_validate_rejects_unknown_smearing(self):
         with pytest.raises(ValueError, match="smearing"):
-            PhysicalOptions(smearing="tetrahedra").validate()
+            PhysicalOptions(smearing="magic").validate()
 
     def test_validate_rejects_negative_degauss(self):
         with pytest.raises(ValueError, match="degauss"):
@@ -478,13 +487,49 @@ class TestDefaultPolicy:
         assert phys_out.k_points_grid == [1, 1, 1]
 
     def test_metal_gets_methfessel_paxton(self):
-        fe = _make_bulk_iron()
-        cls = self._classify(fe)
+        cls = StructureClassification(
+            dimensionality=Dimensionality.D3,
+            periodic_directions=(True, True, True),
+            vacuum_directions=(False, False, False),
+            electronic_character=ElectronicCharacter.METAL,
+            magnetic_character=MagneticCharacter.NONMAGNETIC,
+            notes=[],
+        )
         num = NumericalSettings()
-        phys = PhysicalOptions(smearing="gaussian", degauss=0.01)
+        phys = PhysicalOptions()
         _, phys_out = apply_default_policy(cls, num, phys)
+        assert phys_out.occupations == "smearing"
         assert phys_out.smearing == "methfessel-paxton"
         assert phys_out.degauss == 0.02
+
+    def test_insulator_gets_fixed_occupations(self):
+        cls = StructureClassification(
+            dimensionality=Dimensionality.D3,
+            periodic_directions=(True, True, True),
+            vacuum_directions=(False, False, False),
+            electronic_character=ElectronicCharacter.INSULATOR,
+            magnetic_character=MagneticCharacter.NONMAGNETIC,
+            notes=[],
+        )
+        num = NumericalSettings()
+        phys = PhysicalOptions()
+        _, phys_out = apply_default_policy(cls, num, phys)
+        assert phys_out.occupations == "fixed"
+
+    def test_unknown_gets_smearing(self):
+        cls = StructureClassification(
+            dimensionality=Dimensionality.D3,
+            periodic_directions=(True, True, True),
+            vacuum_directions=(False, False, False),
+            electronic_character=ElectronicCharacter.UNKNOWN,
+            magnetic_character=MagneticCharacter.UNKNOWN,
+            notes=[],
+        )
+        num = NumericalSettings()
+        # Pretend user manually set fixed, the policy should reset it to smearing as a safe default
+        phys = PhysicalOptions(occupations="fixed")
+        _, phys_out = apply_default_policy(cls, num, phys)
+        assert phys_out.occupations == "smearing"
 
     def test_insulator_tightens_degauss(self):
         si = _make_bulk_silicon()
@@ -554,9 +599,21 @@ class TestBuildQEInputNamelist:
     def test_system_contains_smearing_and_occupations(self):
         result = build_qe_input_namelist(self._ctx("scf"))
         system = result["system"]
+        assert system["occupations"] == "smearing"
         assert system["smearing"] == "methfessel-paxton"
         assert system["degauss"] == 0.02
-        assert system["occupations"] == "smearing"
+
+    def test_fixed_occupations_omits_smearing_and_degauss(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(occupations="fixed"),
+        )
+        result = build_qe_input_namelist(ctx)
+        system = result["system"]
+        assert system["occupations"] == "fixed"
+        assert "smearing" not in system
+        assert "degauss" not in system
 
     def test_electrons_contains_conv_thr_and_mixing(self):
         ctx = CalculationContext(
@@ -572,15 +629,6 @@ class TestBuildQEInputNamelist:
     def test_control_contains_calculation(self):
         result = build_qe_input_namelist(self._ctx("relax"))
         assert result["control"]["calculation"] == "relax"
-
-    def test_zero_degauss_omits_occupations(self):
-        ctx = CalculationContext(
-            calculation="scf",
-            numerical=NumericalSettings(),
-            physical=PhysicalOptions(degauss=0.0),
-        )
-        result = build_qe_input_namelist(ctx)
-        assert "occupations" not in result["system"]
 
     def test_nscf_no_ions_or_cell(self):
         result = build_qe_input_namelist(self._ctx("nscf"))
