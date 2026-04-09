@@ -132,6 +132,7 @@ _REQUIRED_NAMELISTS: dict[str, frozenset[str]] = {
     "vc-relax": frozenset({"&CONTROL", "&SYSTEM", "&ELECTRONS", "&IONS", "&CELL"}),
     "md": frozenset({"&CONTROL", "&SYSTEM", "&ELECTRONS", "&IONS"}),
     "vc-md": frozenset({"&CONTROL", "&SYSTEM", "&ELECTRONS", "&IONS", "&CELL"}),
+    "bands": frozenset({"&CONTROL", "&SYSTEM", "&ELECTRONS"}),
 }
 
 #: Conservative fallback energy cutoffs (Ry) when no SSSP data is available.
@@ -158,6 +159,17 @@ class Dimensionality(str, Enum):
     D1 = "1D"  #: Nanowire or nanotube
     D2 = "2D"  #: Slab or monolayer
     D3 = "3D"  #: Bulk crystal
+
+
+class WorkflowType(str, Enum):
+    """Supported Quantum ESPRESSO computational workflows."""
+
+    SCF = "scf"
+    NSCF = "nscf"
+    RELAX = "relax"
+    VC_RELAX = "vc-relax"
+    BANDS = "bands"
+    DOS = "dos"
 
 
 class ElectronicCharacter(str, Enum):
@@ -361,7 +373,7 @@ class CalculationContext:
 
     def validate(self) -> None:
         """Raise ValueError if the context is inconsistent."""
-        valid_calculations = {"scf", "nscf", "relax", "vc-relax", "md", "vc-md"}
+        valid_calculations = {"scf", "nscf", "relax", "vc-relax", "md", "vc-md", "bands"}
         if self.calculation not in valid_calculations:
             raise ValueError(
                 f"Unknown calculation type {self.calculation!r}. "
@@ -1004,6 +1016,70 @@ def generate_qe_input_text(
     return preview_text, internal_path, ui_path
 
 
+def generate_workflow_inputs(
+    atoms: "Atoms",
+    base_ctx: CalculationContext,
+    pseudopotentials: dict[str, str],
+    pseudo_dir: str | Path,
+    *,
+    workflow: WorkflowType | str = WorkflowType.SCF,
+    run_dir: Path,
+) -> list[tuple[str, str, Path, Path]]:
+    """
+    Generate multiple step inputs for a full workflow setup.
+    
+    Returns a list of tuples: (step_name, preview_text, internal_path, ui_path)
+    """
+    import dataclasses
+    workflow_val = WorkflowType(workflow)
+    steps = []
+
+    # Helper to generate a single step dict based on the base context
+    def _add_step(name: str, calc_type: str, spacing: float | None = None) -> None:
+        # Re-derive dense grids if necessary, or just use base_ctx limits for SCF
+        if spacing is not None:
+            dense_grid = suggest_kpoints_from_cell(
+                atoms,
+                classification=base_ctx.classification,
+                target_kpoint_spacing=spacing,
+            )
+            step_phys = dataclasses.replace(base_ctx.physical, k_points_grid=dense_grid)
+        else:
+            step_phys = base_ctx.physical
+            
+        step_ctx = dataclasses.replace(
+            base_ctx,
+            calculation=calc_type,
+            physical=step_phys,
+        )
+        
+        # Write to sub-directories if there are multiple steps, or just to prefix
+        # We will write temporary inputs by renaming pw.in appropriately.
+        text, internal, ui = generate_qe_input_text(
+            atoms, step_ctx, pseudopotentials, pseudo_dir, run_dir=run_dir
+        )
+        
+        # Move UI path to a step-specific name if it's a workflow
+        if workflow_val in (WorkflowType.DOS, WorkflowType.BANDS):
+            step_ui_file = ui.with_name(f"pw_{name}.in")
+            ui.rename(step_ui_file)
+            ui = step_ui_file
+            
+        steps.append((name, text, internal, ui))
+
+    if workflow_val == WorkflowType.DOS:
+        _add_step("scf", "scf")
+        _add_step("nscf", "nscf", spacing=DEFAULT_KPOINT_SPACING_DOS)
+    elif workflow_val == WorkflowType.BANDS:
+        _add_step("scf", "scf")
+        _add_step("bands", "bands", spacing=DEFAULT_KPOINT_SPACING_DOS)
+    else:
+        # Standard 1:1 mapped workflows
+        _add_step(workflow_val.value, workflow_val.value)
+        
+    return steps
+
+
 def clean_qe_input_text(input_text: str, *, calc_type: str) -> str:
     """
     Remove empty namelists from a QE ``pw.in`` file.
@@ -1141,8 +1217,13 @@ def make_default_context(
     if apply_policy:
         numerical, physical = apply_default_policy(classification, numerical, physical)
 
+    # Use the first step's specific calculation execution mapping if applicable
+    calc_type = calculation
+    if calculation in ("dos", "bands"):
+        calc_type = "scf"
+
     return CalculationContext(
-        calculation=calculation,
+        calculation=calc_type,
         numerical=numerical,
         physical=physical,
         classification=classification,

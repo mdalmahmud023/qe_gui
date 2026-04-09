@@ -45,7 +45,7 @@ from ..services.input_generator import (
     NumericalSettings,
     PhysicalOptions,
     classify_structure,
-    generate_qe_input_text,
+    generate_workflow_inputs,
     make_default_context,
     select_cutoffs,
     suggest_kpoints_from_cell,
@@ -565,9 +565,9 @@ def _generate_qe_input_via_context(
     """Delegate pw.in generation to the modular input_generator service.
 
     This adapter converts the flat ``qe_parameters`` dict (as stored in
-    session state) into a :class:`CalculationContext` and calls
-    :func:`generate_qe_input_text`.  This keeps all ASE and namelist
-    logic out of the UI layer.
+    session state) into a base :class:`CalculationContext` and calls
+    :func:`generate_workflow_inputs`.  This generates all steps for the
+    requested workflow while preserving backward compatibility for UI returns.
     """
     numerical = NumericalSettings(
         ecutwfc=float(qe_parameters["ecutwfc"]),
@@ -586,10 +586,13 @@ def _generate_qe_input_via_context(
         numerical=numerical,
         physical=physical,
     )
-    return generate_qe_input_text(
+    steps = generate_workflow_inputs(
         atoms,
         ctx,
         pseudopotentials,
         pseudo_dir,
+        workflow=qe_parameters["calculation"],
         run_dir=QE_RUNS_DIR,
     )
+    # The current UI preview system displays the primary file (index 0).
+    return steps[0][1], steps[0][2], steps[0][3]

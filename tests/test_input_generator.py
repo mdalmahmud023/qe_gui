@@ -59,10 +59,12 @@ from qe_studio.services.input_generator import (
     NumericalSettings,
     PhysicalOptions,
     StructureClassification,
+    WorkflowType,
     apply_default_policy,
     build_qe_input_namelist,
     classify_structure,
     clean_qe_input_text,
+    generate_workflow_inputs,
     make_default_context,
     select_cutoffs,
     suggest_cutoffs_from_pseudo_entries,
@@ -890,3 +892,75 @@ class TestMakeDefaultContext:
         ctx_s = make_default_context(si, resolved_entries=entries, preset=CutoffPreset.STANDARD)
         assert ctx_q.numerical.ecutwfc <= ctx_s.numerical.ecutwfc
         assert ctx_q.numerical.ecutrho <= ctx_s.numerical.ecutrho
+
+
+# ---------------------------------------------------------------------------
+# TestGenerateWorkflowInputs
+# ---------------------------------------------------------------------------
+
+class TestGenerateWorkflowInputs:
+    def test_dos_workflow_builds_scf_and_nscf(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        pseudopotentials = {"Si": "Si.upf"}
+        
+        steps = generate_workflow_inputs(
+            si, ctx, pseudopotentials, tmp_path,
+            workflow=WorkflowType.DOS, run_dir=tmp_path
+        )
+        
+        assert len(steps) == 2
+        # First step is SCF
+        assert steps[0][0] == "scf"
+        assert "calculation" in steps[0][1] and "'scf'" in steps[0][1]
+        assert steps[0][3].name == "pw_scf.in"
+        
+        # Second step is NSCF
+        assert steps[1][0] == "nscf"
+        assert "calculation" in steps[1][1] and "'nscf'" in steps[1][1]
+        assert steps[1][3].name == "pw_nscf.in"
+        
+        # NSCF should have denser kpoints (since dos implies spacing 0.05 vs 0.15 for scf)
+        scf_kpts = [line for line in steps[0][1].splitlines() if not line.startswith("K_POINTS") and len(line.split()) == 4]
+        nscf_kpts = [line for line in steps[1][1].splitlines() if not line.startswith("K_POINTS") and len(line.split()) == 4]
+        
+        # very rudimentary check: the kpoint grid values block
+        def get_kgrid(text):
+            for i, line in enumerate(text.splitlines()):
+                if line.startswith("K_POINTS"):
+                    # the next line is the grid
+                    return [int(x) for x in text.splitlines()[i+1].split()[:3]]
+            return [0, 0, 0]
+            
+        assert get_kgrid(steps[1][1])[0] > get_kgrid(steps[0][1])[0]
+
+    def test_bands_workflow_builds_scf_and_bands(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        pseudopotentials = {"Si": "Si.upf"}
+        
+        steps = generate_workflow_inputs(
+            si, ctx, pseudopotentials, tmp_path,
+            workflow=WorkflowType.BANDS, run_dir=tmp_path
+        )
+        
+        assert len(steps) == 2
+        assert steps[0][0] == "scf"
+        assert steps[1][0] == "bands"
+        assert "calculation" in steps[1][1] and "'bands'" in steps[1][1]
+        assert steps[1][3].name == "pw_bands.in"
+
+    def test_standard_workflow_builds_scalar_step(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        pseudopotentials = {"Si": "Si.upf"}
+        
+        steps = generate_workflow_inputs(
+            si, ctx, pseudopotentials, tmp_path,
+            workflow=WorkflowType.RELAX, run_dir=tmp_path
+        )
+        
+        assert len(steps) == 1
+        assert steps[0][0] == "relax"
+        assert steps[0][3].name == "pw.in"
+
