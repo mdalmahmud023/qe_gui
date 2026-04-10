@@ -356,6 +356,7 @@ class TestKpointSuggestion:
             vacuum_directions=(2,),
             electronic_character=ElectronicCharacter.METAL,
             magnetic_character=MagneticCharacter.NONMAGNETIC,
+            magnetic_elements=(),
             notes=[],
         )
         kgrid = suggest_kpoints_from_cell(slab, classification=cls)
@@ -424,6 +425,8 @@ class TestPhysicalOptions:
         assert po.degauss == 0.01
         assert po.k_points_grid == [4, 4, 4]
         assert po.k_points_shift == [0, 0, 0]
+        assert po.noncolin is False
+        assert po.lspinorb is False
 
     def test_validate_accepts_all_occupations_types(self):
         for occ in ("smearing", "fixed", "tetrahedra", "tetrahedra_lin", "tetrahedra_opt"):
@@ -456,6 +459,22 @@ class TestPhysicalOptions:
     def test_validate_rejects_invalid_shift(self):
         with pytest.raises(ValueError, match="k_points_shift"):
             PhysicalOptions(k_points_shift=[0, 2, 0]).validate()
+
+    def test_validate_rejects_lspinorb_without_noncolin(self):
+        with pytest.raises(ValueError, match="lspinorb=True requires noncolin=True"):
+            PhysicalOptions(lspinorb=True).validate()
+
+    def test_validate_rejects_soc_with_nspin_2(self):
+        with pytest.raises(ValueError, match="SOC/noncollinear mode"):
+            PhysicalOptions(noncolin=True, lspinorb=True, nspin=2).validate()
+
+    def test_validate_rejects_soc_with_starting_magnetization(self):
+        with pytest.raises(ValueError, match="starting_magnetization"):
+            PhysicalOptions(
+                noncolin=True,
+                lspinorb=True,
+                starting_magnetization={"Fe": 0.5},
+            ).validate()
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +531,7 @@ class TestDefaultPolicy:
             vacuum_directions=(),
             electronic_character=ElectronicCharacter.METAL,
             magnetic_character=MagneticCharacter.NONMAGNETIC,
+            magnetic_elements=(),
             notes=[],
         )
         num = NumericalSettings()
@@ -528,6 +548,7 @@ class TestDefaultPolicy:
             vacuum_directions=(),
             electronic_character=ElectronicCharacter.INSULATOR,
             magnetic_character=MagneticCharacter.NONMAGNETIC,
+            magnetic_elements=(),
             notes=[],
         )
         num = NumericalSettings()
@@ -542,6 +563,7 @@ class TestDefaultPolicy:
             vacuum_directions=(),
             electronic_character=ElectronicCharacter.UNKNOWN,
             magnetic_character=MagneticCharacter.UNKNOWN,
+            magnetic_elements=(),
             notes=[],
         )
         num = NumericalSettings()
@@ -659,6 +681,18 @@ class TestBuildQEInputNamelist:
         assert isinstance(result, dict)
         for value in result.values():
             assert isinstance(value, dict)
+
+    def test_soc_mode_outputs_noncolin_and_lspinorb(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(noncolin=True, lspinorb=True),
+        )
+        result = build_qe_input_namelist(ctx)
+        system = result["system"]
+        assert system["noncolin"] is True
+        assert system["lspinorb"] is True
+        assert "nspin" not in system
 
 
 # ---------------------------------------------------------------------------
@@ -963,4 +997,71 @@ class TestGenerateWorkflowInputs:
         assert len(steps) == 1
         assert steps[0][0] == "relax"
         assert steps[0][3].name == "pw.in"
+
+# ---------------------------------------------------------------------------
+# TestSpinPolarization
+# ---------------------------------------------------------------------------
+
+class TestSpinPolarization:
+    def test_nspin_1_does_not_output_magnetization(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+        pseudopotentials = {"Si": "Si.upf"}
+        
+        steps = generate_workflow_inputs(
+            si, ctx, pseudopotentials, tmp_path,
+            workflow="scf", run_dir=tmp_path
+        )
+        
+        assert "nspin = 2" not in steps[0][1]
+        assert "starting_magnetization" not in steps[0][1]
+        
+    def test_nspin_2_outputs_magnetizations(self, tmp_path):
+        fe = _make_bulk_iron()
+        ctx = make_default_context(fe)
+        # Force nspin=2 default policy 
+        assert ctx.physical.nspin == 2
+        assert "Fe" in ctx.physical.starting_magnetization
+        
+        pseudopotentials = {"Fe": "Fe.upf"}
+        
+        steps = generate_workflow_inputs(
+            fe, ctx, pseudopotentials, tmp_path,
+            workflow="scf", run_dir=tmp_path
+        )
+        
+        assert "nspin            = 2" in steps[0][1]
+        assert "starting_magnetization" in steps[0][1]
+
+
+class TestSpinOrbitCoupling:
+    def test_generate_workflow_inputs_rejects_incompatible_soc_pseudos(self, tmp_path):
+        si = _make_bulk_silicon()
+        scalar_upf = tmp_path / "Si_scalar.UPF"
+        scalar_upf.write_text(
+            "<UPF><PP_HEADER has_so=\"F\" relativistic=\"scalar\" /></UPF>",
+            encoding="utf-8",
+        )
+
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(noncolin=True, lspinorb=True),
+            resolved_entries={
+                "Si": {
+                    "filename": scalar_upf.name,
+                    "local_path": str(scalar_upf),
+                }
+            },
+        )
+
+        with pytest.raises(ValueError, match="fully relativistic pseudopotentials"):
+            generate_workflow_inputs(
+                si,
+                ctx,
+                {"Si": "Si_scalar.UPF"},
+                tmp_path,
+                workflow="scf",
+                run_dir=tmp_path,
+            )
 

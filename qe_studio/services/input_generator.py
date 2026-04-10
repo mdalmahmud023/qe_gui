@@ -51,6 +51,11 @@ Service functions:
     build_qe_input_namelist(ctx) -> dict
     generate_qe_input_text(atoms, ctx, pseudopotentials, pseudo_dir, *, run_dir)
     clean_qe_input_text(input_text, *, calc_type) -> str
+
+Spin-orbit coupling (SOC) is supported through the same service layer. SOC is
+modeled as a dedicated noncollinear mode where
+``noncolin=.true.`` and ``lspinorb=.true.``, and generation is blocked unless
+all resolved pseudopotentials advertise fully relativistic support.
 """
 
 from __future__ import annotations
@@ -72,6 +77,7 @@ from .cutoff_presets import (
     CutoffDecision,
     CutoffPreset,
 )
+from .pseudopotentials import ensure_soc_compatible_pseudopotentials
 
 # ASE types are used for type hints only; the actual import is deferred to the
 # caller so that tests without ASE can still import the data models.
@@ -220,6 +226,7 @@ class StructureClassification:
     dimensionality: Dimensionality
     electronic_character: ElectronicCharacter
     magnetic_character: MagneticCharacter
+    magnetic_elements: tuple[str, ...]
     periodic_directions: tuple[bool, bool, bool]
     vacuum_directions: tuple[int, ...]
     notes: list[str]
@@ -292,6 +299,11 @@ class PhysicalOptions:
     k_points_shift:
         Monkhorst-Pack shift vector ``[sx, sy, sz]`` where each component
         is 0 (unshifted) or 1 (shifted by half a mesh spacing).
+    noncolin:
+        Enable QE noncollinear mode. The current SOC implementation uses this
+        only as part of the minimal SOC path.
+    lspinorb:
+        Enable QE spin-orbit coupling. Requires ``noncolin=True``.
     """
 
     occupations: str = "smearing"
@@ -299,6 +311,10 @@ class PhysicalOptions:
     degauss: float = 0.01
     k_points_grid: list[int] = field(default_factory=lambda: [4, 4, 4])
     k_points_shift: list[int] = field(default_factory=lambda: [0, 0, 0])
+    nspin: int = 1
+    starting_magnetization: dict[str, float] = field(default_factory=dict)
+    noncolin: bool = False
+    lspinorb: bool = False
 
     def validate(self) -> None:
         """Raise ValueError on clearly invalid settings."""
@@ -331,6 +347,12 @@ class PhysicalOptions:
                 f"k_points_shift must be a list of three values in {{0, 1}}, "
                 f"got {self.k_points_shift}"
             )
+        if self.lspinorb and not self.noncolin:
+            raise ValueError("lspinorb=True requires noncolin=True")
+        if (self.noncolin or self.lspinorb) and self.nspin != 1:
+            raise ValueError("SOC/noncollinear mode requires nspin=1")
+        if (self.noncolin or self.lspinorb) and self.starting_magnetization:
+            raise ValueError("SOC/noncollinear mode is incompatible with starting_magnetization")
 
 
 @dataclass(frozen=True)
@@ -363,6 +385,10 @@ class CalculationContext:
         Inspect :attr:`CutoffDecision.source` to distinguish metadata-driven
         (``"sssp_metadata"``) from heuristic (``"heuristic_fallback"``)
         decisions.
+    resolved_entries:
+        Optional raw resolved pseudopotential metadata, including ``local_path``
+        for each extracted UPF. This is used by the service layer to validate
+        SOC compatibility before any QE input file is written.
     """
 
     calculation: str
@@ -370,6 +396,7 @@ class CalculationContext:
     physical: PhysicalOptions
     classification: StructureClassification | None = None
     cutoff_decision: CutoffDecision | None = None
+    resolved_entries: dict[str, dict[str, Any]] | None = None
 
     def validate(self) -> None:
         """Raise ValueError if the context is inconsistent."""
@@ -492,6 +519,7 @@ def classify_structure(atoms: "Atoms") -> StructureClassification:
         dimensionality=dimensionality,
         electronic_character=electronic_character,
         magnetic_character=magnetic_character,
+        magnetic_elements=tuple(magnetic_elements),
         periodic_directions=tuple(periodic_directions),  # type: ignore[arg-type]
         vacuum_directions=tuple(vacuum_directions),
         notes=notes,
@@ -860,6 +888,16 @@ def apply_default_policy(
         if physical.occupations != "smearing":
             phys_updates["occupations"] = "smearing"
 
+    # Spin policy based on magnetic character
+    if classification.magnetic_character == MagneticCharacter.MAGNETIC:
+        if physical.nspin == 1:
+            phys_updates["nspin"] = 2
+            # Initialize modest ferromagnetism across magnetic elements to break symmetry
+            starting_mag = {}
+            for elem in classification.magnetic_elements:
+                starting_mag[elem] = 0.5
+            phys_updates["starting_magnetization"] = starting_mag
+
     if phys_updates:
         physical = dataclasses.replace(physical, **phys_updates)
     if num_updates:  # Reserved for future numeric policy rules
@@ -915,6 +953,13 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
     if phys.occupations == "smearing":
         system["smearing"] = phys.smearing
         system["degauss"] = phys.degauss
+
+    if phys.noncolin:
+        system["noncolin"] = True
+    if phys.lspinorb:
+        system["lspinorb"] = True
+    if phys.nspin == 2 and not phys.noncolin:
+        system["nspin"] = 2
 
     # &ELECTRONS
     electrons: dict[str, Any] = {
@@ -986,6 +1031,8 @@ def generate_qe_input_text(
             "ASE is not installed. Install it with: pip install ase"
         )
 
+    _validate_generation_context(ctx)
+
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1033,6 +1080,16 @@ def generate_workflow_inputs(
     import dataclasses
     workflow_val = WorkflowType(workflow)
     steps = []
+
+    _validate_generation_context(base_ctx)
+
+    if base_ctx.physical.nspin == 2:
+        atoms = atoms.copy()
+        magmoms = [
+            base_ctx.physical.starting_magnetization.get(atom.symbol, 0.0)
+            for atom in atoms
+        ]
+        atoms.set_initial_magnetic_moments(magmoms)
 
     # Helper to generate a single step dict based on the base context
     def _add_step(name: str, calc_type: str, spacing: float | None = None) -> None:
@@ -1114,6 +1171,18 @@ def clean_qe_input_text(input_text: str, *, calc_type: str) -> str:
     cleaned = re.sub(r"(?ms)^(&[A-Z_]+)\n(?:\s*\n)*\s*/\n", _replacer, input_text)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return f"{cleaned}\n"
+
+
+def _validate_generation_context(ctx: CalculationContext) -> None:
+    """Validate a generation context, including SOC/pseudopotential checks."""
+    ctx.validate()
+    if not (ctx.physical.noncolin or ctx.physical.lspinorb):
+        return
+    if not ctx.resolved_entries:
+        raise ValueError(
+            "Spin-orbit coupling requires resolved pseudopotential metadata with local UPF paths."
+        )
+    ensure_soc_compatible_pseudopotentials(ctx.resolved_entries)
 
 
 # ---------------------------------------------------------------------------
@@ -1228,6 +1297,7 @@ def make_default_context(
         physical=physical,
         classification=classification,
         cutoff_decision=cutoff_decision,
+        resolved_entries=resolved_entries,
     )
 
 

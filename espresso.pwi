@@ -1,0 +1,36 @@
+&CONTROL
+   pseudo_dir       = '.'
+/
+&SYSTEM
+   nspin            = 2
+   starting_magnetization(1) = 0.5
+   starting_magnetization(2) = 0.0
+   ntyp             = 2
+   nat              = 2
+   ibrav            = 0
+/
+&ELECTRONS
+/
+&IONS
+/
+&CELL
+/
+&FCP
+/
+&RISM
+/
+ATOMIC_SPECIES
+Fe  55.845 Fe.upf
+O  15.999 O.upf
+
+K_POINTS gamma
+
+CELL_PARAMETERS angstrom
+3.00000000000000 0.00000000000000 0.00000000000000
+0.00000000000000 3.00000000000000 0.00000000000000
+0.00000000000000 0.00000000000000 3.00000000000000
+
+ATOMIC_POSITIONS angstrom
+Fe  0.0000000000 0.0000000000 0.0000000000  
+O  0.0000000000 0.0000000000 0.0000000000  
+

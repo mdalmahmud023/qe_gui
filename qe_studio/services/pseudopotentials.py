@@ -1,11 +1,19 @@
-"""Helpers for resolving SSSP pseudopotentials from Materials Cloud."""
+"""Helpers for resolving SSSP pseudopotentials from Materials Cloud.
+
+The resolver manages SSSP manifest/archive downloads and local extraction of
+UPF files. It also exposes compatibility checks for downstream workflows such
+as spin-orbit coupling (SOC), which requires fully relativistic
+pseudopotentials for every species in the calculation.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tarfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -27,6 +35,39 @@ DOWNLOAD_TIMEOUT_SECONDS = 120
 
 class PseudopotentialResolutionError(RuntimeError):
     """Raised when pseudopotential resolution cannot complete safely."""
+
+
+class PseudopotentialCompatibilityError(ValueError):
+    """Raised when resolved pseudopotentials are incompatible with a workflow."""
+
+
+@dataclass(frozen=True)
+class SocCompatibilityRecord:
+    """Compatibility result for one resolved UPF file."""
+
+    element: str
+    filename: str
+    local_path: str | None
+    compatible: bool
+    reason: str
+
+
+@dataclass(frozen=True)
+class SocCompatibilityReport:
+    """Compatibility report for using the resolved UPFs in minimal SOC mode."""
+
+    records: tuple[SocCompatibilityRecord, ...]
+    message: str
+
+    @property
+    def all_compatible(self) -> bool:
+        """Return whether every resolved pseudopotential passed the SOC check."""
+        return bool(self.records) and all(record.compatible for record in self.records)
+
+    @property
+    def incompatible_records(self) -> tuple[SocCompatibilityRecord, ...]:
+        """Return the subset of records that failed the SOC check."""
+        return tuple(record for record in self.records if not record.compatible)
 
 
 def get_pseudo_cache_root(cache_root: Path | None = None) -> Path:
@@ -175,6 +216,95 @@ def build_ase_pseudopotentials_map(resolved_entries: dict[str, dict[str, Any]]) 
             )
         ase_map[element] = filename
     return ase_map
+
+
+def inspect_soc_compatibility(resolved_entries: dict[str, dict[str, Any]]) -> SocCompatibilityReport:
+    """Inspect resolved UPFs and report whether they support SOC mode.
+
+    Compatibility is determined from each extracted UPF's metadata. Newer UPFs
+    advertise SOC support through ``PP_HEADER`` fields such as ``has_so`` and
+    ``relativistic="full"``. Older UPFs can require a fallback inspection of
+    textual metadata such as ``PP_INFO`` for explicit scalar- or
+    fully-relativistic annotations.
+    """
+    if not resolved_entries:
+        return SocCompatibilityReport(
+            records=(),
+            message=(
+                "Spin-orbit coupling requires resolved pseudopotential metadata with local "
+                "UPF paths so compatibility can be validated."
+            ),
+        )
+
+    records: list[SocCompatibilityRecord] = []
+    for element, entry in sorted(resolved_entries.items()):
+        filename = str(entry.get("filename") or "unknown")
+        local_path_value = entry.get("local_path")
+        if not local_path_value:
+            records.append(
+                SocCompatibilityRecord(
+                    element=element,
+                    filename=filename,
+                    local_path=None,
+                    compatible=False,
+                    reason="missing extracted UPF path",
+                )
+            )
+            continue
+
+        upf_path = Path(local_path_value)
+        if not upf_path.is_file():
+            records.append(
+                SocCompatibilityRecord(
+                    element=element,
+                    filename=filename,
+                    local_path=str(upf_path),
+                    compatible=False,
+                    reason="resolved UPF file is missing",
+                )
+            )
+            continue
+
+        try:
+            upf_text = upf_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            records.append(
+                SocCompatibilityRecord(
+                    element=element,
+                    filename=filename,
+                    local_path=str(upf_path),
+                    compatible=False,
+                    reason=f"failed to read UPF: {exc}",
+                )
+            )
+            continue
+
+        compatible, reason = _inspect_upf_soc_support(upf_text)
+
+        records.append(
+            SocCompatibilityRecord(
+                element=element,
+                filename=filename,
+                local_path=str(upf_path),
+                compatible=compatible,
+                reason=reason,
+            )
+        )
+
+    return SocCompatibilityReport(
+        records=tuple(records),
+        message=_format_soc_compatibility_message(records),
+    )
+
+
+def ensure_soc_compatible_pseudopotentials(
+    resolved_entries: dict[str, dict[str, Any]],
+) -> SocCompatibilityReport:
+    """Raise a clear error if the resolved pseudopotentials cannot be used for SOC."""
+    report = inspect_soc_compatibility(resolved_entries)
+    if not report.all_compatible:
+        raise PseudopotentialCompatibilityError(report.message)
+    return report
 
 
 def clear_sssp_family_cache(
@@ -524,3 +654,98 @@ def _make_scaled_progress_callback(
         progress_callback(start + ((end - start) * clamped_fraction), message)
 
     return scaled_callback
+
+
+def _extract_upf_pp_header(text: str) -> str | None:
+    """Return the raw ``PP_HEADER`` tag or block from a UPF file."""
+    match = re.search(r"<PP_HEADER\b.*?(?:/>|>.*?</PP_HEADER>)", text, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        return match.group(0)
+    return None
+
+
+def _extract_upf_header_value(header_text: str, key: str) -> str | None:
+    """Extract one field from a raw ``PP_HEADER`` snippet."""
+    patterns = [
+        rf"\b{re.escape(key)}\s*=\s*['\"]?([^'\"\s>/]+)",
+        rf"<{re.escape(key)}>\s*([^<]+?)\s*</{re.escape(key)}>",
+        rf"^\s*{re.escape(key)}\s*[:=]?\s*['\"]?([A-Za-z0-9_.+-]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, header_text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _is_truthy_value(value: str | None) -> bool:
+    """Return whether a UPF boolean-ish token should be treated as true."""
+    if value is None:
+        return False
+    return value.strip().lower() in {"t", "true", ".true.", "1", "yes", "y"}
+
+
+def _inspect_upf_soc_support(text: str) -> tuple[bool, str]:
+    """Classify one UPF file as SOC-capable or not with a user-facing reason."""
+    header_text = _extract_upf_pp_header(text)
+    if header_text is not None:
+        has_so_value = _extract_upf_header_value(header_text, "has_so")
+        relativistic_value = _extract_upf_header_value(header_text, "relativistic")
+        has_so = _is_truthy_value(has_so_value)
+        relativistic_full = (relativistic_value or "").strip().lower() == "full"
+
+        if has_so or relativistic_full:
+            reason_parts: list[str] = []
+            if has_so_value is not None:
+                reason_parts.append(f"has_so={has_so_value!r}")
+            if relativistic_value is not None:
+                reason_parts.append(f"relativistic={relativistic_value!r}")
+            reason = ", ".join(reason_parts) if reason_parts else "PP_HEADER advertises spin-orbit support"
+            return True, reason
+
+        if relativistic_value is not None:
+            return False, f"PP_HEADER reports relativistic={relativistic_value!r}, not 'full'"
+        if has_so_value is not None:
+            return False, f"PP_HEADER reports has_so={has_so_value!r}, not a truthy value"
+
+    legacy_result = _inspect_legacy_upf_soc_support(text)
+    if legacy_result is not None:
+        return legacy_result
+
+    if header_text is None:
+        return False, "PP_HEADER not found"
+    return False, "UPF metadata does not advertise spin-orbit support"
+
+
+def _inspect_legacy_upf_soc_support(text: str) -> tuple[bool, str] | None:
+    """Inspect older UPF metadata when explicit XML-style SOC fields are absent."""
+    if re.search(r"<PP_SPIN_ORB\b", text, flags=re.IGNORECASE):
+        return True, "UPF contains PP_SPIN_ORB data"
+    if re.search(r"\bscalar[-\s]+relativistic calculation\b", text, flags=re.IGNORECASE):
+        return False, "UPF metadata reports a scalar-relativistic calculation"
+    if re.search(r"\bfully[-\s]+relativistic(?:\s+calculation)?\b", text, flags=re.IGNORECASE):
+        return True, "UPF metadata reports a fully relativistic calculation"
+    return None
+
+
+def _format_soc_compatibility_message(records: list[SocCompatibilityRecord]) -> str:
+    """Build a user-facing SOC compatibility summary."""
+    if not records:
+        return (
+            "Spin-orbit coupling requires resolved pseudopotential metadata with local "
+            "UPF paths so compatibility can be validated."
+        )
+
+    incompatible = [record for record in records if not record.compatible]
+    if not incompatible:
+        return "All resolved pseudopotentials advertise fully relativistic spin-orbit support."
+
+    details = "; ".join(
+        f"{record.element} ({record.filename}): {record.reason}"
+        for record in incompatible
+    )
+    return (
+        "Spin-orbit coupling requires fully relativistic pseudopotentials for all species. "
+        f"Use fully relativistic UPFs for every element before enabling SOC. "
+        f"Incompatible pseudopotentials: {details}"
+    )

@@ -42,6 +42,7 @@ from ..core.workspace import QE_RUNS_DIR
 from ..services.input_generator import (
     CalculationContext,
     ElectronicCharacter,
+    MagneticCharacter,
     NumericalSettings,
     PhysicalOptions,
     classify_structure,
@@ -55,6 +56,7 @@ from ..services.pseudopotentials import (
     clear_sssp_family_cache,
     get_structure_signature,
     get_unique_elements,
+    inspect_soc_compatibility,
     resolve_sssp_pseudopotentials,
 )
 from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
@@ -381,6 +383,55 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                     "Make sure this is intended before generating!"
                 )
 
+        st.markdown("**Relativistic Settings**")
+        soc_report = None
+        soc_enabled = st.checkbox(
+            "Enable spin-orbit coupling (noncolin + lspinorb)",
+            value=bool(defaults.get("noncolin") or defaults.get("lspinorb")),
+        )
+        if soc_enabled:
+            st.caption(
+                "SOC currently uses the minimal noncollinear path. Collinear "
+                "spin polarization and starting magnetization are disabled in this mode."
+            )
+            if resolved_entries:
+                soc_report = inspect_soc_compatibility(resolved_entries)
+                if soc_report.all_compatible:
+                    st.success(soc_report.message)
+                else:
+                    st.error(soc_report.message)
+            else:
+                st.info("Resolve pseudopotentials to validate SOC compatibility before generation.")
+
+        st.markdown("**Magnetic Settings**")
+        nspin_val = defaults.get("nspin", 1)
+        is_magnetic = False
+        if "classification" in locals() and classification.magnetic_character == MagneticCharacter.MAGNETIC:
+            is_magnetic = True
+
+        nspin_toggle = st.checkbox(
+            "Spin-polarized calculation (nspin=2)",
+            value=(nspin_val == 2 and not soc_enabled),
+            disabled=soc_enabled,
+        )
+        
+        starting_magnetization = {}
+        if soc_enabled:
+            st.caption("Starting magnetization is unavailable while SOC mode is enabled.")
+        elif nspin_toggle:
+            unique_elements = sorted({atom.symbol for atom in ctx.atoms}) if ctx.atoms else []
+            if unique_elements:
+                st.caption("Fractional initial magnetization (-1.0 to 1.0)")
+                mag_cols = st.columns(min(len(unique_elements), 4))
+                for i, elem in enumerate(unique_elements):
+                    default_mag = defaults.get("starting_magnetization", {}).get(elem, 0.0)
+                    with mag_cols[i % 4]:
+                        mag_val = st.number_input(f"{elem}", min_value=-1.0, max_value=1.0, value=float(default_mag), step=0.1)
+                        starting_magnetization[elem] = mag_val
+        elif is_magnetic:
+            st.warning("This structure contains potentially magnetic elements but spin polarization is disabled. Treat cautiously.")
+
+        st.markdown("")  # Spacing
         with st.expander("Advanced numerical settings", expanded=False):
             adv_col1, adv_col2 = st.columns(2)
             conv_thr = adv_col1.number_input(
@@ -427,6 +478,10 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "k_points_grid": [kx, ky, kz],
         "conv_thr": conv_thr,
         "mixing_beta": mixing_beta,
+        "nspin": 1 if soc_enabled else (2 if nspin_toggle else 1),
+        "starting_magnetization": {} if soc_enabled else starting_magnetization,
+        "noncolin": bool(soc_enabled),
+        "lspinorb": bool(soc_enabled),
     }
     st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
 
@@ -437,6 +492,9 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         clear_generated_qe_input_state()
         st.error("Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file.")
         return
+    if soc_enabled and soc_report is not None and not soc_report.all_compatible:
+        clear_generated_qe_input_state()
+        return
 
     try:
         qe_input_text, internal_path, ui_path = _generate_qe_input_via_context(
@@ -444,6 +502,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             qe_parameters,
             pseudopotentials,
             pseudo_dir,
+            resolved_entries=resolved_entries or None,
         )
     except Exception as exc:
         clear_generated_qe_input_state()
@@ -511,6 +570,10 @@ def default_qe_parameters(
                 "occupations": ctx.physical.occupations,
                 "smearing": ctx.physical.smearing,
                 "degauss": ctx.physical.degauss,
+                "nspin": ctx.physical.nspin,
+                "starting_magnetization": ctx.physical.starting_magnetization,
+                "noncolin": ctx.physical.noncolin,
+                "lspinorb": ctx.physical.lspinorb,
                 "k_points_grid": ctx.physical.k_points_grid,
                 "conv_thr": ctx.numerical.conv_thr,
                 "mixing_beta": ctx.numerical.mixing_beta,
@@ -537,6 +600,10 @@ def default_qe_parameters(
         "occupations": "smearing",
         "smearing": "gaussian",
         "degauss": 0.01,
+        "nspin": 1,
+        "starting_magnetization": {},
+        "noncolin": False,
+        "lspinorb": False,
         "k_points_grid": k_grid,
         "conv_thr": _DEFAULT_CONV_THR,
         "mixing_beta": _DEFAULT_MIXING_BETA,
@@ -561,6 +628,8 @@ def _generate_qe_input_via_context(
     qe_parameters: dict,
     pseudopotentials: dict[str, str],
     pseudo_dir: str,
+    *,
+    resolved_entries: dict[str, dict] | None = None,
 ) -> tuple[str, Path, Path]:
     """Delegate pw.in generation to the modular input_generator service.
 
@@ -576,15 +645,20 @@ def _generate_qe_input_via_context(
         mixing_beta=float(qe_parameters.get("mixing_beta", _DEFAULT_MIXING_BETA)),
     )
     physical = PhysicalOptions(
-        occupations=qe_parameters.get("occupations", "smearing"),
+        occupations=qe_parameters["occupations"],
         smearing=qe_parameters["smearing"],
-        degauss=float(qe_parameters["degauss"]),
-        k_points_grid=list(qe_parameters["k_points_grid"]),
+        degauss=qe_parameters["degauss"],
+        k_points_grid=qe_parameters["k_points_grid"],
+        nspin=qe_parameters.get("nspin", 1),
+        starting_magnetization=qe_parameters.get("starting_magnetization", {}),
+        noncolin=bool(qe_parameters.get("noncolin", False)),
+        lspinorb=bool(qe_parameters.get("lspinorb", False)),
     )
     ctx = CalculationContext(
         calculation=qe_parameters["calculation"],
         numerical=numerical,
         physical=physical,
+        resolved_entries=resolved_entries,
     )
     steps = generate_workflow_inputs(
         atoms,

@@ -184,6 +184,90 @@ class PseudopotentialHelperTests(unittest.TestCase):
             self.assertTrue(second_result["warnings"])
             self.assertIn("missing after using the cached archive", second_result["warnings"][0])
 
+    def test_inspect_soc_compatibility_accepts_fully_relativistic_upf(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            upf_path = Path(tmp_dir) / "Pt_fr.UPF"
+            upf_path.write_text('<UPF><PP_HEADER has_so="T" relativistic="full" /></UPF>')
+
+            report = pseudo.inspect_soc_compatibility(
+                {"Pt": {"filename": upf_path.name, "local_path": str(upf_path)}}
+            )
+
+            self.assertTrue(report.all_compatible)
+            self.assertEqual(len(report.records), 1)
+            self.assertTrue(report.records[0].compatible)
+
+    def test_inspect_soc_compatibility_rejects_scalar_upf(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            upf_path = Path(tmp_dir) / "Si_scalar.UPF"
+            upf_path.write_text('<UPF><PP_HEADER has_so="F" relativistic="scalar" /></UPF>')
+
+            report = pseudo.inspect_soc_compatibility(
+                {"Si": {"filename": upf_path.name, "local_path": str(upf_path)}}
+            )
+
+            self.assertFalse(report.all_compatible)
+            self.assertEqual(len(report.incompatible_records), 1)
+            self.assertIn("fully relativistic pseudopotentials", report.message)
+
+    def test_inspect_soc_compatibility_accepts_legacy_fully_relativistic_upf(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            upf_path = Path(tmp_dir) / "Bi_legacy.UPF"
+            upf_path.write_text(
+                "<UPF><PP_HEADER></PP_HEADER><PP_INFO>"
+                "The Pseudo was generated with a Fully-Relativistic Calculation"
+                "</PP_INFO></UPF>"
+            )
+
+            report = pseudo.inspect_soc_compatibility(
+                {"Bi": {"filename": upf_path.name, "local_path": str(upf_path)}}
+            )
+
+            self.assertTrue(report.all_compatible)
+            self.assertIn("fully relativistic calculation", report.records[0].reason.lower())
+
+    def test_inspect_soc_compatibility_rejects_legacy_scalar_relativistic_upf(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            upf_path = Path(tmp_dir) / "Ca_legacy.UPF"
+            upf_path.write_text(
+                "<UPF><PP_HEADER></PP_HEADER><PP_INFO>"
+                "The Pseudo was generated with a Scalar-Relativistic Calculation"
+                "</PP_INFO></UPF>"
+            )
+
+            report = pseudo.inspect_soc_compatibility(
+                {"Ca": {"filename": upf_path.name, "local_path": str(upf_path)}}
+            )
+
+            self.assertFalse(report.all_compatible)
+            self.assertIn("scalar-relativistic calculation", report.records[0].reason.lower())
+
+    def test_inspect_soc_compatibility_rejects_missing_local_path(self) -> None:
+        report = pseudo.inspect_soc_compatibility(
+            {"Bi": {"filename": "Bi.UPF", "local_path": "missing/Bi.UPF"}}
+        )
+
+        self.assertFalse(report.all_compatible)
+        self.assertIn("resolved UPF file is missing", report.message)
+
+    def test_ensure_soc_compatible_pseudopotentials_rejects_mixed_set(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            fr_path = Path(tmp_dir) / "Bi_fr.UPF"
+            scalar_path = Path(tmp_dir) / "O_scalar.UPF"
+            fr_path.write_text('<UPF><PP_HEADER has_so="T" relativistic="full" /></UPF>')
+            scalar_path.write_text('<UPF><PP_HEADER has_so="F" relativistic="scalar" /></UPF>')
+
+            with self.assertRaises(pseudo.PseudopotentialCompatibilityError) as ctx:
+                pseudo.ensure_soc_compatible_pseudopotentials(
+                    {
+                        "Bi": {"filename": fr_path.name, "local_path": str(fr_path)},
+                        "O": {"filename": scalar_path.name, "local_path": str(scalar_path)},
+                    }
+                )
+
+            self.assertIn("O", str(ctx.exception))
+            self.assertIn("fully relativistic pseudopotentials", str(ctx.exception))
+
     def _fake_download_factory(self, manifest: dict) -> callable:
         def fake_download(url: str, destination: Path, **_kwargs) -> Path:
             destination.parent.mkdir(parents=True, exist_ok=True)

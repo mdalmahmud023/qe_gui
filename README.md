@@ -133,7 +133,7 @@ Open that URL in your browser, then use the `Structure` page to import or build 
 
 The app now uses top navigation with four pages:
 - `Structure`: active-structure banner, centered import/build draft workflow, and a full-width inspection workspace with a larger viewer plus side settings
-- `Setup`: pseudopotentials, QE input generation, `pw.in` preview
+- `Setup`: pseudopotentials, QE input generation, advanced relativistic/SOC controls, `pw.in` preview
 - `Run`: `pw.x`, DOS, bands, live logs, artifact status
 - `Analysis`: DOS and band dashboards
 
@@ -229,6 +229,9 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 - The `Cell Representation` selector affects newly generated QE inputs. If you switch between source and primitive cells, regenerate `pw.in` and rerun the source SCF before post-processing.
 - The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
 - QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination, and previously resolved pseudopotentials are marked stale when the active structure changes.
+- Spin-orbit coupling is opt-in on the `Setup` page, defaults to off, and currently uses the minimal `noncolin + lspinorb` path.
+- SOC requires fully relativistic pseudopotentials for all species in the calculation; mixed or scalar-relativistic UPF sets are blocked with a clear error before input generation.
+- The current SOC support does not yet include noncollinear magnetic vector setup, `angle1/angle2`, or collinear `nspin=2` plus SOC in the same input.
 - DOS and band post-processing runners are disk-driven and inspect `qe_runs/pw.in` first, then `qe_runs/espresso.pwi` if needed.
 - Electronic-properties analysis is disk-driven and looks for DOS and band artifacts inside `qe_runs/`.
 - The `Setup`, `Run`, and `Analysis` pages show explicit warnings when saved `pw.in` data or QE artifacts are out of sync with the current active structure.
