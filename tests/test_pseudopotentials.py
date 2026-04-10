@@ -128,6 +128,8 @@ class PseudopotentialHelperTests(unittest.TestCase):
 
             resolved_map = json.loads(resolved_map_path.read_text())
             self.assertEqual(resolved_map["settings"]["functional"], "PBE")
+            self.assertFalse(resolved_map["settings"]["fully_relativistic"])
+            self.assertFalse(result["settings"]["fully_relativistic"])
             self.assertEqual(resolved_map["structure_signature"]["elements"], ["O", "Si"])
 
     def test_resolve_sssp_pseudopotentials_repairs_corrupt_manifest(self) -> None:

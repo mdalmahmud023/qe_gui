@@ -330,9 +330,24 @@ def sync_pseudopotential_settings_state() -> None:
     if not fully_relativistic_current and not fully_relativistic_resolved:
         keys_to_compare.extend(["mode", "version"])
 
-    if any(current_settings[key] != resolved_settings.get(key) for key in keys_to_compare):
+    def _resolved_value_for_comparison(key: str):
+        if key == "fully_relativistic":
+            return bool(resolved_settings.get(key, False))
+        return resolved_settings.get(key)
+
+    mismatched_keys = [
+        key
+        for key in keys_to_compare
+        if current_settings[key] != _resolved_value_for_comparison(key)
+    ]
+    if mismatched_keys:
+        mismatch_summary = ", ".join(
+            f"{key}={current_settings[key]!r} (resolved {_resolved_value_for_comparison(key)!r})"
+            for key in mismatched_keys
+        )
         mark_pseudopotentials_stale(
-            "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input."
+            "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input. "
+            f"Mismatched settings: {mismatch_summary}."
         )
 
 

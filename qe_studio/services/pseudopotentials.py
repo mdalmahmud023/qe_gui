@@ -430,6 +430,7 @@ def resolve_sssp_pseudopotentials(
             "version": version,
             "functional": functional,
             "mode": mode,
+            "fully_relativistic": False,
         },
         "structure_signature": structure_signature,
         "pseudo_dir": pseudo_dir,

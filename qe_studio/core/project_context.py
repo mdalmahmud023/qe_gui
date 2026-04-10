@@ -53,6 +53,7 @@ from ..services.qe_runner import (
     RUN_RETURNCODE_STATE_KEY,
     RUN_TAIL_LINES_STATE_KEY,
     initialize_run_state,
+    reconcile_run_state,
 )
 
 
@@ -225,6 +226,7 @@ def sync_active_job_summary_from_run_state() -> None:
 def build_project_context(run_dir: Path = QE_RUNS_DIR) -> ProjectContext:
     """Build a lightweight app context from session state plus disk summaries."""
     initialize_run_state(st.session_state)
+    reconcile_run_state(st.session_state)
     initialize_job_summaries_state()
     sync_active_job_summary_from_run_state()
 

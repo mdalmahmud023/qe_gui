@@ -101,6 +101,70 @@ class StructureStateTests(unittest.TestCase):
         self.assertEqual(st.session_state[ss.STRUCTURE_MODE_STATE_KEY], "primitive")
         self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "stale")
 
+    def test_sync_pseudopotential_settings_state_marks_detailed_stale_message_on_mismatch(self) -> None:
+        atoms = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+        st.session_state[ss.ATOMS_STATE_KEY] = atoms
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "resolved",
+            "message": "Resolved pseudopotentials.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0", "fully_relativistic": False},
+        }
+        st.session_state[ss.PSEUDO_FUNCTIONAL_WIDGET_KEY] = "PBEsol"
+        st.session_state[ss.PSEUDO_MODE_WIDGET_KEY] = "efficiency"
+        st.session_state[ss.PSEUDO_VERSION_WIDGET_KEY] = "1.3.0"
+        st.session_state[ss.PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY] = False
+
+        ss.sync_pseudopotential_settings_state()
+
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "stale")
+        self.assertIn("functional='PBEsol'", st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["message"])
+
+    def test_sync_pseudopotential_settings_state_keeps_resolved_when_settings_match(self) -> None:
+        atoms = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+        st.session_state[ss.ATOMS_STATE_KEY] = atoms
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "resolved",
+            "message": "Resolved pseudopotentials.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0", "fully_relativistic": False},
+        }
+        st.session_state[ss.PSEUDO_FUNCTIONAL_WIDGET_KEY] = "PBE"
+        st.session_state[ss.PSEUDO_MODE_WIDGET_KEY] = "efficiency"
+        st.session_state[ss.PSEUDO_VERSION_WIDGET_KEY] = "1.3.0"
+        st.session_state[ss.PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY] = False
+
+        ss.sync_pseudopotential_settings_state()
+
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "resolved")
+
+    def test_sync_pseudopotential_settings_state_treats_missing_fully_relativistic_as_false(self) -> None:
+        atoms = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+        st.session_state[ss.ATOMS_STATE_KEY] = atoms
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "resolved",
+            "message": "Resolved pseudopotentials.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0"},
+        }
+        st.session_state[ss.PSEUDO_FUNCTIONAL_WIDGET_KEY] = "PBE"
+        st.session_state[ss.PSEUDO_MODE_WIDGET_KEY] = "efficiency"
+        st.session_state[ss.PSEUDO_VERSION_WIDGET_KEY] = "1.3.0"
+        st.session_state[ss.PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY] = False
+
+        ss.sync_pseudopotential_settings_state()
+
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "resolved")
+
     def test_generated_input_provenance_round_trip(self) -> None:
         atoms = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
         ss.commit_structure_source(atoms, source_kind="manual", source_label="Manual Builder")

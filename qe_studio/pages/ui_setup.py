@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import streamlit as st
@@ -70,8 +71,54 @@ from .shared import render_status_messages
 # Internal state key for the conv_thr widget (not yet in state_keys.py to
 # avoid a breaking migration; added here as a local constant).
 _QE_CONV_THR_STATE_KEY = "qe_conv_thr"
+_PSEUDO_WIDGET_SYNC_STATE_KEY = "_pseudo_widget_sync_pending"
 _DEFAULT_CONV_THR = 1.0e-6
 _DEFAULT_MIXING_BETA = 0.7
+
+
+def _normalize_pseudopotential_widget_settings(settings: dict | None) -> dict[str, object]:
+    """Normalize stored pseudo settings into supported widget values."""
+    settings = dict(settings or {})
+    return {
+        "functional": (
+            settings.get("functional")
+            if settings.get("functional") in PSEUDO_FUNCTIONAL_OPTIONS
+            else DEFAULT_PSEUDO_SETTINGS["functional"]
+        ),
+        "mode": (
+            settings.get("mode")
+            if settings.get("mode") in PSEUDO_MODE_OPTIONS
+            else DEFAULT_PSEUDO_SETTINGS["mode"]
+        ),
+        "version": (
+            settings.get("version")
+            if settings.get("version") in PSEUDO_VERSION_OPTIONS
+            else DEFAULT_PSEUDO_SETTINGS["version"]
+        ),
+        "fully_relativistic": bool(
+            settings.get(
+                "fully_relativistic",
+                DEFAULT_PSEUDO_SETTINGS["fully_relativistic"],
+            )
+        ),
+    }
+
+
+def _apply_pending_pseudopotential_widget_sync() -> None:
+    """Apply a queued pseudo-widget sync before the widgets are rendered."""
+    pending = st.session_state.pop(_PSEUDO_WIDGET_SYNC_STATE_KEY, None)
+    if pending is None:
+        return
+    normalized = _normalize_pseudopotential_widget_settings(pending)
+    st.session_state[PSEUDO_FUNCTIONAL_WIDGET_KEY] = normalized["functional"]
+    st.session_state[PSEUDO_MODE_WIDGET_KEY] = normalized["mode"]
+    st.session_state[PSEUDO_VERSION_WIDGET_KEY] = normalized["version"]
+    st.session_state[PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY] = normalized["fully_relativistic"]
+
+
+def _queue_pseudopotential_widget_sync(settings: dict | None) -> None:
+    """Schedule pseudo widget state to be synchronized on the next rerun."""
+    st.session_state[_PSEUDO_WIDGET_SYNC_STATE_KEY] = _normalize_pseudopotential_widget_settings(settings)
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -127,30 +174,10 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
     st.markdown("### Pseudopotentials")
     st.caption("Resolve and cache pseudopotentials before generating runnable QE inputs.")
 
+    _apply_pending_pseudopotential_widget_sync()
     structure_loaded = ctx.atoms is not None
     saved_pseudo_settings = st.session_state.get(PSEUDO_SETTINGS_STATE_KEY, DEFAULT_PSEUDO_SETTINGS)
-    default_functional = saved_pseudo_settings.get("functional", DEFAULT_PSEUDO_SETTINGS["functional"])
-    default_mode = saved_pseudo_settings.get("mode", DEFAULT_PSEUDO_SETTINGS["mode"])
-    default_version = saved_pseudo_settings.get("version", DEFAULT_PSEUDO_SETTINGS["version"])
-    current_defaults = {
-        "functional": (
-            default_functional
-            if default_functional in PSEUDO_FUNCTIONAL_OPTIONS
-            else DEFAULT_PSEUDO_SETTINGS["functional"]
-        ),
-        "mode": default_mode if default_mode in PSEUDO_MODE_OPTIONS else DEFAULT_PSEUDO_SETTINGS["mode"],
-        "version": (
-            default_version
-            if default_version in PSEUDO_VERSION_OPTIONS
-            else DEFAULT_PSEUDO_SETTINGS["version"]
-        ),
-        "fully_relativistic": bool(
-            saved_pseudo_settings.get(
-                "fully_relativistic",
-                DEFAULT_PSEUDO_SETTINGS["fully_relativistic"],
-            )
-        ),
-    }
+    current_defaults = _normalize_pseudopotential_widget_settings(saved_pseudo_settings)
 
     top_row_col1, top_row_col2 = st.columns(2)
     top_row_col1.selectbox(
@@ -279,6 +306,7 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             st.session_state[PSEUDO_RESOLVED_ROWS_STATE_KEY] = resolution_result["table_rows"]
             st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = resolution_result["structure_signature"]
             st.session_state[PSEUDO_SETTINGS_STATE_KEY] = resolution_result["settings"]
+            _queue_pseudopotential_widget_sync(resolution_result["settings"])
             # Store raw manifest entries so the input form can display SSSP-
             # recommended cutoffs as caption hints without a separate lookup.
             st.session_state["pseudo_resolved_entries"] = resolution_result["resolved_entries"]
@@ -295,6 +323,7 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
                 resolved_settings=resolution_result["settings"],
                 resolved_structure_signature=resolution_result["structure_signature"],
             )
+            st.rerun()
 
     render_pseudopotential_status()
 
@@ -310,6 +339,10 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     default_k_grid = defaults["k_points_grid"]
     blocker_message = get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
+    submit_block_reason = _get_generation_submit_block_reason(
+        blocker_message=blocker_message,
+        run_active=run_active,
+    )
 
     # --- SSSP-suggested cutoff hints via CutoffDecision ---
     resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
@@ -342,7 +375,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 "heuristic default. Please verify these settings."
             )
 
-    with st.form("qe_input_form"):
+    with st.container():
         row_one_col1, row_one_col1_5, row_one_col2, row_one_col3 = st.columns(4)
         calculation = row_one_col1.selectbox(
             "Calculation Type",
@@ -507,7 +540,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                     "u_ev": u_ev,
                     "source": str(default_entry.get("source", "user_defined")),
                 }
-            if not hubbard_u_parameters:
+            has_positive_hubbard_u = any(float(entry.get("u_ev", 0.0)) > 0.0 for entry in hubbard_u_parameters.values())
+            if not has_positive_hubbard_u:
                 st.info("Select at least one species and enter a positive U value to generate a DFT+U input.")
 
         st.markdown("")  # Spacing
@@ -538,13 +572,25 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 ),
             )
 
-        submitted = st.form_submit_button(
+        submitted = st.button(
             "Generate Input File",
             use_container_width=True,
-            disabled=blocker_message is not None or run_active,
+            disabled=False,
         )
+        if submit_block_reason:
+            st.caption(f"Generation is currently blocked: {submit_block_reason}")
 
     if not submitted:
+        return
+
+    if submit_block_reason:
+        clear_generated_qe_input_state()
+        if run_active:
+            st.info(submit_block_reason)
+        elif ctx.atoms is None:
+            st.info(submit_block_reason)
+        else:
+            st.warning(submit_block_reason)
         return
 
     qe_parameters = {
@@ -564,7 +610,12 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "dftu_enabled": bool(dftu_enabled),
         "hubbard_u": hubbard_u_parameters,
     }
-    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
+
+    validation_error = _validate_qe_submission_parameters(qe_parameters)
+    if validation_error:
+        clear_generated_qe_input_state()
+        st.error(f"Failed to generate the Quantum ESPRESSO input file: {validation_error}")
+        return
 
     pseudopotentials = st.session_state.get(PSEUDO_RESOLVED_MAP_STATE_KEY)
     pseudo_dir = st.session_state.get(PSEUDO_DIR_STATE_KEY)
@@ -591,6 +642,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     reset_run_state(st.session_state)
+    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
     st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
     st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(internal_path)
     st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(ui_path)
@@ -705,8 +757,88 @@ def get_qe_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:
     """
     saved = st.session_state.get(QE_PARAMS_STATE_KEY)
     if saved is not None:
-        return saved
+        sanitized = _sanitize_saved_qe_parameters(saved, resolved_entries=resolved_entries)
+        if sanitized != saved:
+            st.session_state[QE_PARAMS_STATE_KEY] = sanitized
+        return sanitized
     return default_qe_parameters(resolved_entries=resolved_entries, atoms=atoms)
+
+
+def _sanitize_saved_qe_parameters(
+    qe_parameters: dict,
+    *,
+    resolved_entries: dict | None = None,
+) -> dict:
+    """Drop stale saved form states that cannot produce a valid QE input."""
+    sanitized = dict(qe_parameters or {})
+
+    raw_hubbard = sanitized.get("hubbard_u") or {}
+    normalized_hubbard: dict[str, dict[str, object]] = {}
+    if isinstance(raw_hubbard, dict):
+        for fallback_species, payload in raw_hubbard.items():
+            if not isinstance(payload, dict):
+                continue
+            species = str(payload.get("species") or fallback_species)
+            try:
+                u_ev = float(payload.get("u_ev", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(u_ev) or u_ev <= 0.0:
+                continue
+            normalized_hubbard[species] = {
+                "species": species,
+                "u_ev": u_ev,
+                "source": str(payload.get("source") or "user_defined"),
+            }
+
+    dftu_enabled = bool(sanitized.get("dftu_enabled", False))
+    sanitized["dftu_enabled"] = dftu_enabled and bool(normalized_hubbard)
+    sanitized["hubbard_u"] = normalized_hubbard if sanitized["dftu_enabled"] else {}
+
+    soc_enabled = bool(sanitized.get("noncolin") or sanitized.get("lspinorb"))
+    if sanitized.get("lspinorb") and not sanitized.get("noncolin"):
+        soc_enabled = False
+        sanitized["lspinorb"] = False
+    if soc_enabled and resolved_entries:
+        try:
+            soc_report = inspect_soc_compatibility(resolved_entries)
+        except Exception:
+            soc_report = None
+        if soc_report is not None and not soc_report.all_compatible:
+            sanitized["noncolin"] = False
+            sanitized["lspinorb"] = False
+
+    return sanitized
+
+
+def _validate_qe_submission_parameters(qe_parameters: dict) -> str | None:
+    """Return a user-facing validation error for invalid UI-only combinations."""
+    if not bool(qe_parameters.get("dftu_enabled", False)):
+        return None
+
+    raw_parameters = qe_parameters.get("hubbard_u") or {}
+    if not raw_parameters:
+        return "DFT+U is enabled but no Hubbard U species are configured."
+
+    for fallback_species, payload in raw_parameters.items():
+        if not isinstance(payload, dict):
+            continue
+        species = str(payload.get("species") or fallback_species)
+        try:
+            u_ev = float(payload.get("u_ev", 0.0))
+        except (TypeError, ValueError):
+            return f"Hubbard U for {species} must be a positive number."
+        if not math.isfinite(u_ev) or u_ev <= 0.0:
+            return f"Hubbard U for {species} must be greater than 0 eV."
+
+    return None
+
+
+def _get_generation_submit_block_reason(*, blocker_message: str | None, run_active: bool) -> str | None:
+    """Return the user-facing reason generation should not proceed yet."""
+    if run_active:
+        return "Wait for the active calculation to finish before generating a new `pw.in` file."
+    return blocker_message
 
 
 def _generate_qe_input_via_context(

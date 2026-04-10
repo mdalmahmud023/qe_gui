@@ -195,6 +195,45 @@ def mark_runtime_lost(state: MutableMapping[str, object]) -> None:
     state[RUN_RETURNCODE_STATE_KEY] = DEFAULT_FAILURE_RETURNCODE
 
 
+def reconcile_run_state(state: MutableMapping[str, object], *, max_tail_lines: int = DEFAULT_MAX_TAIL_LINES) -> bool:
+    """Sync stored run state with the live registry on non-streaming pages.
+
+    Returns ``True`` when the session state changed. This helper mirrors the
+    recovery logic used by the live Run page so pages like Setup do not keep a
+    stale ``run_active`` lock after a finished or lost background job.
+    """
+    initialize_run_state(state)
+    if not state.get(RUN_ACTIVE_STATE_KEY):
+        return False
+
+    active_run_id = state.get(ACTIVE_RUN_ID_STATE_KEY)
+    if not active_run_id:
+        mark_runtime_lost(state)
+        return True
+
+    context = get_run_context(str(active_run_id))
+    if context is None:
+        mark_runtime_lost(state)
+        return True
+
+    events = drain_run_events(str(active_run_id))
+    run_completed = apply_run_events(
+        state,
+        events,
+        max_tail_lines=max_tail_lines,
+    )
+    if run_completed:
+        cleanup_run(str(active_run_id))
+        return True
+
+    if state.get(RUN_ACTIVE_STATE_KEY) and not context.thread.is_alive():
+        mark_runtime_lost(state)
+        cleanup_run(str(active_run_id))
+        return True
+
+    return bool(events)
+
+
 def get_run_context(run_id: str | None) -> RunContext | None:
     """Return the live run context for the given id, if present."""
     if not run_id:

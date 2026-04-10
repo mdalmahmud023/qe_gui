@@ -1,3 +1,6 @@
+import queue
+import threading
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,6 +11,7 @@ import streamlit as st
 
 from qe_studio.core import project_context as pc
 from qe_studio.core import structure_state as ss
+from qe_studio.services import qe_runner as runner
 
 
 class ProjectContextTests(unittest.TestCase):
@@ -15,6 +19,7 @@ class ProjectContextTests(unittest.TestCase):
         st.session_state.clear()
 
     def tearDown(self) -> None:
+        runner.RUN_REGISTRY.clear()
         st.session_state.clear()
 
     def test_build_project_context_without_structure_uses_empty_summaries(self) -> None:
@@ -143,19 +148,49 @@ class ProjectContextTests(unittest.TestCase):
         self.assertIn("provenance is unavailable", ctx.artifacts.provenance_message or "")
 
     def test_build_project_context_reconstructs_active_job_summary(self) -> None:
+        stop_event = threading.Event()
+        worker = threading.Thread(target=stop_event.wait)
+        worker.start()
+        run_id = "live-dos-run"
+        runner.RUN_REGISTRY[run_id] = runner.RunContext(
+            process=None,
+            thread=worker,
+            queue=queue.Queue(),
+            started_at=datetime.now(timezone.utc),
+        )
         st.session_state[pc.RUN_ACTIVE_STATE_KEY] = True
+        st.session_state[runner.ACTIVE_RUN_ID_STATE_KEY] = run_id
         st.session_state[pc.RUN_JOB_OWNER_STATE_KEY] = pc.JOB_OWNER_DOS
         st.session_state[pc.RUN_JOB_LABEL_STATE_KEY] = "Density of States (DOS)"
         st.session_state[pc.RUN_PHASE_LABEL_STATE_KEY] = "dos.x"
         st.session_state[pc.RUN_RETURNCODE_STATE_KEY] = None
         st.session_state[pc.RUN_TAIL_LINES_STATE_KEY] = ["line 1\n"]
 
-        with TemporaryDirectory() as tmp_dir:
-            ctx = pc.build_project_context(Path(tmp_dir))
+        try:
+            with TemporaryDirectory() as tmp_dir:
+                ctx = pc.build_project_context(Path(tmp_dir))
+        finally:
+            stop_event.set()
+            worker.join(timeout=5)
 
         self.assertEqual(ctx.jobs.latest_status_label, "Running")
         self.assertIn("Density of States", ctx.jobs.latest_status_detail or "")
         self.assertEqual(pc.get_job_summary(pc.JOB_OWNER_DOS)["status"], "running")
+
+    def test_build_project_context_reconciles_orphaned_run_state(self) -> None:
+        st.session_state[pc.RUN_ACTIVE_STATE_KEY] = True
+        st.session_state[pc.RUN_JOB_OWNER_STATE_KEY] = pc.JOB_OWNER_PW
+        st.session_state[pc.RUN_JOB_LABEL_STATE_KEY] = "Run Calculation"
+        st.session_state[pc.RUN_PHASE_LABEL_STATE_KEY] = "pw.x"
+        st.session_state[runner.ACTIVE_RUN_ID_STATE_KEY] = "missing-run"
+
+        with TemporaryDirectory() as tmp_dir:
+            ctx = pc.build_project_context(Path(tmp_dir))
+
+        self.assertFalse(st.session_state[pc.RUN_ACTIVE_STATE_KEY])
+        self.assertTrue(st.session_state[pc.RUN_FINISHED_STATE_KEY])
+        self.assertEqual(ctx.jobs.latest_status_label, "Failed")
+        self.assertEqual(pc.get_job_summary(pc.JOB_OWNER_PW)["status"], "error")
 
     def test_build_project_context_does_not_call_heavy_dos_or_band_parsers(self) -> None:
         with TemporaryDirectory() as tmp_dir:
