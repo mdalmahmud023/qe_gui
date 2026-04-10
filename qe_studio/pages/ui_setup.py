@@ -42,10 +42,13 @@ from ..core.workspace import QE_RUNS_DIR
 from ..services.input_generator import (
     CalculationContext,
     ElectronicCharacter,
+    HubbardUSettings,
+    HubbardUSpeciesParameter,
     MagneticCharacter,
     NumericalSettings,
     PhysicalOptions,
     classify_structure,
+    get_atomic_species_order,
     generate_workflow_inputs,
     make_default_context,
     select_cutoffs,
@@ -431,6 +434,40 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         elif is_magnetic:
             st.warning("This structure contains potentially magnetic elements but spin polarization is disabled. Treat cautiously.")
 
+        st.markdown("**DFT+U Settings**")
+        dftu_enabled = st.checkbox(
+            "Enable DFT+U (lda_plus_u)",
+            value=bool(defaults.get("dftu_enabled", False)),
+        )
+        hubbard_u_parameters: dict[str, dict[str, object]] = {}
+        if dftu_enabled:
+            st.warning(HubbardUSettings.METHOD_WARNING)
+            species_order = get_atomic_species_order(ctx.atoms) if ctx.atoms is not None else ()
+            if not species_order:
+                st.info("Load a structure to configure species-resolved Hubbard U values.")
+            for species in species_order:
+                default_entry = defaults.get("hubbard_u", {}).get(species, {})
+                selected = st.checkbox(
+                    f"Apply U to {species}",
+                    value=species in defaults.get("hubbard_u", {}),
+                )
+                if not selected:
+                    continue
+                u_ev = st.number_input(
+                    f"U for {species} (eV)",
+                    min_value=0.0,
+                    value=float(default_entry.get("u_ev", 0.0)),
+                    step=0.1,
+                    format="%.2f",
+                )
+                hubbard_u_parameters[species] = {
+                    "species": species,
+                    "u_ev": u_ev,
+                    "source": str(default_entry.get("source", "user_defined")),
+                }
+            if not hubbard_u_parameters:
+                st.info("Select at least one species and enter a positive U value to generate a DFT+U input.")
+
         st.markdown("")  # Spacing
         with st.expander("Advanced numerical settings", expanded=False):
             adv_col1, adv_col2 = st.columns(2)
@@ -482,6 +519,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "starting_magnetization": {} if soc_enabled else starting_magnetization,
         "noncolin": bool(soc_enabled),
         "lspinorb": bool(soc_enabled),
+        "dftu_enabled": bool(dftu_enabled),
+        "hubbard_u": hubbard_u_parameters,
     }
     st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
 
@@ -497,7 +536,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     try:
-        qe_input_text, internal_path, ui_path = _generate_qe_input_via_context(
+        qe_input_text, internal_path, ui_path, dftu_metadata = _generate_qe_input_via_context(
             atoms,
             qe_parameters,
             pseudopotentials,
@@ -517,6 +556,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         QE_RUNS_DIR,
         ui_path=str(ui_path),
         internal_path=str(internal_path),
+        extra={"dftu": dftu_metadata},
     )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
@@ -574,6 +614,8 @@ def default_qe_parameters(
                 "starting_magnetization": ctx.physical.starting_magnetization,
                 "noncolin": ctx.physical.noncolin,
                 "lspinorb": ctx.physical.lspinorb,
+                "dftu_enabled": ctx.hubbard_u.enabled,
+                "hubbard_u": ctx.hubbard_u.to_metadata(species_order=ctx.species_order)["species_parameters"],
                 "k_points_grid": ctx.physical.k_points_grid,
                 "conv_thr": ctx.numerical.conv_thr,
                 "mixing_beta": ctx.numerical.mixing_beta,
@@ -604,6 +646,8 @@ def default_qe_parameters(
         "starting_magnetization": {},
         "noncolin": False,
         "lspinorb": False,
+        "dftu_enabled": False,
+        "hubbard_u": {},
         "k_points_grid": k_grid,
         "conv_thr": _DEFAULT_CONV_THR,
         "mixing_beta": _DEFAULT_MIXING_BETA,
@@ -630,7 +674,7 @@ def _generate_qe_input_via_context(
     pseudo_dir: str,
     *,
     resolved_entries: dict[str, dict] | None = None,
-) -> tuple[str, Path, Path]:
+) -> tuple[str, Path, Path, dict[str, object]]:
     """Delegate pw.in generation to the modular input_generator service.
 
     This adapter converts the flat ``qe_parameters`` dict (as stored in
@@ -654,11 +698,15 @@ def _generate_qe_input_via_context(
         noncolin=bool(qe_parameters.get("noncolin", False)),
         lspinorb=bool(qe_parameters.get("lspinorb", False)),
     )
+    species_order = get_atomic_species_order(atoms)
+    hubbard_u = _build_hubbard_u_settings_from_parameters(qe_parameters)
     ctx = CalculationContext(
         calculation=qe_parameters["calculation"],
         numerical=numerical,
         physical=physical,
         resolved_entries=resolved_entries,
+        species_order=species_order,
+        hubbard_u=hubbard_u,
     )
     steps = generate_workflow_inputs(
         atoms,
@@ -669,4 +717,34 @@ def _generate_qe_input_via_context(
         run_dir=QE_RUNS_DIR,
     )
     # The current UI preview system displays the primary file (index 0).
-    return steps[0][1], steps[0][2], steps[0][3]
+    return (
+        steps[0][1],
+        steps[0][2],
+        steps[0][3],
+        hubbard_u.to_metadata(species_order=species_order),
+    )
+
+
+def _build_hubbard_u_settings_from_parameters(qe_parameters: dict) -> HubbardUSettings:
+    """Build typed DFT+U settings from the flat UI parameter dictionary."""
+    enabled = bool(qe_parameters.get("dftu_enabled", False))
+    raw_parameters = qe_parameters.get("hubbard_u") or {}
+    species_parameters: dict[str, HubbardUSpeciesParameter] = {}
+
+    if isinstance(raw_parameters, dict):
+        for fallback_species, payload in raw_parameters.items():
+            if not isinstance(payload, dict):
+                continue
+            species = str(payload.get("species") or fallback_species)
+            source = str(payload.get("source") or "user_defined")
+            u_ev = float(payload.get("u_ev", 0.0))
+            species_parameters[species] = HubbardUSpeciesParameter(
+                species=species,
+                u_ev=u_ev,
+                source=source,
+            )
+
+    return HubbardUSettings(
+        enabled=enabled,
+        species_parameters=species_parameters if enabled else {},
+    )

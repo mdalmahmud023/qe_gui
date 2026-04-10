@@ -36,6 +36,8 @@ Data models:
     StructureClassification  dataclass — output of classify_structure()
     NumericalSettings        dataclass — convergence / mixing knobs
     PhysicalOptions          dataclass — smearing, magnetism, etc.
+    HubbardUSpeciesParameter  dataclass — one user-defined U value by species
+    HubbardUSettings          dataclass — DFT+U configuration and metadata export
     CalculationContext        dataclass — full input to the builder
 
 Re-exported from cutoff_presets (import directly from there for type hints):
@@ -44,6 +46,7 @@ Re-exported from cutoff_presets (import directly from there for type hints):
 
 Service functions:
     classify_structure(atoms) -> StructureClassification
+    get_atomic_species_order(atoms) -> tuple[str, ...]
     select_cutoffs(resolved_entries, *, preset) -> CutoffDecision
     suggest_cutoffs_from_pseudo_entries(resolved_entries) -> tuple[float, float]
         (backward-compatible wrapper around select_cutoffs)
@@ -66,7 +69,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from .cutoff_presets import (
     HEURISTIC_ECUTRHO_RY,
@@ -277,6 +280,91 @@ class NumericalSettings:
             raise ValueError(f"Unknown diagonalization algorithm: {self.diagonalization!r}")
 
 
+@dataclass(frozen=True)
+class HubbardUSpeciesParameter:
+    """One species-level Hubbard U parameter in eV."""
+
+    species: str
+    u_ev: float
+    source: str = "user_defined"
+
+    def validate(self) -> None:
+        """Raise ValueError if the Hubbard U parameter is invalid."""
+        if not self.species or not self.species.strip():
+            raise ValueError("Hubbard U species labels must be non-empty")
+        if not math.isfinite(self.u_ev):
+            raise ValueError(f"Hubbard U for {self.species!r} must be finite, got {self.u_ev!r}")
+        if self.u_ev <= 0:
+            raise ValueError(f"Hubbard U for {self.species!r} must be positive, got {self.u_ev!r}")
+        if not self.source or not self.source.strip():
+            raise ValueError("Hubbard U parameter source labels must be non-empty")
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return a stable, provenance-friendly representation."""
+        return {
+            "species": self.species,
+            "u_ev": self.u_ev,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
+class HubbardUSettings:
+    """Minimal species-based DFT+U configuration."""
+
+    METHOD_WARNING: ClassVar[str] = (
+        "Hubbard U values are method-dependent and must be chosen and validated by the user."
+    )
+
+    enabled: bool = False
+    species_parameters: dict[str, HubbardUSpeciesParameter] = field(default_factory=dict)
+
+    @property
+    def warning_message(self) -> str:
+        """Return the standard DFT+U method-dependence warning."""
+        return self.METHOD_WARNING
+
+    def validate(self, species_order: tuple[str, ...] | None = None) -> None:
+        """Raise ValueError if the DFT+U settings are invalid."""
+        if not self.enabled:
+            return
+
+        if not self.species_parameters:
+            raise ValueError("DFT+U is enabled but no Hubbard U species are configured")
+
+        allowed_species = set(species_order or ())
+        for configured_species, parameter in self.species_parameters.items():
+            parameter.validate()
+            if configured_species != parameter.species:
+                raise ValueError(
+                    f"Hubbard U parameter key {configured_species!r} does not match species {parameter.species!r}"
+                )
+            if species_order is not None and configured_species not in allowed_species:
+                raise ValueError(
+                    f"Hubbard U configured for unknown species {configured_species!r}; "
+                    f"known species: {', '.join(species_order)}"
+                )
+
+    def to_metadata(self, *, species_order: tuple[str, ...] | None = None) -> dict[str, Any]:
+        """Return a stable metadata export describing the rendered DFT+U settings."""
+        ordered_species = tuple(species_order or tuple(self.species_parameters))
+        species_parameters: dict[str, dict[str, Any]] = {}
+        if self.enabled:
+            for species in ordered_species:
+                parameter = self.species_parameters.get(species)
+                if parameter is not None:
+                    species_parameters[species] = parameter.to_metadata()
+
+        return {
+            "enabled": self.enabled,
+            "syntax": "legacy_system",
+            "units": "eV",
+            "method_warning": self.warning_message,
+            "species_order": list(ordered_species),
+            "species_parameters": species_parameters,
+        }
+
+
 @dataclass
 class PhysicalOptions:
     """
@@ -389,6 +477,12 @@ class CalculationContext:
         Optional raw resolved pseudopotential metadata, including ``local_path``
         for each extracted UPF. This is used by the service layer to validate
         SOC compatibility before any QE input file is written.
+    species_order:
+        Atomic-species order matching ASE/QE ``ATOMIC_SPECIES`` rendering.
+        Needed to map species-level Hubbard U values onto ``Hubbard_U(i)``.
+    hubbard_u:
+        Species-based DFT+U settings. Phase 6C uses legacy ``&SYSTEM``
+        rendering via ``lda_plus_u`` and ``Hubbard_U(i)`` only.
     """
 
     calculation: str
@@ -397,6 +491,8 @@ class CalculationContext:
     classification: StructureClassification | None = None
     cutoff_decision: CutoffDecision | None = None
     resolved_entries: dict[str, dict[str, Any]] | None = None
+    species_order: tuple[str, ...] | None = None
+    hubbard_u: HubbardUSettings = field(default_factory=HubbardUSettings)
 
     def validate(self) -> None:
         """Raise ValueError if the context is inconsistent."""
@@ -408,6 +504,9 @@ class CalculationContext:
             )
         self.numerical.validate()
         self.physical.validate()
+        if self.hubbard_u.enabled and not self.species_order:
+            raise ValueError("DFT+U rendering requires species_order when Hubbard U is enabled")
+        self.hubbard_u.validate(self.species_order)
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +623,18 @@ def classify_structure(atoms: "Atoms") -> StructureClassification:
         vacuum_directions=tuple(vacuum_directions),
         notes=notes,
     )
+
+
+def get_atomic_species_order(atoms: "Atoms") -> tuple[str, ...]:
+    """Return the first-occurrence species order used by ASE ``ATOMIC_SPECIES`` output."""
+    seen: set[str] = set()
+    ordered_species: list[str] = []
+    for symbol in atoms.get_chemical_symbols():
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        ordered_species.append(symbol)
+    return tuple(ordered_species)
 
 
 def _is_vacuum_axis(atoms: "Atoms", axis: int, vector_length: float) -> bool:
@@ -960,6 +1071,12 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
         system["lspinorb"] = True
     if phys.nspin == 2 and not phys.noncolin:
         system["nspin"] = 2
+    if ctx.hubbard_u.enabled:
+        system["lda_plus_u"] = True
+        for index, species in enumerate(ctx.species_order or (), start=1):
+            parameter = ctx.hubbard_u.species_parameters.get(species)
+            if parameter is not None:
+                system[f"Hubbard_U({index})"] = parameter.u_ev
 
     # &ELECTRONS
     electrons: dict[str, Any] = {
@@ -1253,6 +1370,7 @@ def make_default_context(
     import dataclasses
 
     classification = classify_structure(atoms)
+    species_order = get_atomic_species_order(atoms)
 
     # --- Cutoff selection ---
     cutoff_decision = select_cutoffs(resolved_entries or {}, preset=preset)
@@ -1298,6 +1416,7 @@ def make_default_context(
         classification=classification,
         cutoff_decision=cutoff_decision,
         resolved_entries=resolved_entries,
+        species_order=species_order,
     )
 
 

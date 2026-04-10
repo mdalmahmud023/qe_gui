@@ -55,6 +55,8 @@ from qe_studio.services.input_generator import (
     CalculationContext,
     Dimensionality,
     ElectronicCharacter,
+    HubbardUSettings,
+    HubbardUSpeciesParameter,
     MagneticCharacter,
     NumericalSettings,
     PhysicalOptions,
@@ -64,6 +66,7 @@ from qe_studio.services.input_generator import (
     build_qe_input_namelist,
     classify_structure,
     clean_qe_input_text,
+    get_atomic_species_order,
     generate_workflow_inputs,
     make_default_context,
     select_cutoffs,
@@ -478,6 +481,47 @@ class TestPhysicalOptions:
 
 
 # ---------------------------------------------------------------------------
+# TestHubbardUSettings
+# ---------------------------------------------------------------------------
+
+
+class TestHubbardUSettings:
+    def test_disabled_allows_empty_configuration(self):
+        HubbardUSettings(enabled=False).validate()
+
+    def test_enabled_accepts_valid_species_parameter(self):
+        HubbardUSettings(
+            enabled=True,
+            species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=4.0)},
+        ).validate(species_order=("Fe", "O"))
+
+    def test_enabled_rejects_missing_species_parameters(self):
+        with pytest.raises(ValueError, match="no Hubbard U species"):
+            HubbardUSettings(enabled=True).validate(species_order=("Fe",))
+
+    def test_rejects_unknown_species_against_species_order(self):
+        with pytest.raises(ValueError, match="unknown species"):
+            HubbardUSettings(
+                enabled=True,
+                species_parameters={"Ni": HubbardUSpeciesParameter(species="Ni", u_ev=6.0)},
+            ).validate(species_order=("Fe", "O"))
+
+    def test_rejects_non_positive_u(self):
+        with pytest.raises(ValueError, match="must be positive"):
+            HubbardUSettings(
+                enabled=True,
+                species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=0.0)},
+            ).validate(species_order=("Fe",))
+
+    def test_rejects_non_finite_u(self):
+        with pytest.raises(ValueError, match="must be finite"):
+            HubbardUSettings(
+                enabled=True,
+                species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=math.inf)},
+            ).validate(species_order=("Fe",))
+
+
+# ---------------------------------------------------------------------------
 # TestCalculationContext
 # ---------------------------------------------------------------------------
 
@@ -500,6 +544,18 @@ class TestCalculationContext:
     def test_validate_rejects_unknown_calculation(self):
         with pytest.raises(ValueError, match="calculation"):
             self._base_ctx("phonon").validate()
+
+    def test_validate_rejects_dftu_without_species_order(self):
+        with pytest.raises(ValueError, match="species_order"):
+            CalculationContext(
+                calculation="scf",
+                numerical=NumericalSettings(),
+                physical=PhysicalOptions(),
+                hubbard_u=HubbardUSettings(
+                    enabled=True,
+                    species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=4.0)},
+                ),
+            ).validate()
 
     def test_is_frozen(self):
         ctx = self._base_ctx()
@@ -694,6 +750,29 @@ class TestBuildQEInputNamelist:
         assert system["lspinorb"] is True
         assert "nspin" not in system
 
+    def test_dftu_mode_outputs_lda_plus_u_and_hubbard_u_by_species_index(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(occupations="fixed"),
+            species_order=("O", "Fe"),
+            hubbard_u=HubbardUSettings(
+                enabled=True,
+                species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=4.5)},
+            ),
+        )
+        result = build_qe_input_namelist(ctx)
+        system = result["system"]
+        assert system["lda_plus_u"] is True
+        assert system["Hubbard_U(2)"] == 4.5
+        assert "Hubbard_U(1)" not in system
+
+    def test_disabled_dftu_leaves_system_unchanged(self):
+        result = build_qe_input_namelist(self._ctx("scf"))
+        system = result["system"]
+        assert "lda_plus_u" not in system
+        assert not any(key.startswith("Hubbard_U(") for key in system)
+
 
 # ---------------------------------------------------------------------------
 # TestCleanQEInputText
@@ -842,6 +921,27 @@ class TestMakeDefaultContext:
         ctx = make_default_context(si)
         assert ctx.classification is not None
         assert isinstance(ctx.classification, StructureClassification)
+
+    def test_species_order_tracks_first_occurrence(self):
+        atoms = Atoms(
+            symbols=["O", "Fe", "O", "Fe"],
+            positions=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [2.0, 2.0, 2.0], [3.0, 3.0, 3.0]],
+            cell=[5.0, 5.0, 5.0],
+            pbc=True,
+        )
+        ctx = make_default_context(atoms, apply_policy=False)
+        assert ctx.species_order == ("O", "Fe")
+
+
+class TestAtomicSpeciesOrder:
+    def test_get_atomic_species_order_uses_first_occurrence(self):
+        atoms = Atoms(
+            symbols=["O", "Fe", "O", "Ni", "Fe"],
+            positions=[[0, 0, 0], [1, 1, 1], [2, 2, 2], [3, 3, 3], [4, 4, 4]],
+            cell=[6, 6, 6],
+            pbc=True,
+        )
+        assert get_atomic_species_order(atoms) == ("O", "Fe", "Ni")
 
     def test_policy_applied_for_metal(self):
         fe = _make_bulk_iron()
@@ -1064,4 +1164,3 @@ class TestSpinOrbitCoupling:
                 workflow="scf",
                 run_dir=tmp_path,
             )
-

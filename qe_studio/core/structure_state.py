@@ -539,6 +539,7 @@ def record_generated_input_provenance(
     *,
     ui_path: str,
     internal_path: str,
+    extra: dict[str, Any] | None = None,
 ) -> Path:
     """Persist provenance for the generated QE base input files."""
     signature = get_current_active_structure_signature()
@@ -554,6 +555,7 @@ def record_generated_input_provenance(
             "ui_path": str(ui_path),
             "internal_path": str(internal_path),
         },
+        extra=extra,
     )
 
 
