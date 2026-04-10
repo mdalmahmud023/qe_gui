@@ -9,6 +9,7 @@ from ..core.state_keys import (
     ATOMS_STATE_KEY,
     DEFAULT_PSEUDO_SETTINGS,
     PSEUDO_DIR_STATE_KEY,
+    PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY,
     PSEUDO_FUNCTIONAL_OPTIONS,
     PSEUDO_FUNCTIONAL_WIDGET_KEY,
     PSEUDO_MODE_OPTIONS,
@@ -56,10 +57,11 @@ from ..services.input_generator import (
 )
 from ..services.pseudopotentials import (
     PseudopotentialResolutionError,
-    clear_sssp_family_cache,
+    clear_pseudopotential_family_cache,
     get_structure_signature,
     get_unique_elements,
     inspect_soc_compatibility,
+    resolve_fully_relativistic_pseudopotentials,
     resolve_sssp_pseudopotentials,
 )
 from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
@@ -123,18 +125,30 @@ def render_pseudopotential_status() -> None:
 def render_pseudopotentials_section(ctx: ProjectContext) -> None:
     """Render the pseudopotential controls and resolution results."""
     st.markdown("### Pseudopotentials")
-    st.caption("Resolve and cache SSSP pseudopotentials before generating runnable QE inputs.")
+    st.caption("Resolve and cache pseudopotentials before generating runnable QE inputs.")
 
     structure_loaded = ctx.atoms is not None
+    saved_pseudo_settings = st.session_state.get(PSEUDO_SETTINGS_STATE_KEY, DEFAULT_PSEUDO_SETTINGS)
+    default_functional = saved_pseudo_settings.get("functional", DEFAULT_PSEUDO_SETTINGS["functional"])
+    default_mode = saved_pseudo_settings.get("mode", DEFAULT_PSEUDO_SETTINGS["mode"])
+    default_version = saved_pseudo_settings.get("version", DEFAULT_PSEUDO_SETTINGS["version"])
     current_defaults = {
-        "functional": st.session_state.get(PSEUDO_SETTINGS_STATE_KEY, DEFAULT_PSEUDO_SETTINGS).get(
-            "functional", DEFAULT_PSEUDO_SETTINGS["functional"]
+        "functional": (
+            default_functional
+            if default_functional in PSEUDO_FUNCTIONAL_OPTIONS
+            else DEFAULT_PSEUDO_SETTINGS["functional"]
         ),
-        "mode": st.session_state.get(PSEUDO_SETTINGS_STATE_KEY, DEFAULT_PSEUDO_SETTINGS).get(
-            "mode", DEFAULT_PSEUDO_SETTINGS["mode"]
+        "mode": default_mode if default_mode in PSEUDO_MODE_OPTIONS else DEFAULT_PSEUDO_SETTINGS["mode"],
+        "version": (
+            default_version
+            if default_version in PSEUDO_VERSION_OPTIONS
+            else DEFAULT_PSEUDO_SETTINGS["version"]
         ),
-        "version": st.session_state.get(PSEUDO_SETTINGS_STATE_KEY, DEFAULT_PSEUDO_SETTINGS).get(
-            "version", DEFAULT_PSEUDO_SETTINGS["version"]
+        "fully_relativistic": bool(
+            saved_pseudo_settings.get(
+                "fully_relativistic",
+                DEFAULT_PSEUDO_SETTINGS["fully_relativistic"],
+            )
         ),
     }
 
@@ -162,6 +176,12 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             key=PSEUDO_VERSION_WIDGET_KEY,
             disabled=not structure_loaded,
         )
+        st.checkbox(
+            "Fully relativistic (SOC-ready, SG15 PBE)",
+            value=bool(current_defaults["fully_relativistic"]),
+            key=PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY,
+            disabled=not structure_loaded,
+        )
         current_use_cache = st.session_state.get(PSEUDO_USE_CACHE_WIDGET_KEY, True)
         st.checkbox(
             "Use cached files if available",
@@ -182,20 +202,34 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
     sync_pseudopotential_settings_state()
     current_settings = get_current_pseudo_settings()
     use_cache = bool(st.session_state.get(PSEUDO_USE_CACHE_WIDGET_KEY, True))
+    fully_relativistic = bool(current_settings.get("fully_relativistic", False))
     elements = get_unique_elements(ctx.atoms)
     st.write(f"Detected elements: {', '.join(elements)}")
+    if fully_relativistic:
+        st.info(
+            "Fully relativistic resolution uses the official SG15 ONCV PBE FR library when files are available. "
+            "The SSSP mode/version selectors are ignored in this mode."
+        )
+        if current_settings["functional"] != "PBE":
+            st.warning("Fully relativistic resolution currently supports the `PBE` functional only.")
 
     if clear_cache_clicked:
-        clear_sssp_family_cache(
-            version=current_settings["version"],
+        clear_pseudopotential_family_cache(
             functional=current_settings["functional"],
             mode=current_settings["mode"],
+            version=current_settings["version"],
+            fully_relativistic=fully_relativistic,
         )
         clear_pseudopotential_state(clear_structure_signature=False)
         st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = get_structure_signature(ctx.atoms)
-        st.success("Cleared cached pseudopotentials for the selected SSSP family.")
+        st.success("Cleared cached pseudopotentials for the selected family.")
 
-    resolve_clicked = st.button("Resolve Pseudopotentials", use_container_width=True)
+    resolve_disabled = fully_relativistic and current_settings["functional"] != "PBE"
+    resolve_clicked = st.button(
+        "Resolve Pseudopotentials",
+        use_container_width=True,
+        disabled=resolve_disabled,
+    )
     if resolve_clicked:
         clear_generated_qe_input_state()
         progress_status = st.empty()
@@ -207,14 +241,22 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             progress_status.info(f"{message} ({percent}%)")
 
         try:
-            resolution_result = resolve_sssp_pseudopotentials(
-                ctx.atoms,
-                version=current_settings["version"],
-                functional=current_settings["functional"],
-                mode=current_settings["mode"],
-                use_cache=use_cache,
-                progress_callback=update_resolution_progress,
-            )
+            if fully_relativistic:
+                resolution_result = resolve_fully_relativistic_pseudopotentials(
+                    ctx.atoms,
+                    functional=current_settings["functional"],
+                    use_cache=use_cache,
+                    progress_callback=update_resolution_progress,
+                )
+            else:
+                resolution_result = resolve_sssp_pseudopotentials(
+                    ctx.atoms,
+                    version=current_settings["version"],
+                    functional=current_settings["functional"],
+                    mode=current_settings["mode"],
+                    use_cache=use_cache,
+                    progress_callback=update_resolution_progress,
+                )
         except PseudopotentialResolutionError as exc:
             progress_bar.empty()
             progress_status.empty()

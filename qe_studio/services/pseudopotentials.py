@@ -1,9 +1,10 @@
-"""Helpers for resolving SSSP pseudopotentials from Materials Cloud.
+"""Helpers for resolving and caching pseudopotentials for QE Studio.
 
-The resolver manages SSSP manifest/archive downloads and local extraction of
-UPF files. It also exposes compatibility checks for downstream workflows such
-as spin-orbit coupling (SOC), which requires fully relativistic
-pseudopotentials for every species in the calculation.
+The resolver manages standard SSSP manifest/archive downloads as well as an
+alternate fully relativistic SG15 ONCV path for SOC-ready inputs. It also
+exposes compatibility checks for downstream workflows such as spin-orbit
+coupling (SOC), which requires fully relativistic pseudopotentials for every
+species in the calculation.
 """
 
 from __future__ import annotations
@@ -25,12 +26,18 @@ from ..core.structure_state import get_structure_signature, get_unique_elements,
 
 
 DEFAULT_PSEUDO_CACHE_ROOT = Path("qe_runs") / "pseudopotentials" / "sssp"
+DEFAULT_PSEUDO_BASE_CACHE_ROOT = DEFAULT_PSEUDO_CACHE_ROOT.parent
 SSSP_RECORD_SLUGS = {
     "1.3.0": "rcyfm-68h65",
 }
 SUPPORTED_FUNCTIONALS = ("PBE", "PBEsol")
 SUPPORTED_MODES = ("efficiency", "precision")
 DOWNLOAD_TIMEOUT_SECONDS = 120
+FULLY_RELATIVISTIC_SOURCE = "sg15_oncv_fr"
+FULLY_RELATIVISTIC_FUNCTIONALS = ("PBE",)
+FULLY_RELATIVISTIC_MODE = "fully_relativistic"
+FULLY_RELATIVISTIC_VERSION = "sg15-oncv-2020-02-06"
+SG15_ONCV_UPF_INDEX_URL = "http://quantum-simulation.org/potentials/sg15_oncv/upf"
 
 
 class PseudopotentialResolutionError(RuntimeError):
@@ -73,6 +80,11 @@ class SocCompatibilityReport:
 def get_pseudo_cache_root(cache_root: Path | None = None) -> Path:
     """Return the root directory for the local pseudopotential cache."""
     return Path(cache_root) if cache_root is not None else DEFAULT_PSEUDO_CACHE_ROOT
+
+
+def get_pseudo_base_cache_root(cache_root: Path | None = None) -> Path:
+    """Return the root directory under which all pseudo families are cached."""
+    return Path(cache_root) if cache_root is not None else DEFAULT_PSEUDO_BASE_CACHE_ROOT
 
 
 def get_sssp_family_key(version: str, functional: str, mode: str) -> str:
@@ -321,6 +333,32 @@ def clear_sssp_family_cache(
     return family_cache_dir
 
 
+def clear_fully_relativistic_family_cache(
+    functional: str,
+    *,
+    cache_root: Path | None = None,
+) -> Path:
+    """Delete the cache subtree for the fully relativistic SG15 family."""
+    family_cache_dir = _get_fully_relativistic_family_cache_dir(functional, cache_root=cache_root)
+    if family_cache_dir.exists():
+        shutil.rmtree(family_cache_dir)
+    return family_cache_dir
+
+
+def clear_pseudopotential_family_cache(
+    *,
+    functional: str,
+    mode: str,
+    version: str,
+    fully_relativistic: bool,
+    cache_root: Path | None = None,
+) -> Path:
+    """Delete the cache subtree for the selected pseudopotential family."""
+    if fully_relativistic:
+        return clear_fully_relativistic_family_cache(functional, cache_root=cache_root)
+    return clear_sssp_family_cache(version, functional, mode, cache_root=cache_root)
+
+
 def resolve_sssp_pseudopotentials(
     atoms,
     *,
@@ -419,6 +457,104 @@ def resolve_sssp_pseudopotentials(
     }
 
 
+def resolve_fully_relativistic_pseudopotentials(
+    atoms,
+    *,
+    functional: str,
+    use_cache: bool,
+    cache_root: Path | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
+    """Resolve fully relativistic SG15 ONCV UPFs for the given structure."""
+    _validate_fully_relativistic_selection(functional)
+
+    structure_signature = get_structure_signature(atoms)
+    elements = structure_signature["elements"]
+    if not elements:
+        raise PseudopotentialResolutionError("The structure does not contain any chemical elements.")
+
+    family_cache_dir = _get_fully_relativistic_family_cache_dir(functional, cache_root=cache_root)
+    family_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    index_path = family_cache_dir / "index.html"
+    extract_dir = family_cache_dir / "extracted"
+    resolved_map_path = family_cache_dir / "resolved_map.json"
+
+    warnings: list[str] = [
+        (
+            "Fully relativistic SG15 ONCV UPFs do not include SSSP cutoff metadata. "
+            "QE Studio will use heuristic cutoffs unless you override them."
+        )
+    ]
+    _emit_progress(progress_callback, 0.02, "Preparing fully relativistic pseudopotential resolution...")
+    available_filenames = _ensure_fully_relativistic_index(
+        index_path=index_path,
+        use_cache=use_cache,
+        warnings=warnings,
+        progress_callback=_make_scaled_progress_callback(progress_callback, 0.05, 0.20),
+    )
+    resolved_entries = resolve_fully_relativistic_index_entries(
+        available_filenames,
+        elements,
+        functional=functional,
+    )
+    resolved_entries = _ensure_fully_relativistic_local_paths(
+        resolved_entries=resolved_entries,
+        extract_dir=extract_dir,
+        use_cache=use_cache,
+        progress_callback=_make_scaled_progress_callback(progress_callback, 0.21, 0.95),
+    )
+
+    ensure_soc_compatible_pseudopotentials(resolved_entries)
+    ase_map = build_ase_pseudopotentials_map(resolved_entries)
+    pseudo_dir = str(extract_dir)
+    table_rows = [
+        {
+            "element": element,
+            "filename": entry["filename"],
+            "local_path": entry["local_path"],
+            "functional": functional,
+            "mode": FULLY_RELATIVISTIC_MODE,
+            "version": FULLY_RELATIVISTIC_VERSION,
+            "source": FULLY_RELATIVISTIC_SOURCE,
+        }
+        for element, entry in resolved_entries.items()
+    ]
+
+    serialized_result = {
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+        "settings": {
+            "version": FULLY_RELATIVISTIC_VERSION,
+            "functional": functional,
+            "mode": FULLY_RELATIVISTIC_MODE,
+            "fully_relativistic": True,
+            "source": FULLY_RELATIVISTIC_SOURCE,
+        },
+        "structure_signature": structure_signature,
+        "pseudo_dir": pseudo_dir,
+        "ase_pseudopotentials": ase_map,
+        "resolved_entries": resolved_entries,
+    }
+    resolved_map_path.write_text(json.dumps(serialized_result, indent=2, sort_keys=True))
+    _emit_progress(progress_callback, 1.0, "Fully relativistic pseudopotential resolution complete.")
+
+    return {
+        "settings": serialized_result["settings"],
+        "structure_signature": structure_signature,
+        "pseudo_dir": pseudo_dir,
+        "ase_pseudopotentials": ase_map,
+        "resolved_entries": resolved_entries,
+        "table_rows": table_rows,
+        "warnings": warnings,
+        "cache_paths": {
+            "family_cache_dir": str(family_cache_dir.resolve()),
+            "index_path": str(index_path.resolve()),
+            "extract_dir": pseudo_dir,
+            "resolved_map_path": str(resolved_map_path.resolve()),
+        },
+    }
+
+
 def _validate_sssp_selection(version: str, functional: str, mode: str) -> None:
     if version not in SSSP_RECORD_SLUGS:
         raise PseudopotentialResolutionError(
@@ -434,6 +570,14 @@ def _validate_sssp_selection(version: str, functional: str, mode: str) -> None:
         )
 
 
+def _validate_fully_relativistic_selection(functional: str) -> None:
+    if functional not in FULLY_RELATIVISTIC_FUNCTIONALS:
+        raise PseudopotentialResolutionError(
+            "Fully relativistic pseudopotential resolution currently supports "
+            f"{', '.join(FULLY_RELATIVISTIC_FUNCTIONALS)} only."
+        )
+
+
 def _get_family_cache_dir(
     version: str,
     functional: str,
@@ -444,8 +588,20 @@ def _get_family_cache_dir(
     return get_pseudo_cache_root(cache_root) / version / functional / mode
 
 
+def _get_fully_relativistic_family_cache_dir(
+    functional: str,
+    *,
+    cache_root: Path | None = None,
+) -> Path:
+    return get_pseudo_base_cache_root(cache_root) / "sg15_oncv" / functional / FULLY_RELATIVISTIC_MODE
+
+
 def _build_download_url(filename: str, *, version: str) -> str:
     return f"{get_sssp_record_base_url(version)}/{filename}?download=1"
+
+
+def _build_fully_relativistic_download_url(filename: str) -> str:
+    return f"{SG15_ONCV_UPF_INDEX_URL}/{filename}"
 
 
 def _ensure_manifest(
@@ -502,6 +658,40 @@ def _ensure_archive_downloaded(
     else:
         _emit_progress(progress_callback, 1.0, "Using cached archive.")
     return archive_path
+
+
+def _ensure_fully_relativistic_index(
+    *,
+    index_path: Path,
+    use_cache: bool,
+    warnings: list[str],
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> list[str]:
+    if not use_cache and index_path.exists():
+        index_path.unlink()
+
+    if not index_path.exists():
+        download_file(
+            SG15_ONCV_UPF_INDEX_URL,
+            index_path,
+            progress_callback=progress_callback,
+            label="Downloading SG15 file index",
+        )
+    else:
+        _emit_progress(progress_callback, 1.0, "Using cached SG15 file index.")
+
+    try:
+        return load_fully_relativistic_index(index_path)
+    except PseudopotentialResolutionError:
+        warnings.append("Cached SG15 file index was invalid. Re-downloading the index.")
+        index_path.unlink(missing_ok=True)
+        download_file(
+            SG15_ONCV_UPF_INDEX_URL,
+            index_path,
+            progress_callback=progress_callback,
+            label="Re-downloading SG15 file index",
+        )
+        return load_fully_relativistic_index(index_path)
 
 
 def _ensure_resolved_local_paths(
@@ -569,6 +759,40 @@ def _ensure_resolved_local_paths(
         )
         attempted_repair = True
         force_download = True
+
+
+def _ensure_fully_relativistic_local_paths(
+    *,
+    resolved_entries: dict[str, dict[str, Any]],
+    extract_dir: Path,
+    use_cache: bool,
+    progress_callback: Callable[[float, str], None] | None = None,
+) -> dict[str, dict[str, Any]]:
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    total_entries = max(len(resolved_entries), 1)
+    updated_entries: dict[str, dict[str, Any]] = {}
+
+    for index, (element, entry) in enumerate(sorted(resolved_entries.items()), start=1):
+        destination = extract_dir / entry["filename"]
+        if not use_cache and destination.exists():
+            destination.unlink()
+        if not destination.exists():
+            download_file(
+                entry["download_url"],
+                destination,
+                progress_callback=None,
+                label=f"Downloading {entry['filename']}",
+            )
+        entry_with_path = dict(entry)
+        entry_with_path["local_path"] = str(destination)
+        updated_entries[element] = entry_with_path
+        _emit_progress(
+            progress_callback,
+            index / total_entries,
+            f"Downloading fully relativistic UPFs: {index} / {total_entries} files",
+        )
+
+    return updated_entries
 
 
 def _extract_archive(
@@ -662,6 +886,80 @@ def _extract_upf_pp_header(text: str) -> str | None:
     if match:
         return match.group(0)
     return None
+
+
+def load_fully_relativistic_index(path: Path) -> list[str]:
+    """Load and validate the SG15 fully relativistic directory index."""
+    try:
+        html = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as exc:
+        raise PseudopotentialResolutionError(f"Failed to read SG15 index '{path}': {exc}") from exc
+
+    filenames = sorted(set(re.findall(r'href="([^"]+\.upf)"', html, flags=re.IGNORECASE)))
+    if not filenames:
+        raise PseudopotentialResolutionError(f"SG15 index '{path}' did not contain any UPF filenames.")
+    return filenames
+
+
+def resolve_fully_relativistic_index_entries(
+    available_filenames: list[str],
+    elements: list[str],
+    *,
+    functional: str,
+) -> dict[str, dict[str, Any]]:
+    """Resolve SG15 fully relativistic filenames for the requested elements."""
+    _validate_fully_relativistic_selection(functional)
+    resolved_entries: dict[str, dict[str, Any]] = {}
+    missing_elements: list[str] = []
+
+    for element in elements:
+        filename = _select_latest_fully_relativistic_filename(element, available_filenames, functional=functional)
+        if filename is None:
+            missing_elements.append(element)
+            continue
+        resolved_entries[element] = {
+            "filename": filename,
+            "pseudopotential": "SG15_ONCV",
+            "source": FULLY_RELATIVISTIC_SOURCE,
+            "download_url": _build_fully_relativistic_download_url(filename),
+        }
+
+    if missing_elements:
+        raise PseudopotentialResolutionError(
+            "Fully relativistic SG15 pseudopotentials were not available for: "
+            f"{', '.join(missing_elements)}."
+        )
+
+    return resolved_entries
+
+
+def _select_latest_fully_relativistic_filename(
+    element: str,
+    available_filenames: list[str],
+    *,
+    functional: str,
+) -> str | None:
+    """Select the latest SG15 fully relativistic filename for an element."""
+    if functional != "PBE":
+        return None
+
+    pattern = re.compile(
+        rf"^{re.escape(element)}_ONCV_PBE_FR-(\d+(?:\.\d+)*)\.upf$",
+        flags=re.IGNORECASE,
+    )
+    candidates: list[tuple[tuple[int, ...], str]] = []
+    for filename in available_filenames:
+        match = pattern.match(filename)
+        if match is None:
+            continue
+        version_tuple = tuple(int(part) for part in match.group(1).split("."))
+        candidates.append((version_tuple, filename))
+
+    if not candidates:
+        return None
+
+    candidates.sort()
+    return candidates[-1][1]
 
 
 def _extract_upf_header_value(header_text: str, key: str) -> str | None:

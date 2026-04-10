@@ -228,9 +228,11 @@ timeout 10s venv/bin/streamlit run app.py --server.headless true --server.addres
 - Generated inputs, logs, analysis artifacts, and deterministic provenance metadata remain disk-first under `qe_runs/`, so the `Run` and `Analysis` pages can reconstruct their state from disk after refresh.
 - The `Cell Representation` selector affects newly generated QE inputs. If you switch between source and primitive cells, regenerate `pw.in` and rerun the source SCF before post-processing.
 - The pseudopotential resolver currently supports SSSP `1.3.0` for `PBE/PBEsol` and `efficiency/precision`.
+- The Setup page also offers a fully relativistic SOC-ready resolver based on the official SG15 ONCV PBE FR UPFs when they are available for all requested elements.
 - QE input generation is blocked until pseudopotentials are resolved for the active structure/settings combination, and previously resolved pseudopotentials are marked stale when the active structure changes.
 - Spin-orbit coupling is opt-in on the `Setup` page, defaults to off, and currently uses the minimal `noncolin + lspinorb` path.
 - SOC requires fully relativistic pseudopotentials for all species in the calculation; mixed or scalar-relativistic UPF sets are blocked with a clear error before input generation.
+- SSSP `efficiency` vs `precision` changes the recommended cutoff quality tier, but it does not automatically switch scalar-relativistic pseudopotentials to fully relativistic ones.
 - The current SOC support does not yet include noncollinear magnetic vector setup, `angle1/angle2`, or collinear `nspin=2` plus SOC in the same input.
 - DFT+U is opt-in on the `Setup` page and currently uses legacy `&SYSTEM` rendering with `lda_plus_u` and species-indexed `Hubbard_U(i)` entries.
 - Hubbard U values are always user-defined in eV for now; QE Studio records them in generated-input provenance but does not recommend or validate scientific U choices.

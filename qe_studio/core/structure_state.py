@@ -18,6 +18,7 @@ from .state_keys import (
     ERROR_STATE_KEY,
     FILENAME_STATE_KEY,
     PSEUDO_DIR_STATE_KEY,
+    PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY,
     PSEUDO_FUNCTIONAL_WIDGET_KEY,
     PSEUDO_MODE_WIDGET_KEY,
     PSEUDO_RESOLVED_MAP_STATE_KEY,
@@ -304,6 +305,12 @@ def get_current_pseudo_settings() -> dict:
         "functional": st.session_state.get(PSEUDO_FUNCTIONAL_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["functional"]),
         "mode": st.session_state.get(PSEUDO_MODE_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["mode"]),
         "version": st.session_state.get(PSEUDO_VERSION_WIDGET_KEY, DEFAULT_PSEUDO_SETTINGS["version"]),
+        "fully_relativistic": bool(
+            st.session_state.get(
+                PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY,
+                DEFAULT_PSEUDO_SETTINGS["fully_relativistic"],
+            )
+        ),
     }
 
 
@@ -317,7 +324,13 @@ def sync_pseudopotential_settings_state() -> None:
         return
 
     resolved_settings = status.get("resolved_settings") or {}
-    if any(current_settings[key] != resolved_settings.get(key) for key in ("functional", "mode", "version")):
+    fully_relativistic_current = bool(current_settings.get("fully_relativistic", False))
+    fully_relativistic_resolved = bool(resolved_settings.get("fully_relativistic", False))
+    keys_to_compare = ["functional", "fully_relativistic"]
+    if not fully_relativistic_current and not fully_relativistic_resolved:
+        keys_to_compare.extend(["mode", "version"])
+
+    if any(current_settings[key] != resolved_settings.get(key) for key in keys_to_compare):
         mark_pseudopotentials_stale(
             "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input."
         )

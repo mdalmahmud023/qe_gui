@@ -29,6 +29,7 @@ PSEUDO_FUNCTIONAL_WIDGET_KEY = "pseudo_widget_functional"
 PSEUDO_MODE_WIDGET_KEY = "pseudo_widget_mode"
 PSEUDO_VERSION_WIDGET_KEY = "pseudo_widget_version"
 PSEUDO_USE_CACHE_WIDGET_KEY = "pseudo_widget_use_cache"
+PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY = "pseudo_widget_fully_relativistic"
 BAND_NBND_WIDGET_KEY = "band_nbnd_widget"
 BAND_COORDINATE_MODE_WIDGET_KEY = "band_coordinate_mode_widget"
 BAND_PATH_WIDGET_KEY = "band_path_widget"
@@ -44,6 +45,7 @@ DEFAULT_PSEUDO_SETTINGS = {
     "functional": "PBE",
     "mode": "efficiency",
     "version": "1.3.0",
+    "fully_relativistic": False,
 }
 STRUCTURE_MODE_OPTIONS = ("source", "primitive")
 

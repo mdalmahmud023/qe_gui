@@ -184,6 +184,64 @@ class PseudopotentialHelperTests(unittest.TestCase):
             self.assertTrue(second_result["warnings"])
             self.assertIn("missing after using the cached archive", second_result["warnings"][0])
 
+    def test_resolve_fully_relativistic_pseudopotentials_downloads_sg15_fr_files(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            cache_root = Path(tmp_dir)
+            atoms = Atoms(
+                "AuFe",
+                positions=[(0.0, 0.0, 0.0), (1.2, 1.2, 1.2)],
+                cell=[5.0, 5.0, 5.0],
+                pbc=True,
+            )
+
+            with mock.patch(
+                "qe_studio.services.pseudopotentials.download_file",
+                side_effect=self._fake_fully_relativistic_download_factory(),
+            ):
+                result = pseudo.resolve_fully_relativistic_pseudopotentials(
+                    atoms,
+                    functional="PBE",
+                    use_cache=True,
+                    cache_root=cache_root,
+                )
+
+            family_dir = cache_root / "sg15_oncv" / "PBE" / "fully_relativistic"
+            self.assertTrue((family_dir / "index.html").exists())
+            self.assertTrue((family_dir / "extracted" / "Au_ONCV_PBE_FR-1.0.upf").exists())
+            self.assertTrue((family_dir / "extracted" / "Fe_ONCV_PBE_FR-1.1.upf").exists())
+            self.assertEqual(
+                result["ase_pseudopotentials"],
+                {"Au": "Au_ONCV_PBE_FR-1.0.upf", "Fe": "Fe_ONCV_PBE_FR-1.1.upf"},
+            )
+            self.assertTrue(result["settings"]["fully_relativistic"])
+            self.assertEqual(result["settings"]["source"], "sg15_oncv_fr")
+            self.assertTrue(result["warnings"])
+            self.assertIn("heuristic cutoffs", result["warnings"][0])
+
+    def test_resolve_fully_relativistic_pseudopotentials_requires_pbe(self) -> None:
+        with self.assertRaises(pseudo.PseudopotentialResolutionError) as ctx:
+            pseudo.resolve_fully_relativistic_pseudopotentials(
+                self.atoms,
+                functional="PBEsol",
+                use_cache=True,
+            )
+        self.assertIn("PBE", str(ctx.exception))
+
+    def test_resolve_fully_relativistic_index_entries_picks_latest_fr_filename(self) -> None:
+        result = pseudo.resolve_fully_relativistic_index_entries(
+            [
+                "Fe_ONCV_PBE-1.2.upf",
+                "Fe_ONCV_PBE_FR-1.0.upf",
+                "Fe_ONCV_PBE_FR-1.1.upf",
+                "O_ONCV_PBE_FR-1.0.upf",
+            ],
+            ["Fe", "O"],
+            functional="PBE",
+        )
+
+        self.assertEqual(result["Fe"]["filename"], "Fe_ONCV_PBE_FR-1.1.upf")
+        self.assertEqual(result["O"]["filename"], "O_ONCV_PBE_FR-1.0.upf")
+
     def test_inspect_soc_compatibility_accepts_fully_relativistic_upf(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             upf_path = Path(tmp_dir) / "Pt_fr.UPF"
@@ -276,6 +334,30 @@ class PseudopotentialHelperTests(unittest.TestCase):
                 return destination
             if url.endswith(".tar.gz?download=1"):
                 self._write_archive(destination, [entry["filename"] for entry in manifest.values()])
+                return destination
+            raise AssertionError(f"Unexpected download URL: {url}")
+
+        return fake_download
+
+    def _fake_fully_relativistic_download_factory(self) -> callable:
+        index_html = """
+        <html><body>
+        <a href="Au_ONCV_PBE_FR-1.0.upf">Au_ONCV_PBE_FR-1.0.upf</a>
+        <a href="Fe_ONCV_PBE_FR-1.0.upf">Fe_ONCV_PBE_FR-1.0.upf</a>
+        <a href="Fe_ONCV_PBE_FR-1.1.upf">Fe_ONCV_PBE_FR-1.1.upf</a>
+        </body></html>
+        """
+
+        def fake_download(url: str, destination: Path, **_kwargs) -> Path:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if url == pseudo.SG15_ONCV_UPF_INDEX_URL:
+                destination.write_text(index_html)
+                return destination
+            if url.endswith("Au_ONCV_PBE_FR-1.0.upf"):
+                destination.write_text('<UPF><PP_HEADER has_so="T" relativistic="full" /></UPF>')
+                return destination
+            if url.endswith("Fe_ONCV_PBE_FR-1.1.upf"):
+                destination.write_text('<UPF><PP_HEADER has_so="T" relativistic="full" /></UPF>')
                 return destination
             raise AssertionError(f"Unexpected download URL: {url}")
 
