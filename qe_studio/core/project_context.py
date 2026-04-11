@@ -25,6 +25,7 @@ from .state_keys import (
 )
 from .structure_state import (
     compare_current_structure_to_record,
+    get_atomic_positions_coordinate_mode,
     get_current_active_structure_signature,
     get_qe_generation_blocker_message,
     get_structure_mode,
@@ -324,12 +325,20 @@ def _build_input_summary(
     else:
         status_label = "Not generated"
 
+    input_record = provenance.get("records", {}).get(PROVENANCE_RECORD_INPUT)
     provenance_state, provenance_message = _resolve_provenance_status(
         current_signature,
-        provenance.get("records", {}).get(PROVENANCE_RECORD_INPUT),
+        input_record,
         subject_label="QE input files",
         record_available=available,
     )
+    coordinate_mode_message = _resolve_input_coordinate_mode_mismatch(
+        input_record,
+        record_available=available,
+    )
+    if provenance_state == "in_sync" and coordinate_mode_message is not None:
+        provenance_state = "out_of_sync"
+        provenance_message = coordinate_mode_message
 
     return InputSummary(
         available=available,
@@ -459,3 +468,34 @@ def _resolve_provenance_status(
         subject_label=subject_label,
     )
     return comparison.state, comparison.message
+
+
+def _resolve_input_coordinate_mode_mismatch(
+    record: dict[str, Any] | None,
+    *,
+    record_available: bool,
+) -> str | None:
+    if not record_available or not isinstance(record, dict):
+        return None
+
+    extra = record.get("extra")
+    if not isinstance(extra, dict):
+        return None
+
+    recorded_mode = extra.get("atomic_positions_coordinate_mode")
+    if recorded_mode not in {"crystal", "angstrom"}:
+        return None
+
+    current_mode = get_atomic_positions_coordinate_mode()
+    if recorded_mode == current_mode:
+        return None
+
+    label_map = {
+        "crystal": "Fractional (crystal)",
+        "angstrom": "Cartesian (angstrom)",
+    }
+    return (
+        "The saved QE input files were generated with "
+        f"{label_map[recorded_mode]} atomic positions, but the current selection is "
+        f"{label_map[current_mode]}. Regenerate `pw.in` to update the `ATOMIC_POSITIONS` card."
+    )

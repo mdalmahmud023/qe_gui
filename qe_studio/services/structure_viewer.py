@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import io
+import json
 from typing import Iterable, Sequence
 
 from ase import Atoms
+from ase.data import atomic_numbers
+from ase.data.colors import jmol_colors
 from ase.io import write
+from ase.neighborlist import natural_cutoffs, neighbor_list
 import numpy as np
 import py3Dmol
 
@@ -55,6 +59,11 @@ SUPERCELL_PRESET_REPEATS = {
     SUPERCELL_MODE_PRESET_222: (2, 2, 2),
 }
 MAX_SUPERCELL_REPEAT = 3
+VIEWER_ORIENTATION_STORAGE_KEY = "qe_studio_structure_viewer_orientation"
+BOND_CUTOFF_MULTIPLIER = 1.1
+BOND_RADIUS_BALL_AND_STICK = 0.16
+BOND_RADIUS_STICK = 0.18
+FALLBACK_BOND_COLOR = "#9ca3af"
 
 
 @dataclass(frozen=True)
@@ -175,12 +184,103 @@ def _atoms_to_cif_text(atoms: Atoms) -> str:
 def _get_style_payload(style_mode: str, show_bonds: bool) -> dict[str, dict[str, float]]:
     effective_show_bonds = get_effective_show_bonds(style_mode, show_bonds)
     if style_mode == STYLE_MODE_STICK:
-        return {"stick": {"radius": 0.18}}
+        return {"sphere": {"scale": 0.18}}
     if style_mode == STYLE_MODE_SPACEFILL:
         return {"sphere": {"scale": 0.7}}
     if effective_show_bonds:
-        return {"sphere": {"scale": 0.32}, "stick": {"radius": 0.16}}
+        return {"sphere": {"scale": 0.32}}
     return {"sphere": {"scale": 0.38}}
+
+
+def _point_payload(coordinates: Sequence[float]) -> dict[str, float]:
+    normalized = [round(float(component), 12) for component in coordinates]
+    normalized = [0.0 if abs(component) < 1.0e-12 else component for component in normalized]
+    return {
+        "x": normalized[0],
+        "y": normalized[1],
+        "z": normalized[2],
+    }
+
+
+def _color_hex_for_symbol(symbol: str) -> str:
+    atomic_number = atomic_numbers.get(symbol)
+    if not atomic_number:
+        return FALLBACK_BOND_COLOR
+    red, green, blue = jmol_colors[int(atomic_number)]
+    return "#{:02x}{:02x}{:02x}".format(
+        int(round(float(red) * 255)),
+        int(round(float(green) * 255)),
+        int(round(float(blue) * 255)),
+    )
+
+
+def _canonical_bond_key(first_index: int, second_index: int, shift: Sequence[int]) -> tuple[int, int, tuple[int, int, int]]:
+    normalized_shift = tuple(int(component) for component in shift)
+    if first_index <= second_index:
+        return first_index, second_index, normalized_shift
+    return second_index, first_index, tuple(-component for component in normalized_shift)
+
+
+def _build_periodic_bond_cylinders(atoms: Atoms, *, radius: float) -> list[dict[str, object]]:
+    """Return explicit bond-cylinder specs using a periodic ASE neighbor list."""
+    if len(atoms) == 0:
+        return []
+
+    positions = np.asarray(atoms.positions, dtype=float)
+    cell_matrix = np.asarray(atoms.cell.array, dtype=float)
+    cutoffs = natural_cutoffs(atoms, mult=BOND_CUTOFF_MULTIPLIER)
+    source_indices, neighbor_indices, shifts = neighbor_list("ijS", atoms, cutoffs)
+    symbols = atoms.get_chemical_symbols()
+
+    cylinders: list[dict[str, object]] = []
+    seen_keys: set[tuple[int, int, tuple[int, int, int]]] = set()
+    for first_index, second_index, shift in zip(source_indices, neighbor_indices, shifts, strict=False):
+        first_index = int(first_index)
+        second_index = int(second_index)
+        normalized_shift = np.asarray(shift, dtype=int)
+        bond_key = _canonical_bond_key(first_index, second_index, normalized_shift)
+        if bond_key in seen_keys:
+            continue
+        seen_keys.add(bond_key)
+
+        if first_index > second_index:
+            first_index, second_index = second_index, first_index
+            normalized_shift = -normalized_shift
+
+        start = positions[first_index]
+        end = positions[second_index] + np.matmul(normalized_shift.astype(float), cell_matrix)
+        if float(np.linalg.norm(end - start)) <= 1.0e-8:
+            continue
+
+        midpoint = (start + end) * 0.5
+        cylinders.append(
+            {
+                "start": _point_payload(start),
+                "end": _point_payload(midpoint),
+                "radius": float(radius),
+                "color": _color_hex_for_symbol(symbols[first_index]),
+            }
+        )
+        cylinders.append(
+            {
+                "start": _point_payload(midpoint),
+                "end": _point_payload(end),
+                "radius": float(radius),
+                "color": _color_hex_for_symbol(symbols[second_index]),
+            }
+        )
+
+    return cylinders
+
+
+def _add_explicit_bonds(viewer, atoms: Atoms, *, style_mode: str, show_bonds: bool) -> None:
+    """Render periodic bond cylinders explicitly instead of relying on viewer guessing."""
+    if not get_effective_show_bonds(style_mode, show_bonds):
+        return
+
+    radius = BOND_RADIUS_STICK if style_mode == STYLE_MODE_STICK else BOND_RADIUS_BALL_AND_STICK
+    for cylinder in _build_periodic_bond_cylinders(atoms, radius=radius):
+        viewer.addCylinder(cylinder)
 
 
 def _get_label_text(symbol: str, atom_index: int, label_mode: str) -> str:
@@ -268,6 +368,12 @@ def build_structure_viewer_html(
     viewer.addModel(_atoms_to_cif_text(atoms), "cif")
     viewer.setStyle(_get_style_payload(viewer_settings.style_mode, viewer_settings.show_bonds))
     viewer.setBackgroundColor("white")
+    _add_explicit_bonds(
+        viewer,
+        atoms,
+        style_mode=viewer_settings.style_mode,
+        show_bonds=viewer_settings.show_bonds,
+    )
     if viewer_settings.show_unit_cell and atoms.cell.rank > 0 and atoms.cell.volume > 0:
         viewer.addUnitCell()
     if viewer_settings.show_axes:
@@ -275,4 +381,59 @@ def build_structure_viewer_html(
     _add_atom_labels(viewer, atoms, viewer_settings.label_mode)
     viewer.zoomTo()
     viewer.render()
-    return viewer._make_html()
+    html = viewer._make_html()
+    return html + _build_view_persistence_script(viewer.uniqueid)
+
+
+def _build_view_persistence_script(uniqueid: str | None) -> str:
+    """Persist viewer orientation so rerenders keep the same rotation."""
+    if not uniqueid:
+        return ""
+
+    storage_key_json = json.dumps(VIEWER_ORIENTATION_STORAGE_KEY)
+    return f"""
+<script>
+$3Dmolpromise.then(function() {{
+    var viewer = viewer_{uniqueid};
+    if (!viewer) {{
+        return;
+    }}
+
+    var storageKey = {storage_key_json};
+
+    var persistOrientation = function(view) {{
+        try {{
+            var sourceView = Array.isArray(view) ? view : viewer.getView();
+            if (!Array.isArray(sourceView) || sourceView.length < 8) {{
+                return;
+            }}
+            window.localStorage.setItem(storageKey, JSON.stringify(sourceView.slice(4, 8)));
+        }} catch (_error) {{
+        }}
+    }};
+
+    try {{
+        var saved = window.localStorage.getItem(storageKey);
+        if (saved) {{
+            var quaternion = JSON.parse(saved);
+            if (Array.isArray(quaternion) && quaternion.length === 4) {{
+                var view = viewer.getView();
+                if (Array.isArray(view) && view.length >= 8) {{
+                    view[4] = quaternion[0];
+                    view[5] = quaternion[1];
+                    view[6] = quaternion[2];
+                    view[7] = quaternion[3];
+                    viewer.setView(view);
+                }}
+            }}
+        }}
+    }} catch (_error) {{
+    }}
+
+    viewer.setViewChangeCallback(function(view) {{
+        persistOrientation(view);
+    }});
+    persistOrientation(viewer.getView());
+}});
+</script>
+"""

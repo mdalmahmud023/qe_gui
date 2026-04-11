@@ -155,6 +155,8 @@ DEFAULT_KPOINT_SPACING_SCF: float = 0.15
 #: Default k-point spacing (Δk in Å⁻¹) for dense workflows (NSCF/DOS).
 DEFAULT_KPOINT_SPACING_DOS: float = 0.05
 
+ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS: frozenset[str] = frozenset({"crystal", "angstrom"})
+
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -483,6 +485,9 @@ class CalculationContext:
     hubbard_u:
         Species-based DFT+U settings. Phase 6C uses legacy ``&SYSTEM``
         rendering via ``lda_plus_u`` and ``Hubbard_U(i)`` only.
+    atomic_positions_coordinate_mode:
+        Coordinate system used when serializing the QE ``ATOMIC_POSITIONS``
+        card. Supported values are ``"crystal"`` and ``"angstrom"``.
     """
 
     calculation: str
@@ -493,6 +498,7 @@ class CalculationContext:
     resolved_entries: dict[str, dict[str, Any]] | None = None
     species_order: tuple[str, ...] | None = None
     hubbard_u: HubbardUSettings = field(default_factory=HubbardUSettings)
+    atomic_positions_coordinate_mode: str = "crystal"
 
     def validate(self) -> None:
         """Raise ValueError if the context is inconsistent."""
@@ -507,6 +513,12 @@ class CalculationContext:
         if self.hubbard_u.enabled and not self.species_order:
             raise ValueError("DFT+U rendering requires species_order when Hubbard U is enabled")
         self.hubbard_u.validate(self.species_order)
+        if self.atomic_positions_coordinate_mode not in ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS:
+            raise ValueError(
+                "atomic_positions_coordinate_mode must be one of "
+                f"{sorted(ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS)}, "
+                f"got {self.atomic_positions_coordinate_mode!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1042,9 +1054,10 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
 
     Notes
     -----
-    The ``ATOMIC_SPECIES``, ``ATOMIC_POSITIONS``, ``CELL_PARAMETERS``, and
-    ``K_POINTS`` card sections are written by ASE based on the ``Atoms`` object
-    and the ``kpts`` argument to ``Espresso()``.
+    The ``ATOMIC_SPECIES``, ``CELL_PARAMETERS``, and ``K_POINTS`` card sections
+    are written by ASE based on the ``Atoms`` object and the ``kpts`` argument
+    to ``Espresso()``. ``ATOMIC_POSITIONS`` is normalized afterwards so the
+    emitted coordinate system follows ``ctx.atomic_positions_coordinate_mode``.
     """
     calc_type = ctx.calculation
     num = ctx.numerical
@@ -1174,6 +1187,12 @@ def generate_qe_input_text(
     ui_path = run_dir / "pw.in"
 
     generated_text = internal_path.read_text(encoding="utf-8")
+    generated_text = _replace_atomic_positions_block(
+        generated_text,
+        atoms_copy,
+        coordinate_mode=ctx.atomic_positions_coordinate_mode,
+    )
+    internal_path.write_text(generated_text, encoding="utf-8")
     preview_text = clean_qe_input_text(generated_text, calc_type=ctx.calculation)
     ui_path.write_text(preview_text, encoding="utf-8")
 
@@ -1288,6 +1307,49 @@ def clean_qe_input_text(input_text: str, *, calc_type: str) -> str:
     cleaned = re.sub(r"(?ms)^(&[A-Z_]+)\n(?:\s*\n)*\s*/\n", _replacer, input_text)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return f"{cleaned}\n"
+
+
+def _replace_atomic_positions_block(input_text: str, atoms: "Atoms", *, coordinate_mode: str) -> str:
+    """Replace ASE's ATOMIC_POSITIONS block with the requested coordinate system."""
+    replacement_block = _build_atomic_positions_block(atoms, coordinate_mode=coordinate_mode)
+    block_pattern = re.compile(
+        r"(?ms)^ATOMIC_POSITIONS\b[^\n]*\n.*?(?=\n\s*\n|\Z)",
+    )
+    updated_text, replacements = block_pattern.subn(replacement_block.rstrip("\n"), input_text, count=1)
+    if replacements == 0:
+        raise ValueError("Failed to locate the ATOMIC_POSITIONS block in the generated QE input.")
+    return updated_text
+
+
+def _build_atomic_positions_block(atoms: "Atoms", *, coordinate_mode: str) -> str:
+    """Build a QE ATOMIC_POSITIONS card for the selected coordinate system."""
+    if coordinate_mode == "crystal":
+        coordinates = atoms.get_scaled_positions(wrap=False)
+    elif coordinate_mode == "angstrom":
+        coordinates = atoms.get_positions()
+    else:
+        raise ValueError(
+            "atomic_positions_coordinate_mode must be one of "
+            f"{sorted(ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS)}, got {coordinate_mode!r}"
+        )
+
+    lines = [f"ATOMIC_POSITIONS {coordinate_mode}"]
+    for symbol, position in zip(atoms.get_chemical_symbols(), coordinates, strict=False):
+        lines.append(
+            f"{symbol}  "
+            f"{_normalize_formatted_coordinate(position[0]):.10f} "
+            f"{_normalize_formatted_coordinate(position[1]):.10f} "
+            f"{_normalize_formatted_coordinate(position[2]):.10f}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _normalize_formatted_coordinate(value: float) -> float:
+    """Clamp signed zero and tiny formatting noise for stable text output."""
+    normalized = float(value)
+    if abs(normalized) < 5.0e-11:
+        return 0.0
+    return normalized
 
 
 def _validate_generation_context(ctx: CalculationContext) -> None:

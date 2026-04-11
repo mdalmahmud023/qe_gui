@@ -1,5 +1,6 @@
 import unittest
 from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest import mock
 
 import streamlit as st
@@ -114,6 +115,45 @@ class UIStructureTests(unittest.TestCase):
 
         self.assertEqual(st.session_state[ui._prototype_family_nonce_state_key(first_family)], 1)
         self.assertNotIn(ui._prototype_family_nonce_state_key(second_family), st.session_state)
+
+    def test_render_structure_mode_controls_defaults_atomic_positions_toggle_to_fractional(self) -> None:
+        atoms = SimpleNamespace()
+        ctx = SimpleNamespace(
+            raw_atoms=atoms,
+            structure=SimpleNamespace(mode_status=None),
+        )
+        observed: dict[str, object] = {}
+
+        def fake_selectbox(_label, options, *, index=0, **_kwargs):
+            return options[index]
+
+        def fake_radio(label, options, *, index=0, horizontal=False, format_func=None, **_kwargs):
+            observed["label"] = label
+            observed["options"] = options
+            observed["index"] = index
+            observed["horizontal"] = horizontal
+            observed["labels"] = [format_func(option) for option in options] if format_func is not None else list(options)
+            return options[index]
+
+        with (
+            mock.patch.object(ui.st, "markdown"),
+            mock.patch.object(ui.st, "info"),
+            mock.patch.object(ui.st, "warning"),
+            mock.patch.object(ui.st, "caption"),
+            mock.patch.object(ui.st, "selectbox", side_effect=fake_selectbox),
+            mock.patch.object(ui.st, "radio", side_effect=fake_radio),
+            mock.patch.object(ui, "get_structure_mode", return_value="source"),
+        ):
+            ui._render_structure_mode_controls(ctx)
+
+        self.assertEqual(observed["label"], "Atomic positions coordinate system")
+        self.assertEqual(observed["options"], ui.ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS)
+        self.assertEqual(observed["index"], 0)
+        self.assertTrue(observed["horizontal"])
+        self.assertEqual(
+            observed["labels"],
+            ["Fractional (crystal)", "Cartesian (angstrom)"],
+        )
 
 
 if __name__ == "__main__":

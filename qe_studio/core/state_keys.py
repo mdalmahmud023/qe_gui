@@ -15,6 +15,7 @@ ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY = "structure_active_signature"
 ERROR_STATE_KEY = "structure_error"
 STRUCTURE_MODE_STATE_KEY = "structure_mode"
 STRUCTURE_MODE_STATUS_STATE_KEY = "structure_mode_status"
+ATOMIC_POSITIONS_COORDINATE_MODE_STATE_KEY = "structure_atomic_positions_coordinate_mode"
 QE_INPUT_TEXT_STATE_KEY = "qe_input_text"
 QE_INPUT_INTERNAL_PATH_STATE_KEY = "qe_input_internal_path"
 QE_INPUT_UI_PATH_STATE_KEY = "qe_input_ui_path"
@@ -48,6 +49,8 @@ DEFAULT_PSEUDO_SETTINGS = {
     "fully_relativistic": False,
 }
 STRUCTURE_MODE_OPTIONS = ("source", "primitive")
+ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS = ("crystal", "angstrom")
+DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE = "crystal"
 
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
 QE_OCCUPATIONS_OPTIONS = ("smearing", "fixed", "tetrahedra")

@@ -34,6 +34,7 @@ from ..core.state_keys import (
 from ..core.structure_state import (
     clear_generated_qe_input_state,
     clear_pseudopotential_state,
+    get_atomic_positions_coordinate_mode,
     get_current_pseudo_settings,
     get_qe_generation_blocker_message,
     record_generated_input_provenance,
@@ -881,6 +882,7 @@ def _generate_qe_input_via_context(
         resolved_entries=resolved_entries,
         species_order=species_order,
         hubbard_u=hubbard_u,
+        atomic_positions_coordinate_mode=get_atomic_positions_coordinate_mode(),
     )
     steps = generate_workflow_inputs(
         atoms,

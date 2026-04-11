@@ -12,9 +12,12 @@ import streamlit as st
 
 from .state_keys import (
     ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY,
+    ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS,
+    ATOMIC_POSITIONS_COORDINATE_MODE_STATE_KEY,
     ATOMS_STATE_KEY,
     AUTO_BAND_PATH_STATUS_STATE_KEY,
     DEFAULT_PSEUDO_SETTINGS,
+    DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE,
     ERROR_STATE_KEY,
     FILENAME_STATE_KEY,
     PSEUDO_DIR_STATE_KEY,
@@ -79,6 +82,31 @@ def normalize_structure_mode(mode: str | None) -> str:
 def get_structure_mode() -> str:
     """Return the current structure cell-mode selection."""
     return normalize_structure_mode(st.session_state.get(STRUCTURE_MODE_STATE_KEY, "source"))
+
+
+def normalize_atomic_positions_coordinate_mode(mode: str | None) -> str:
+    """Normalize invalid QE atomic-position coordinate modes onto supported options."""
+    normalized = (mode or "").strip().lower()
+    if normalized in ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS:
+        return normalized
+    return DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE
+
+
+def get_atomic_positions_coordinate_mode() -> str:
+    """Return the current ATOMIC_POSITIONS coordinate-system selection."""
+    return normalize_atomic_positions_coordinate_mode(
+        st.session_state.get(
+            ATOMIC_POSITIONS_COORDINATE_MODE_STATE_KEY,
+            DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE,
+        )
+    )
+
+
+def set_atomic_positions_coordinate_mode(mode: str | None) -> str:
+    """Persist and return the normalized ATOMIC_POSITIONS coordinate-system selection."""
+    normalized = normalize_atomic_positions_coordinate_mode(mode)
+    st.session_state[ATOMIC_POSITIONS_COORDINATE_MODE_STATE_KEY] = normalized
+    return normalized
 
 
 def get_unique_elements(atoms) -> list[str]:
@@ -210,6 +238,7 @@ def clear_structure_state() -> None:
     """Remove stored structure and dependent session state."""
     clear_pseudopotential_state(clear_structure_signature=True)
     for key in (
+        ATOMIC_POSITIONS_COORDINATE_MODE_STATE_KEY,
         ATOMS_STATE_KEY,
         RAW_ATOMS_STATE_KEY,
         STRUCTURE_FILE_BYTES_STATE_KEY,
@@ -225,6 +254,7 @@ def clear_structure_state() -> None:
         STRUCTURE_MODE_STATUS_STATE_KEY,
     ):
         st.session_state.pop(key, None)
+    set_atomic_positions_coordinate_mode(DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE)
 
 
 def set_structure_error(message: str | None) -> None:
@@ -456,6 +486,7 @@ def commit_structure_source(
         structure_mode_message=structure_mode_message,
         payload_bytes=payload_bytes,
     )
+    set_atomic_positions_coordinate_mode(DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE)
     return {
         "raw_signature": st.session_state.get(RAW_STRUCTURE_SIGNATURE_STATE_KEY),
         "active_signature": st.session_state.get(ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY),
@@ -572,6 +603,8 @@ def record_generated_input_provenance(
     """Persist provenance for the generated QE base input files."""
     signature = get_current_active_structure_signature()
     source_metadata = get_current_source_metadata()
+    extra_metadata = dict(extra or {})
+    extra_metadata["atomic_positions_coordinate_mode"] = get_atomic_positions_coordinate_mode()
     return update_provenance_record(
         run_dir,
         PROVENANCE_RECORD_INPUT,
@@ -583,7 +616,7 @@ def record_generated_input_provenance(
             "ui_path": str(ui_path),
             "internal_path": str(internal_path),
         },
-        extra=extra,
+        extra=extra_metadata,
     )
 
 

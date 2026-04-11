@@ -6,12 +6,18 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from ..core.project_context import ProjectContext
-from ..core.state_keys import ERROR_STATE_KEY, STRUCTURE_MODE_OPTIONS
+from ..core.state_keys import (
+    ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS,
+    ERROR_STATE_KEY,
+    STRUCTURE_MODE_OPTIONS,
+)
 from ..core.structure_state import (
     apply_structure_mode_selection,
     clear_structure_state,
     commit_structure_source,
+    get_atomic_positions_coordinate_mode,
     get_structure_mode,
+    set_atomic_positions_coordinate_mode,
     set_structure_error,
 )
 from ..services.prototype_catalog import (
@@ -520,13 +526,27 @@ def _render_structure_mode_controls(ctx: ProjectContext) -> None:
         else:
             st.rerun()
 
+    current_coordinate_mode = get_atomic_positions_coordinate_mode()
+    selected_coordinate_mode = st.radio(
+        "Atomic positions coordinate system",
+        options=ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS,
+        index=ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS.index(current_coordinate_mode),
+        horizontal=True,
+        format_func=_format_atomic_positions_coordinate_mode_label,
+    )
+    if selected_coordinate_mode != current_coordinate_mode:
+        set_atomic_positions_coordinate_mode(selected_coordinate_mode)
+
     status_bits: list[str] = []
     if ctx.structure.mode_status:
         if "failed" in ctx.structure.mode_status.lower():
             st.warning(ctx.structure.mode_status)
         elif ctx.structure.mode_status not in {"Using the source cell.", "The source structure already looks like a primitive cell."}:
             status_bits.append(ctx.structure.mode_status)
-    status_bits.append("Changing the active cell representation affects newly generated QE inputs. Regenerate `pw.in` before DOS or bands.")
+    status_bits.append(
+        "Changing the active cell representation or atomic-position coordinate system affects newly generated QE inputs. "
+        "Regenerate `pw.in` before DOS or bands."
+    )
     st.caption(" ".join(status_bits))
 
 
@@ -537,7 +557,7 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
     st.session_state[VIEWER_VISIBLE_SPECIES_WIDGET_KEY] = list(normalized_species)
     st.session_state.setdefault(VIEWER_LABEL_MODE_WIDGET_KEY, LABEL_MODE_OFF)
     st.session_state.setdefault(VIEWER_STYLE_MODE_WIDGET_KEY, STYLE_MODE_BALL_AND_STICK)
-    st.session_state.setdefault(VIEWER_SHOW_BONDS_WIDGET_KEY, True)
+    st.session_state.setdefault(VIEWER_SHOW_BONDS_WIDGET_KEY, False)
     st.session_state.setdefault(VIEWER_SHOW_UNIT_CELL_WIDGET_KEY, True)
     st.session_state.setdefault(VIEWER_SHOW_AXES_WIDGET_KEY, False)
     st.session_state.setdefault(VIEWER_SUPERCELL_MODE_WIDGET_KEY, "preset_111")
@@ -573,7 +593,7 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
         key=VIEWER_SHOW_BONDS_WIDGET_KEY,
         disabled=not style_supports_bond_toggle(style_mode),
         help=(
-            "Viewer only. Bonds are heuristic for inspection."
+            "Viewer only. PBC-aware bonds use ASE neighbor-list distance heuristics and are off by default."
             if style_supports_bond_toggle(style_mode)
             else "Stick style always shows bonds, and spacefill hides them."
         ),
@@ -633,7 +653,9 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
 
     st.caption("Viewer only: labels, species filters, bonds, and supercell repeats affect only the display.")
     if effective_show_bonds:
-        st.caption("Heuristic bonds for inspection only.")
+        st.caption("PBC-aware inspection bonds use ASE neighbor-list distance heuristics.")
+    elif style_supports_bond_toggle(style_mode):
+        st.caption("PBC-aware inspection bonds are off by default for a cleaner crystal view.")
     if settings.supercell_repeat != (1, 1, 1):
         st.caption(
             f"Viewer only supercell repeat: {format_supercell_repeat(settings.supercell_repeat)}. QE Studio still uses the original active structure downstream."
@@ -696,6 +718,13 @@ def _build_source_detail_rows(source_details: dict[str, Any]) -> list[dict[str, 
             value_text = str(value)
         rows.append({"Field": label, "Value": value_text})
     return rows
+
+
+def _format_atomic_positions_coordinate_mode_label(mode: str) -> str:
+    return {
+        "crystal": "Fractional (crystal)",
+        "angstrom": "Cartesian (angstrom)",
+    }.get(mode, str(mode))
 
 
 def _commit_structure_result(result, *, payload_bytes: bytes | None = None) -> None:

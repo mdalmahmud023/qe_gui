@@ -48,6 +48,9 @@ class StructureStateTests(unittest.TestCase):
 
         self.assertEqual(ss.get_structure_signature(first)["hash"], ss.get_structure_signature(second)["hash"])
 
+    def test_atomic_positions_coordinate_mode_defaults_to_crystal(self) -> None:
+        self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
+
     def test_commit_structure_source_marks_pseudopotentials_stale_for_same_elements(self) -> None:
         first = Atoms(
             "Si2",
@@ -79,6 +82,23 @@ class StructureStateTests(unittest.TestCase):
         self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "stale")
         self.assertEqual(st.session_state[ss.SOURCE_KIND_STATE_KEY], "manual")
         self.assertIsNotNone(st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY])
+
+    def test_commit_structure_source_resets_atomic_positions_coordinate_mode_to_crystal(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.43, 5.43, 5.43], pbc=True)
+        ss.set_atomic_positions_coordinate_mode("angstrom")
+
+        ss.commit_structure_source(atoms, source_kind="manual", source_label="Manual Builder")
+
+        self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
+
+    def test_clear_structure_state_resets_atomic_positions_coordinate_mode_to_crystal(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.43, 5.43, 5.43], pbc=True)
+        ss.commit_structure_source(atoms, source_kind="manual", source_label="Manual Builder")
+        ss.set_atomic_positions_coordinate_mode("angstrom")
+
+        ss.clear_structure_state()
+
+        self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
 
     def test_apply_structure_mode_selection_marks_pseudopotentials_stale_when_cell_changes(self) -> None:
         conventional = bulk("Si", "diamond", a=5.43, cubic=True)

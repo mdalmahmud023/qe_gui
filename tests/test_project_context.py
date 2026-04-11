@@ -119,6 +119,28 @@ class ProjectContextTests(unittest.TestCase):
         self.assertEqual(ctx.input_files.provenance_state, "out_of_sync")
         self.assertIn("different active structure", ctx.input_files.provenance_message or "")
 
+    def test_build_project_context_reports_out_of_sync_input_coordinate_mode(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            atoms = Atoms("Si2", positions=[[0, 0, 0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+            st.session_state[ss.ATOMS_STATE_KEY] = atoms
+            st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(atoms)
+            ss.set_atomic_positions_coordinate_mode("angstrom")
+            (run_dir / "pw.in").write_text("&CONTROL\n/\n", encoding="utf-8")
+            ss.update_provenance_record(
+                run_dir,
+                ss.PROVENANCE_RECORD_INPUT,
+                structure_signature=ss.get_structure_signature(atoms),
+                paths={"ui_path": str(run_dir / "pw.in")},
+                extra={"atomic_positions_coordinate_mode": "crystal"},
+            )
+
+            ctx = pc.build_project_context(run_dir)
+
+        self.assertEqual(ctx.input_files.provenance_state, "out_of_sync")
+        self.assertIn("Fractional (crystal)", ctx.input_files.provenance_message or "")
+        self.assertIn("Cartesian (angstrom)", ctx.input_files.provenance_message or "")
+
     def test_build_project_context_discovers_lightweight_artifact_presence(self) -> None:
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)

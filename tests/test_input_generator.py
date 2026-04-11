@@ -40,6 +40,7 @@ TestMakeDefaultContext
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
@@ -133,6 +134,19 @@ def _make_fe2o3_bulk() -> Atoms:
         pbc=True,
     )
     return atoms
+
+
+def _extract_atomic_positions_block(text: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("ATOMIC_POSITIONS"):
+            block_lines = [line]
+            for candidate in lines[index + 1 :]:
+                if not candidate.strip():
+                    break
+                block_lines.append(candidate)
+            return "\n".join(block_lines)
+    raise AssertionError("ATOMIC_POSITIONS block not found")
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +569,15 @@ class TestCalculationContext:
                     enabled=True,
                     species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=4.0)},
                 ),
+            ).validate()
+
+    def test_validate_rejects_invalid_atomic_positions_coordinate_mode(self):
+        with pytest.raises(ValueError, match="atomic_positions_coordinate_mode"):
+            CalculationContext(
+                calculation="scf",
+                numerical=NumericalSettings(),
+                physical=PhysicalOptions(),
+                atomic_positions_coordinate_mode="alat",
             ).validate()
 
     def test_is_frozen(self):
@@ -1097,6 +1120,125 @@ class TestGenerateWorkflowInputs:
         assert len(steps) == 1
         assert steps[0][0] == "relax"
         assert steps[0][3].name == "pw.in"
+
+    def test_default_generation_writes_fractional_atomic_positions(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = make_default_context(si)
+
+        steps = generate_workflow_inputs(
+            si,
+            ctx,
+            {"Si": "Si.upf"},
+            tmp_path,
+            workflow="scf",
+            run_dir=tmp_path,
+        )
+
+        assert "ATOMIC_POSITIONS crystal" in steps[0][1]
+        assert "ATOMIC_POSITIONS angstrom" not in steps[0][1]
+
+    def test_explicit_cartesian_generation_writes_angstrom_atomic_positions(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = dataclasses.replace(make_default_context(si), atomic_positions_coordinate_mode="angstrom")
+
+        steps = generate_workflow_inputs(
+            si,
+            ctx,
+            {"Si": "Si.upf"},
+            tmp_path,
+            workflow="scf",
+            run_dir=tmp_path,
+        )
+
+        assert "ATOMIC_POSITIONS angstrom" in steps[0][1]
+        assert "ATOMIC_POSITIONS crystal" not in steps[0][1]
+
+    def test_atomic_positions_coordinate_mode_changes_written_coordinates(self, tmp_path):
+        atoms = Atoms(
+            "Si2",
+            scaled_positions=[[0.1, 0.2, 0.3], [0.25, 0.35, 0.45]],
+            cell=[4.0, 5.0, 6.0],
+            pbc=True,
+        )
+        pseudopotentials = {"Si": "Si.upf"}
+        crystal_ctx = make_default_context(atoms)
+        angstrom_ctx = dataclasses.replace(crystal_ctx, atomic_positions_coordinate_mode="angstrom")
+
+        crystal_steps = generate_workflow_inputs(
+            atoms,
+            crystal_ctx,
+            pseudopotentials,
+            tmp_path,
+            workflow="scf",
+            run_dir=tmp_path,
+        )
+        angstrom_steps = generate_workflow_inputs(
+            atoms,
+            angstrom_ctx,
+            pseudopotentials,
+            tmp_path,
+            workflow="scf",
+            run_dir=tmp_path,
+        )
+
+        crystal_block = _extract_atomic_positions_block(crystal_steps[0][1])
+        angstrom_block = _extract_atomic_positions_block(angstrom_steps[0][1])
+
+        expected_crystal = "\n".join(
+            [
+                "ATOMIC_POSITIONS crystal",
+                "Si  0.1000000000 0.2000000000 0.3000000000",
+                "Si  0.2500000000 0.3500000000 0.4500000000",
+            ]
+        )
+        cartesian_positions = atoms.get_positions()
+        expected_angstrom = "\n".join(
+            [
+                "ATOMIC_POSITIONS angstrom",
+                f"Si  {cartesian_positions[0][0]:.10f} {cartesian_positions[0][1]:.10f} {cartesian_positions[0][2]:.10f}",
+                f"Si  {cartesian_positions[1][0]:.10f} {cartesian_positions[1][1]:.10f} {cartesian_positions[1][2]:.10f}",
+            ]
+        )
+
+        assert crystal_block == expected_crystal
+        assert angstrom_block == expected_angstrom
+
+    def test_multi_step_workflow_keeps_requested_atomic_positions_coordinate_mode(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = dataclasses.replace(make_default_context(si), atomic_positions_coordinate_mode="angstrom")
+
+        steps = generate_workflow_inputs(
+            si,
+            ctx,
+            {"Si": "Si.upf"},
+            tmp_path,
+            workflow=WorkflowType.BANDS,
+            run_dir=tmp_path,
+        )
+
+        assert len(steps) == 2
+        assert all("ATOMIC_POSITIONS angstrom" in text for _name, text, _internal, _ui in steps)
+
+    def test_fractional_generation_normalizes_negative_zero_coordinates(self, tmp_path):
+        atoms = Atoms(
+            "Ca",
+            scaled_positions=[[0.0, 0.0, -0.0]],
+            cell=[4.0, 4.0, 4.0],
+            pbc=True,
+        )
+        ctx = make_default_context(atoms)
+
+        steps = generate_workflow_inputs(
+            atoms,
+            ctx,
+            {"Ca": "Ca.upf"},
+            tmp_path,
+            workflow="scf",
+            run_dir=tmp_path,
+        )
+
+        assert "-0.0000000000" not in steps[0][1]
+        assert "Ca  0.0000000000 0.0000000000 0.0000000000" in steps[0][1]
 
 # ---------------------------------------------------------------------------
 # TestSpinPolarization

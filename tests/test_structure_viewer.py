@@ -52,6 +52,20 @@ class StructureViewerTests(unittest.TestCase):
         self.assertFalse(sv.get_effective_show_bonds(sv.STYLE_MODE_SPACEFILL, True))
         self.assertFalse(sv.get_effective_show_bonds(sv.STYLE_MODE_BALL_AND_STICK, False))
 
+    def test_build_periodic_bond_cylinders_detects_pbc_crossing_bond(self) -> None:
+        atoms = Atoms(
+            "H2",
+            positions=[[0.0, 0.0, 0.0], [4.8, 0.0, 0.0]],
+            cell=[5.0, 5.0, 5.0],
+            pbc=True,
+        )
+
+        cylinders = sv._build_periodic_bond_cylinders(atoms, radius=sv.BOND_RADIUS_BALL_AND_STICK)
+
+        self.assertEqual(len(cylinders), 2)
+        self.assertEqual(cylinders[0]["start"], {"x": 0.0, "y": 0.0, "z": 0.0})
+        self.assertEqual(cylinders[0]["end"], {"x": -0.1, "y": 0.0, "z": 0.0})
+
     def test_build_structure_viewer_html_includes_labels_unit_cell_and_axes(self) -> None:
         html = sv.build_structure_viewer_html(
             self.atoms,
@@ -70,6 +84,9 @@ class StructureViewerTests(unittest.TestCase):
         self.assertIn("addLabel", html)
         self.assertIn("Na1", html)
         self.assertIn("addLine", html)
+        self.assertIn("addCylinder", html)
+        self.assertIn("setViewChangeCallback", html)
+        self.assertIn(sv.VIEWER_ORIENTATION_STORAGE_KEY, html)
 
     def test_format_supercell_repeat_uses_compact_notation(self) -> None:
         self.assertEqual(sv.format_supercell_repeat((2, 1, 3)), "2x1x3")
