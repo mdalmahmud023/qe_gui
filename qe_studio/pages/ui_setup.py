@@ -35,8 +35,11 @@ from ..core.structure_state import (
     clear_generated_qe_input_state,
     clear_pseudopotential_state,
     get_atomic_positions_coordinate_mode,
+    get_current_active_structure_signature,
     get_current_pseudo_settings,
+    get_current_source_metadata,
     get_qe_generation_blocker_message,
+    get_structure_mode,
     record_generated_input_provenance,
     set_resolution_status,
     sync_pseudopotential_settings_state,
@@ -47,7 +50,6 @@ from ..services.input_generator import (
     ElectronicCharacter,
     HubbardUSettings,
     HubbardUSpeciesParameter,
-    MagneticCharacter,
     NumericalSettings,
     PhysicalOptions,
     VdwMethod,
@@ -69,6 +71,12 @@ from ..services.pseudopotentials import (
     resolve_sssp_pseudopotentials,
 )
 from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
+from ..services.reproducibility import (
+    ValidationIssue,
+    build_generation_validation_issues,
+    build_input_reproducibility_metadata,
+    write_input_reproducibility_metadata,
+)
 from .shared import render_status_messages
 
 # Internal state key for the conv_thr widget (not yet in state_keys.py to
@@ -352,6 +360,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         atoms=ctx.atoms,
     )
     default_k_grid = defaults["k_points_grid"]
+    current_pseudo_settings = get_current_pseudo_settings()
     blocker_message = get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
     submit_block_reason = _get_generation_submit_block_reason(
@@ -451,33 +460,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         ky = row_three_col2.number_input("K-Points Y", min_value=1, value=int(default_k_grid[1]), step=1)
         kz = row_three_col3.number_input("K-Points Z", min_value=1, value=int(default_k_grid[2]), step=1)
 
-        if ctx.atoms is not None and "classification" in locals():
-            suspicious = False
-            reasons = []
-            if 0 in classification.vacuum_directions and kx > 1:
-                suspicious = True
-                reasons.append(f"X is a vacuum direction for {classification.dimensionality.value} structure")
-            if 1 in classification.vacuum_directions and ky > 1:
-                suspicious = True
-                reasons.append(f"Y is a vacuum direction for {classification.dimensionality.value} structure")
-            if 2 in classification.vacuum_directions and kz > 1:
-                suspicious = True
-                reasons.append(f"Z is a vacuum direction for {classification.dimensionality.value} structure")
-            
-            total_k = kx * ky * kz
-            if total_k > 5000 and calculation == "scf":
-                suspicious = True
-                reasons.append(f"{total_k} total k-points is unusually dense for a basic SCF calculation")
-                
-            if suspicious:
-                st.warning(
-                    f"**Suspicious K-Point Mesh**: You have selected [{kx}, {ky}, {kz}]. "
-                    f"Possible issues: {', '.join(reasons)}. "
-                    "Make sure this is intended before generating!"
-                )
-
         st.markdown("**Relativistic Settings**")
-        soc_report = None
         soc_enabled = st.checkbox(
             "Enable spin-orbit coupling (noncolin + lspinorb)",
             value=bool(defaults.get("noncolin") or defaults.get("lspinorb")),
@@ -487,20 +470,9 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 "SOC currently uses the minimal noncollinear path. Collinear "
                 "spin polarization and starting magnetization are disabled in this mode."
             )
-            if resolved_entries:
-                soc_report = inspect_soc_compatibility(resolved_entries)
-                if soc_report.all_compatible:
-                    st.success(soc_report.message)
-                else:
-                    st.error(soc_report.message)
-            else:
-                st.info("Resolve pseudopotentials to validate SOC compatibility before generation.")
 
         st.markdown("**Magnetic Settings**")
         nspin_val = defaults.get("nspin", 1)
-        is_magnetic = False
-        if "classification" in locals() and classification.magnetic_character == MagneticCharacter.MAGNETIC:
-            is_magnetic = True
 
         nspin_toggle = st.checkbox(
             "Spin-polarized calculation (nspin=2)",
@@ -521,8 +493,6 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                     with mag_cols[i % 4]:
                         mag_val = st.number_input(f"{elem}", min_value=-1.0, max_value=1.0, value=float(default_mag), step=0.1)
                         starting_magnetization[elem] = mag_val
-        elif is_magnetic:
-            st.warning("This structure contains potentially magnetic elements but spin polarization is disabled. Treat cautiously.")
 
         st.markdown("**DFT+U Settings**")
         dftu_enabled = st.checkbox(
@@ -602,6 +572,47 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 ),
             )
 
+        qe_parameters = {
+            "calculation": calculation,
+            "ecutwfc": ecutwfc,
+            "ecutrho": ecutrho,
+            "occupations": occupations,
+            "smearing": smearing,
+            "degauss": degauss,
+            "k_points_grid": [kx, ky, kz],
+            "conv_thr": conv_thr,
+            "mixing_beta": mixing_beta,
+            "nspin": 1 if soc_enabled else (2 if nspin_toggle else 1),
+            "starting_magnetization": {} if soc_enabled else starting_magnetization,
+            "noncolin": bool(soc_enabled),
+            "lspinorb": bool(soc_enabled),
+            "dftu_enabled": bool(dftu_enabled),
+            "hubbard_u": hubbard_u_parameters,
+            "vdw_method": vdw_method.value,
+        }
+        validation_error = _validate_qe_submission_parameters(qe_parameters)
+        preview_issues: list[ValidationIssue] = []
+        preview_context: CalculationContext | None = None
+        if ctx.atoms is not None and validation_error is None:
+            try:
+                preview_context = _build_generation_context_from_parameters(
+                    ctx.atoms,
+                    qe_parameters,
+                    resolved_entries=resolved_entries or None,
+                )
+            except Exception:
+                preview_context = None
+            else:
+                preview_issues = build_generation_validation_issues(
+                    ctx.atoms,
+                    preview_context,
+                    requested_workflow=qe_parameters["calculation"],
+                )
+
+        if preview_issues:
+            st.markdown("**Validation Summary**")
+            _render_validation_issues(preview_issues)
+
         submitted = st.button(
             "Generate Input File",
             use_container_width=True,
@@ -623,26 +634,6 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             st.warning(submit_block_reason)
         return
 
-    qe_parameters = {
-        "calculation": calculation,
-        "ecutwfc": ecutwfc,
-        "ecutrho": ecutrho,
-        "occupations": occupations,
-        "smearing": smearing,
-        "degauss": degauss,
-        "k_points_grid": [kx, ky, kz],
-        "conv_thr": conv_thr,
-        "mixing_beta": mixing_beta,
-        "nspin": 1 if soc_enabled else (2 if nspin_toggle else 1),
-        "starting_magnetization": {} if soc_enabled else starting_magnetization,
-        "noncolin": bool(soc_enabled),
-        "lspinorb": bool(soc_enabled),
-        "dftu_enabled": bool(dftu_enabled),
-        "hubbard_u": hubbard_u_parameters,
-        "vdw_method": vdw_method.value,
-    }
-
-    validation_error = _validate_qe_submission_parameters(qe_parameters)
     if validation_error:
         clear_generated_qe_input_state()
         st.error(f"Failed to generate the Quantum ESPRESSO input file: {validation_error}")
@@ -655,12 +646,32 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         clear_generated_qe_input_state()
         st.error("Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file.")
         return
-    if soc_enabled and soc_report is not None and not soc_report.all_compatible:
+
+    validation_issues = list(preview_issues)
+    if preview_context is None:
+        try:
+            preview_context = _build_generation_context_from_parameters(
+                atoms,
+                qe_parameters,
+                resolved_entries=resolved_entries or None,
+            )
+        except Exception as exc:
+            clear_generated_qe_input_state()
+            st.error(f"Failed to prepare the Quantum ESPRESSO input context: {exc}")
+            return
+        validation_issues = build_generation_validation_issues(
+            atoms,
+            preview_context,
+            requested_workflow=qe_parameters["calculation"],
+        )
+    error_issues = [issue for issue in validation_issues if issue.level == "error"]
+    if error_issues:
         clear_generated_qe_input_state()
+        _render_validation_issues(error_issues)
         return
 
     try:
-        qe_input_text, internal_path, ui_path, generation_metadata = _generate_qe_input_via_context(
+        qe_input_text, internal_path, ui_path, generation_context = _generate_qe_input_via_context(
             atoms,
             qe_parameters,
             pseudopotentials,
@@ -677,11 +688,22 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
     st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(internal_path)
     st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(ui_path)
+    reproducibility_metadata = build_input_reproducibility_metadata(
+        atoms,
+        generation_context,
+        requested_workflow=qe_parameters["calculation"],
+        pseudo_settings=current_pseudo_settings,
+        source_metadata=get_current_source_metadata(),
+        structure_signature=get_current_active_structure_signature(),
+        structure_mode=get_structure_mode(),
+        validation_issues=validation_issues,
+    )
+    metadata_path = write_input_reproducibility_metadata(QE_RUNS_DIR, reproducibility_metadata)
     record_generated_input_provenance(
         QE_RUNS_DIR,
         ui_path=str(ui_path),
         internal_path=str(internal_path),
-        extra=generation_metadata,
+        metadata_path=str(metadata_path),
     )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
@@ -890,21 +912,20 @@ def _get_generation_submit_block_reason(*, blocker_message: str | None, run_acti
     return blocker_message
 
 
-def _generate_qe_input_via_context(
+def _render_validation_issues(issues: list[ValidationIssue]) -> None:
+    """Render validation issues using the shared status-message helper."""
+    render_status_messages([(issue.level, issue.message) for issue in issues])
+
+
+def _build_generation_context_from_parameters(
     atoms,
     qe_parameters: dict,
-    pseudopotentials: dict[str, str],
-    pseudo_dir: str,
     *,
     resolved_entries: dict[str, dict] | None = None,
-) -> tuple[str, Path, Path, dict[str, object]]:
-    """Delegate pw.in generation to the modular input_generator service.
-
-    This adapter converts the flat ``qe_parameters`` dict (as stored in
-    session state) into a base :class:`CalculationContext` and calls
-    :func:`generate_workflow_inputs`.  This generates all steps for the
-    requested workflow while preserving backward compatibility for UI returns.
-    """
+) -> CalculationContext:
+    """Build the typed generation context from the flat UI parameter dictionary."""
+    classification = classify_structure(atoms)
+    cutoff_decision = select_cutoffs(resolved_entries or {})
     numerical = NumericalSettings(
         ecutwfc=float(qe_parameters["ecutwfc"]),
         ecutrho=float(qe_parameters["ecutrho"]),
@@ -924,15 +945,39 @@ def _generate_qe_input_via_context(
     species_order = get_atomic_species_order(atoms)
     hubbard_u = _build_hubbard_u_settings_from_parameters(qe_parameters)
     vdw = _build_vdw_settings_from_parameters(qe_parameters)
-    ctx = CalculationContext(
+    return CalculationContext(
         calculation=qe_parameters["calculation"],
         numerical=numerical,
         physical=physical,
+        classification=classification,
+        cutoff_decision=cutoff_decision,
         resolved_entries=resolved_entries,
         species_order=species_order,
         hubbard_u=hubbard_u,
         vdw=vdw,
         atomic_positions_coordinate_mode=get_atomic_positions_coordinate_mode(),
+    )
+
+
+def _generate_qe_input_via_context(
+    atoms,
+    qe_parameters: dict,
+    pseudopotentials: dict[str, str],
+    pseudo_dir: str,
+    *,
+    resolved_entries: dict[str, dict] | None = None,
+) -> tuple[str, Path, Path, CalculationContext]:
+    """Delegate pw.in generation to the modular input_generator service.
+
+    This adapter converts the flat ``qe_parameters`` dict (as stored in
+    session state) into a base :class:`CalculationContext` and calls
+    :func:`generate_workflow_inputs`.  This generates all steps for the
+    requested workflow while preserving backward compatibility for UI returns.
+    """
+    ctx = _build_generation_context_from_parameters(
+        atoms,
+        qe_parameters,
+        resolved_entries=resolved_entries,
     )
     steps = generate_workflow_inputs(
         atoms,
@@ -947,10 +992,7 @@ def _generate_qe_input_via_context(
         steps[0][1],
         steps[0][2],
         steps[0][3],
-        {
-            "dftu": hubbard_u.to_metadata(species_order=species_order),
-            "vdw": vdw.to_metadata(),
-        },
+        ctx,
     )
 
 

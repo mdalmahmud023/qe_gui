@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from ase import Atoms
 import streamlit as st
 
 from qe_studio.pages import ui_setup
@@ -133,6 +134,49 @@ class UISetupHelperTests(unittest.TestCase):
         settings = ui_setup._build_vdw_settings_from_parameters({"vdw_method": VdwMethod.D3_ZERO.value})
 
         self.assertEqual(settings.normalized_method, VdwMethod.D3_ZERO)
+
+    def test_build_generation_context_from_parameters_attaches_reproducibility_fields(self) -> None:
+        atoms = Atoms(
+            "FeO",
+            positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]],
+            cell=[4.3, 4.3, 4.3],
+            pbc=True,
+        )
+        context = ui_setup._build_generation_context_from_parameters(
+            atoms,
+            {
+                "calculation": "scf",
+                "ecutwfc": 60.0,
+                "ecutrho": 480.0,
+                "occupations": "smearing",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [4, 4, 4],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 2,
+                "starting_magnetization": {"Fe": 0.5},
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": True,
+                "hubbard_u": {
+                    "Fe": {"species": "Fe", "u_ev": 4.0, "source": "user_defined"},
+                },
+                "vdw_method": VdwMethod.D3_ZERO.value,
+            },
+            resolved_entries={
+                "Fe": {"filename": "Fe.test.UPF", "cutoff_wfc": 60.0, "cutoff_rho": 480.0},
+                "O": {"filename": "O.test.UPF", "cutoff_wfc": 50.0, "cutoff_rho": 400.0},
+            },
+        )
+
+        self.assertIsNotNone(context.classification)
+        self.assertIsNotNone(context.cutoff_decision)
+        self.assertEqual(context.cutoff_decision.source, "sssp_metadata")
+        self.assertEqual(context.species_order, ("Fe", "O"))
+        self.assertTrue(context.hubbard_u.enabled)
+        self.assertEqual(context.vdw.normalized_method, VdwMethod.D3_ZERO)
+        self.assertIn("Fe", context.resolved_entries)
 
 
 if __name__ == "__main__":

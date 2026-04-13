@@ -598,6 +598,7 @@ def record_generated_input_provenance(
     *,
     ui_path: str,
     internal_path: str,
+    metadata_path: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> Path:
     """Persist provenance for the generated QE base input files."""
@@ -605,6 +606,12 @@ def record_generated_input_provenance(
     source_metadata = get_current_source_metadata()
     extra_metadata = dict(extra or {})
     extra_metadata["atomic_positions_coordinate_mode"] = get_atomic_positions_coordinate_mode()
+    path_map = {
+        "ui_path": str(ui_path),
+        "internal_path": str(internal_path),
+    }
+    if metadata_path is not None:
+        path_map["metadata_path"] = str(metadata_path)
     return update_provenance_record(
         run_dir,
         PROVENANCE_RECORD_INPUT,
@@ -612,10 +619,7 @@ def record_generated_input_provenance(
         source_kind=source_metadata.get("source_kind"),
         source_label=source_metadata.get("source_label"),
         source_format=source_metadata.get("source_format"),
-        paths={
-            "ui_path": str(ui_path),
-            "internal_path": str(internal_path),
-        },
+        paths=path_map,
         extra=extra_metadata,
     )
 

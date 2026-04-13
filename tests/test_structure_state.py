@@ -191,11 +191,17 @@ class StructureStateTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
-            ss.record_generated_input_provenance(run_dir, ui_path=str(run_dir / "pw.in"), internal_path=str(run_dir / "espresso.pwi"))
+            ss.record_generated_input_provenance(
+                run_dir,
+                ui_path=str(run_dir / "pw.in"),
+                internal_path=str(run_dir / "espresso.pwi"),
+                metadata_path=str(run_dir / "qe_input_metadata.json"),
+            )
             record = ss.get_provenance_record(run_dir, ss.PROVENANCE_RECORD_INPUT)
 
         self.assertIsNotNone(record)
         self.assertEqual(record["structure_signature"]["hash"], st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY]["hash"])
+        self.assertEqual(record["paths"]["metadata_path"], str(Path(tmp_dir) / "qe_input_metadata.json"))
 
     def test_generated_input_provenance_preserves_extra_metadata(self) -> None:
         atoms = Atoms("FeO", positions=[[0.0, 0.0, 0.0], [1.2, 1.2, 1.2]], cell=[4.3, 4.3, 4.3], pbc=True)
