@@ -33,11 +33,13 @@ Data models:
     Dimensionality           Enum  — 0D / 1D / 2D / 3D
     ElectronicCharacter      Enum  — metal / insulator / unknown
     MagneticCharacter        Enum  — magnetic / nonmagnetic / unknown
+    VdwMethod                Enum  — curated van der Waals correction options
     StructureClassification  dataclass — output of classify_structure()
     NumericalSettings        dataclass — convergence / mixing knobs
     PhysicalOptions          dataclass — smearing, magnetism, etc.
     HubbardUSpeciesParameter  dataclass — one user-defined U value by species
     HubbardUSettings          dataclass — DFT+U configuration and metadata export
+    VdwSettings               dataclass — vdW method selection and metadata export
     CalculationContext        dataclass — full input to the builder
 
 Re-exported from cutoff_presets (import directly from there for type hints):
@@ -59,6 +61,10 @@ Spin-orbit coupling (SOC) is supported through the same service layer. SOC is
 modeled as a dedicated noncollinear mode where
 ``noncolin=.true.`` and ``lspinorb=.true.``, and generation is blocked unless
 all resolved pseudopotentials advertise fully relativistic support.
+
+van der Waals (vdW) support is modeled through a dedicated :class:`VdwSettings`
+domain model. Semiempirical methods render through ``vdw_corr`` while curated
+nonlocal presets render through ``input_dft``.
 """
 
 from __future__ import annotations
@@ -197,6 +203,20 @@ class MagneticCharacter(str, Enum):
     MAGNETIC = "magnetic"
     NONMAGNETIC = "nonmagnetic"
     UNKNOWN = "unknown"
+
+
+class VdwMethod(str, Enum):
+    """Curated van der Waals correction options supported by QE Studio."""
+
+    NONE = "none"
+    D2 = "grimme-d2"
+    D3_ZERO = "grimme-d3-zero"
+    D3_BJ = "grimme-d3-bj"
+    TS = "ts"
+    MBD = "mbd"
+    VDW_DF = "vdw-df"
+    VDW_DF2 = "vdw-df2"
+    RVV10 = "rvv10"
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +387,117 @@ class HubbardUSettings:
         }
 
 
+@dataclass(frozen=True)
+class VdwSettings:
+    """Curated van der Waals correction configuration."""
+
+    SEMIEMPIRICAL_DEFAULTS_NOTE: ClassVar[str] = (
+        "Using Quantum ESPRESSO defaults for optional D2/D3/TS/MBD tuning parameters in this phase."
+    )
+    NONLOCAL_WARNING: ClassVar[str] = (
+        "Nonlocal vdW methods are rendered through input_dft and therefore override the base XC functional "
+        "instead of adding a separate correction."
+    )
+
+    method: VdwMethod = VdwMethod.NONE
+
+    @property
+    def normalized_method(self) -> VdwMethod:
+        """Return the vdW method as a validated enum."""
+        if isinstance(self.method, VdwMethod):
+            return self.method
+        try:
+            return VdwMethod(str(self.method))
+        except ValueError as exc:
+            raise ValueError(f"Unknown vdW method {self.method!r}") from exc
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether a vdW correction is active."""
+        return self.normalized_method is not VdwMethod.NONE
+
+    @property
+    def backend(self) -> str:
+        """Return the QE rendering backend for the selected method."""
+        return str(_VDW_METHOD_RENDER_REGISTRY[self.normalized_method]["backend"])
+
+    @property
+    def warning_message(self) -> str | None:
+        """Return any contextual warning or note for the selected method."""
+        return _VDW_METHOD_RENDER_REGISTRY[self.normalized_method].get("warning")
+
+    def validate(self) -> None:
+        """Raise ValueError if the vdW configuration is invalid."""
+        method = self.normalized_method
+        if method not in _VDW_METHOD_RENDER_REGISTRY:
+            raise ValueError(f"Unknown vdW method {method!r}")
+        system_fields = _VDW_METHOD_RENDER_REGISTRY[method]["system"]
+        has_vdw_corr = "vdw_corr" in system_fields
+        has_input_dft = "input_dft" in system_fields
+        if has_vdw_corr and has_input_dft:
+            raise ValueError("vdW methods must render through either vdw_corr or input_dft, not both")
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return a stable provenance-friendly representation."""
+        method = self.normalized_method
+        return {
+            "enabled": self.enabled,
+            "method": method.value,
+            "backend": self.backend,
+            "rendered_system_fields": render_vdw_system_fields(self),
+            "warning": self.warning_message,
+        }
+
+
+_VDW_METHOD_RENDER_REGISTRY: dict[VdwMethod, dict[str, Any]] = {
+    VdwMethod.NONE: {
+        "backend": "none",
+        "system": {},
+        "warning": None,
+    },
+    VdwMethod.D2: {
+        "backend": "semiempirical",
+        "system": {"vdw_corr": "grimme-d2"},
+        "warning": VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE,
+    },
+    VdwMethod.D3_ZERO: {
+        "backend": "semiempirical",
+        "system": {"vdw_corr": "grimme-d3", "dftd3_version": 3},
+        "warning": VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE,
+    },
+    VdwMethod.D3_BJ: {
+        "backend": "semiempirical",
+        "system": {"vdw_corr": "grimme-d3", "dftd3_version": 4},
+        "warning": VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE,
+    },
+    VdwMethod.TS: {
+        "backend": "semiempirical",
+        "system": {"vdw_corr": "ts"},
+        "warning": VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE,
+    },
+    VdwMethod.MBD: {
+        "backend": "semiempirical",
+        "system": {"vdw_corr": "mbd"},
+        "warning": VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE,
+    },
+    VdwMethod.VDW_DF: {
+        "backend": "nonlocal_functional",
+        "system": {"input_dft": "vdW-DF"},
+        "warning": VdwSettings.NONLOCAL_WARNING,
+    },
+    VdwMethod.VDW_DF2: {
+        "backend": "nonlocal_functional",
+        "system": {"input_dft": "vdW-DF2"},
+        "warning": VdwSettings.NONLOCAL_WARNING,
+    },
+    VdwMethod.RVV10: {
+        "backend": "nonlocal_functional",
+        "system": {"input_dft": "rVV10"},
+        "warning": VdwSettings.NONLOCAL_WARNING,
+    },
+}
+
+
 @dataclass
 class PhysicalOptions:
     """
@@ -485,6 +616,9 @@ class CalculationContext:
     hubbard_u:
         Species-based DFT+U settings. Phase 6C uses legacy ``&SYSTEM``
         rendering via ``lda_plus_u`` and ``Hubbard_U(i)`` only.
+    vdw:
+        van der Waals correction settings. Semiempirical methods render via
+        ``vdw_corr`` while curated nonlocal presets render via ``input_dft``.
     atomic_positions_coordinate_mode:
         Coordinate system used when serializing the QE ``ATOMIC_POSITIONS``
         card. Supported values are ``"crystal"`` and ``"angstrom"``.
@@ -498,6 +632,7 @@ class CalculationContext:
     resolved_entries: dict[str, dict[str, Any]] | None = None
     species_order: tuple[str, ...] | None = None
     hubbard_u: HubbardUSettings = field(default_factory=HubbardUSettings)
+    vdw: VdwSettings = field(default_factory=VdwSettings)
     atomic_positions_coordinate_mode: str = "crystal"
 
     def validate(self) -> None:
@@ -513,6 +648,7 @@ class CalculationContext:
         if self.hubbard_u.enabled and not self.species_order:
             raise ValueError("DFT+U rendering requires species_order when Hubbard U is enabled")
         self.hubbard_u.validate(self.species_order)
+        self.vdw.validate()
         if self.atomic_positions_coordinate_mode not in ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS:
             raise ValueError(
                 "atomic_positions_coordinate_mode must be one of "
@@ -1090,6 +1226,7 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
             parameter = ctx.hubbard_u.species_parameters.get(species)
             if parameter is not None:
                 system[f"Hubbard_U({index})"] = parameter.u_ev
+    system.update(render_vdw_system_fields(ctx.vdw))
 
     # &ELECTRONS
     electrons: dict[str, Any] = {
@@ -1117,6 +1254,12 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
         }
 
     return namelist
+
+
+def render_vdw_system_fields(vdw: VdwSettings) -> dict[str, Any]:
+    """Render vdW settings into QE ``&SYSTEM`` fields."""
+    method = vdw.normalized_method
+    return dict(_VDW_METHOD_RENDER_REGISTRY[method]["system"])
 
 
 def generate_qe_input_text(

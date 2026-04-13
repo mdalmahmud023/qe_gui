@@ -5,6 +5,7 @@ from unittest import mock
 import streamlit as st
 
 from qe_studio.pages import ui_setup
+from qe_studio.services.input_generator import VdwMethod
 
 
 class UISetupHelperTests(unittest.TestCase):
@@ -41,6 +42,11 @@ class UISetupHelperTests(unittest.TestCase):
 
         self.assertFalse(sanitized["dftu_enabled"])
         self.assertEqual(sanitized["hubbard_u"], {})
+
+    def test_sanitize_saved_qe_parameters_normalizes_invalid_vdw_method(self) -> None:
+        sanitized = ui_setup._sanitize_saved_qe_parameters({"vdw_method": "magic"})
+
+        self.assertEqual(sanitized["vdw_method"], VdwMethod.NONE.value)
 
     def test_sanitize_saved_qe_parameters_drops_invalid_u_values(self) -> None:
         sanitized = ui_setup._sanitize_saved_qe_parameters(
@@ -122,6 +128,11 @@ class UISetupHelperTests(unittest.TestCase):
         )
 
         self.assertEqual(message, "Resolve pseudopotentials first.")
+
+    def test_build_vdw_settings_from_parameters_uses_selected_method(self) -> None:
+        settings = ui_setup._build_vdw_settings_from_parameters({"vdw_method": VdwMethod.D3_ZERO.value})
+
+        self.assertEqual(settings.normalized_method, VdwMethod.D3_ZERO)
 
 
 if __name__ == "__main__":

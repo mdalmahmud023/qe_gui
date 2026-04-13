@@ -22,6 +22,9 @@ TestNumericalSettings
 TestPhysicalOptions
     PhysicalOptions.validate() acceptance and rejection
 
+TestVdwSettings
+    VdwSettings.validate() acceptance and metadata export
+
 TestCalculationContext
     CalculationContext.validate() acceptance and rejection
 
@@ -62,6 +65,8 @@ from qe_studio.services.input_generator import (
     NumericalSettings,
     PhysicalOptions,
     StructureClassification,
+    VdwMethod,
+    VdwSettings,
     WorkflowType,
     apply_default_policy,
     build_qe_input_namelist,
@@ -70,6 +75,7 @@ from qe_studio.services.input_generator import (
     get_atomic_species_order,
     generate_workflow_inputs,
     make_default_context,
+    render_vdw_system_fields,
     select_cutoffs,
     suggest_cutoffs_from_pseudo_entries,
     suggest_kpoints_from_cell,
@@ -536,6 +542,49 @@ class TestHubbardUSettings:
 
 
 # ---------------------------------------------------------------------------
+# TestVdwSettings
+# ---------------------------------------------------------------------------
+
+
+class TestVdwSettings:
+    def test_disabled_allows_default_none(self):
+        VdwSettings().validate()
+
+    def test_enabled_accepts_supported_methods(self):
+        for method in (
+            VdwMethod.NONE,
+            VdwMethod.D2,
+            VdwMethod.D3_ZERO,
+            VdwMethod.D3_BJ,
+            VdwMethod.TS,
+            VdwMethod.MBD,
+            VdwMethod.VDW_DF,
+            VdwMethod.VDW_DF2,
+            VdwMethod.RVV10,
+        ):
+            VdwSettings(method=method).validate()
+
+    def test_rejects_unknown_method(self):
+        with pytest.raises(ValueError, match="vdW method"):
+            VdwSettings(method="magic").validate()  # type: ignore[arg-type]
+
+    def test_metadata_export_is_stable(self):
+        metadata = VdwSettings(method=VdwMethod.D3_BJ).to_metadata()
+        assert metadata["enabled"] is True
+        assert metadata["method"] == VdwMethod.D3_BJ.value
+        assert metadata["backend"] == "semiempirical"
+        assert metadata["rendered_system_fields"] == {
+            "vdw_corr": "grimme-d3",
+            "dftd3_version": 4,
+        }
+
+    def test_render_helper_returns_nonlocal_input_dft(self):
+        assert render_vdw_system_fields(VdwSettings(method=VdwMethod.RVV10)) == {
+            "input_dft": "rVV10"
+        }
+
+
+# ---------------------------------------------------------------------------
 # TestCalculationContext
 # ---------------------------------------------------------------------------
 
@@ -579,6 +628,14 @@ class TestCalculationContext:
                 physical=PhysicalOptions(),
                 atomic_positions_coordinate_mode="alat",
             ).validate()
+
+    def test_validate_accepts_vdw_enabled_context(self):
+        CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.D3_ZERO),
+        ).validate()
 
     def test_is_frozen(self):
         ctx = self._base_ctx()
@@ -796,6 +853,67 @@ class TestBuildQEInputNamelist:
         assert "lda_plus_u" not in system
         assert not any(key.startswith("Hubbard_U(") for key in system)
 
+    def test_vdw_off_emits_no_vdw_fields(self):
+        result = build_qe_input_namelist(self._ctx("scf"))
+        system = result["system"]
+        assert "vdw_corr" not in system
+        assert "dftd3_version" not in system
+        assert "input_dft" not in system
+
+    def test_vdw_d3_zero_outputs_vdw_corr_and_version(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.D3_ZERO),
+        )
+        system = build_qe_input_namelist(ctx)["system"]
+        assert system["vdw_corr"] == "grimme-d3"
+        assert system["dftd3_version"] == 3
+        assert "input_dft" not in system
+
+    def test_vdw_d3_bj_outputs_vdw_corr_and_version(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.D3_BJ),
+        )
+        system = build_qe_input_namelist(ctx)["system"]
+        assert system["vdw_corr"] == "grimme-d3"
+        assert system["dftd3_version"] == 4
+
+    def test_vdw_ts_outputs_vdw_corr(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.TS),
+        )
+        system = build_qe_input_namelist(ctx)["system"]
+        assert system["vdw_corr"] == "ts"
+
+    def test_vdw_mbd_outputs_vdw_corr(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.MBD),
+        )
+        system = build_qe_input_namelist(ctx)["system"]
+        assert system["vdw_corr"] == "mbd"
+
+    def test_nonlocal_vdw_outputs_input_dft_only(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            vdw=VdwSettings(method=VdwMethod.VDW_DF2),
+        )
+        system = build_qe_input_namelist(ctx)["system"]
+        assert system["input_dft"] == "vdW-DF2"
+        assert "vdw_corr" not in system
+
 
 # ---------------------------------------------------------------------------
 # TestCleanQEInputText
@@ -944,6 +1062,7 @@ class TestMakeDefaultContext:
         ctx = make_default_context(si)
         assert ctx.classification is not None
         assert isinstance(ctx.classification, StructureClassification)
+        assert ctx.vdw.enabled is False
 
     def test_species_order_tracks_first_occurrence(self):
         atoms = Atoms(

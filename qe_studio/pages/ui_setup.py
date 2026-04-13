@@ -50,6 +50,8 @@ from ..services.input_generator import (
     MagneticCharacter,
     NumericalSettings,
     PhysicalOptions,
+    VdwMethod,
+    VdwSettings,
     classify_structure,
     get_atomic_species_order,
     generate_workflow_inputs,
@@ -75,6 +77,18 @@ _QE_CONV_THR_STATE_KEY = "qe_conv_thr"
 _PSEUDO_WIDGET_SYNC_STATE_KEY = "_pseudo_widget_sync_pending"
 _DEFAULT_CONV_THR = 1.0e-6
 _DEFAULT_MIXING_BETA = 0.7
+_VDW_METHOD_OPTIONS = tuple(VdwMethod)
+_VDW_METHOD_LABELS: dict[VdwMethod, str] = {
+    VdwMethod.NONE: "None",
+    VdwMethod.D2: "Grimme D2",
+    VdwMethod.D3_ZERO: "Grimme D3 (zero damping)",
+    VdwMethod.D3_BJ: "Grimme D3 (BJ damping)",
+    VdwMethod.TS: "Tkatchenko-Scheffler (TS)",
+    VdwMethod.MBD: "Many-body dispersion (MBD)",
+    VdwMethod.VDW_DF: "vdW-DF",
+    VdwMethod.VDW_DF2: "vdW-DF2",
+    VdwMethod.RVV10: "rVV10",
+}
 
 
 def _normalize_pseudopotential_widget_settings(settings: dict | None) -> dict[str, object]:
@@ -545,6 +559,21 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             if not has_positive_hubbard_u:
                 st.info("Select at least one species and enter a positive U value to generate a DFT+U input.")
 
+        st.markdown("**van der Waals Settings**")
+        default_vdw_method = _normalize_vdw_method_value(defaults.get("vdw_method", VdwMethod.NONE.value))
+        vdw_method = st.selectbox(
+            "vdW correction method",
+            options=_VDW_METHOD_OPTIONS,
+            index=_VDW_METHOD_OPTIONS.index(default_vdw_method),
+            format_func=_format_vdw_method_label,
+        )
+        if vdw_method is not VdwMethod.NONE:
+            vdw_settings_preview = VdwSettings(method=vdw_method)
+            if vdw_settings_preview.backend == "semiempirical":
+                st.info(VdwSettings.SEMIEMPIRICAL_DEFAULTS_NOTE)
+            else:
+                st.warning(VdwSettings.NONLOCAL_WARNING)
+
         st.markdown("")  # Spacing
         with st.expander("Advanced numerical settings", expanded=False):
             adv_col1, adv_col2 = st.columns(2)
@@ -610,6 +639,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         "lspinorb": bool(soc_enabled),
         "dftu_enabled": bool(dftu_enabled),
         "hubbard_u": hubbard_u_parameters,
+        "vdw_method": vdw_method.value,
     }
 
     validation_error = _validate_qe_submission_parameters(qe_parameters)
@@ -630,7 +660,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     try:
-        qe_input_text, internal_path, ui_path, dftu_metadata = _generate_qe_input_via_context(
+        qe_input_text, internal_path, ui_path, generation_metadata = _generate_qe_input_via_context(
             atoms,
             qe_parameters,
             pseudopotentials,
@@ -651,7 +681,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         QE_RUNS_DIR,
         ui_path=str(ui_path),
         internal_path=str(internal_path),
-        extra={"dftu": dftu_metadata},
+        extra=generation_metadata,
     )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
@@ -711,6 +741,7 @@ def default_qe_parameters(
                 "lspinorb": ctx.physical.lspinorb,
                 "dftu_enabled": ctx.hubbard_u.enabled,
                 "hubbard_u": ctx.hubbard_u.to_metadata(species_order=ctx.species_order)["species_parameters"],
+                "vdw_method": ctx.vdw.normalized_method.value,
                 "k_points_grid": ctx.physical.k_points_grid,
                 "conv_thr": ctx.numerical.conv_thr,
                 "mixing_beta": ctx.numerical.mixing_beta,
@@ -743,6 +774,7 @@ def default_qe_parameters(
         "lspinorb": False,
         "dftu_enabled": False,
         "hubbard_u": {},
+        "vdw_method": VdwMethod.NONE.value,
         "k_points_grid": k_grid,
         "conv_thr": _DEFAULT_CONV_THR,
         "mixing_beta": _DEFAULT_MIXING_BETA,
@@ -763,6 +795,19 @@ def get_qe_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:
             st.session_state[QE_PARAMS_STATE_KEY] = sanitized
         return sanitized
     return default_qe_parameters(resolved_entries=resolved_entries, atoms=atoms)
+
+
+def _normalize_vdw_method_value(value: object) -> VdwMethod:
+    """Return a supported vdW method enum, falling back to ``NONE``."""
+    try:
+        return value if isinstance(value, VdwMethod) else VdwMethod(str(value))
+    except ValueError:
+        return VdwMethod.NONE
+
+
+def _format_vdw_method_label(method: VdwMethod) -> str:
+    """Return a user-facing label for one vdW method."""
+    return _VDW_METHOD_LABELS[method]
 
 
 def _sanitize_saved_qe_parameters(
@@ -795,6 +840,9 @@ def _sanitize_saved_qe_parameters(
     dftu_enabled = bool(sanitized.get("dftu_enabled", False))
     sanitized["dftu_enabled"] = dftu_enabled and bool(normalized_hubbard)
     sanitized["hubbard_u"] = normalized_hubbard if sanitized["dftu_enabled"] else {}
+    sanitized["vdw_method"] = _normalize_vdw_method_value(
+        sanitized.get("vdw_method", VdwMethod.NONE.value)
+    ).value
 
     soc_enabled = bool(sanitized.get("noncolin") or sanitized.get("lspinorb"))
     if sanitized.get("lspinorb") and not sanitized.get("noncolin"):
@@ -875,6 +923,7 @@ def _generate_qe_input_via_context(
     )
     species_order = get_atomic_species_order(atoms)
     hubbard_u = _build_hubbard_u_settings_from_parameters(qe_parameters)
+    vdw = _build_vdw_settings_from_parameters(qe_parameters)
     ctx = CalculationContext(
         calculation=qe_parameters["calculation"],
         numerical=numerical,
@@ -882,6 +931,7 @@ def _generate_qe_input_via_context(
         resolved_entries=resolved_entries,
         species_order=species_order,
         hubbard_u=hubbard_u,
+        vdw=vdw,
         atomic_positions_coordinate_mode=get_atomic_positions_coordinate_mode(),
     )
     steps = generate_workflow_inputs(
@@ -897,7 +947,10 @@ def _generate_qe_input_via_context(
         steps[0][1],
         steps[0][2],
         steps[0][3],
-        hubbard_u.to_metadata(species_order=species_order),
+        {
+            "dftu": hubbard_u.to_metadata(species_order=species_order),
+            "vdw": vdw.to_metadata(),
+        },
     )
 
 
@@ -924,3 +977,13 @@ def _build_hubbard_u_settings_from_parameters(qe_parameters: dict) -> HubbardUSe
         enabled=enabled,
         species_parameters=species_parameters if enabled else {},
     )
+
+
+def _build_vdw_settings_from_parameters(qe_parameters: dict) -> VdwSettings:
+    """Build typed vdW settings from the flat UI parameter dictionary."""
+    raw_method = qe_parameters.get("vdw_method", VdwMethod.NONE.value)
+    try:
+        method = raw_method if isinstance(raw_method, VdwMethod) else VdwMethod(str(raw_method))
+    except ValueError as exc:
+        raise ValueError(f"Unknown vdW method {raw_method!r}") from exc
+    return VdwSettings(method=method)

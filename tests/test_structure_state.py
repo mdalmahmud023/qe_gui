@@ -211,6 +211,13 @@ class StructureStateTests(unittest.TestCase):
                 "Fe": {"species": "Fe", "u_ev": 4.0, "source": "user_defined"},
             },
         }
+        vdw_metadata = {
+            "enabled": True,
+            "method": "grimme-d3-zero",
+            "backend": "semiempirical",
+            "rendered_system_fields": {"vdw_corr": "grimme-d3", "dftd3_version": 3},
+            "warning": "Using Quantum ESPRESSO defaults for optional D2/D3/TS/MBD tuning parameters in this phase.",
+        }
 
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
@@ -218,12 +225,13 @@ class StructureStateTests(unittest.TestCase):
                 run_dir,
                 ui_path=str(run_dir / "pw.in"),
                 internal_path=str(run_dir / "espresso.pwi"),
-                extra={"dftu": dftu_metadata},
+                extra={"dftu": dftu_metadata, "vdw": vdw_metadata},
             )
             record = ss.get_provenance_record(run_dir, ss.PROVENANCE_RECORD_INPUT)
 
         self.assertIsNotNone(record)
         self.assertEqual(record["extra"]["dftu"], dftu_metadata)
+        self.assertEqual(record["extra"]["vdw"], vdw_metadata)
 
     def test_commit_structure_source_can_explicitly_reset_to_source_mode(self) -> None:
         atoms = bulk("Si", "diamond", a=5.43, cubic=True)
