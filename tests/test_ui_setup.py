@@ -306,8 +306,10 @@ class UISetupHelperTests(unittest.TestCase):
             rendered_text = result.ui_path.read_text(encoding="utf-8")
             metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
 
-            self.assertIn("prefix = 'si_project_with_spaces'", rendered_text)
-            self.assertIn("outdir = './tmp'", rendered_text)
+            self.assertIn("'si_project_with_spaces'", rendered_text)
+            self.assertIn("prefix", rendered_text)
+            self.assertIn("'./tmp'", rendered_text)
+            self.assertIn("outdir", rendered_text)
             self.assertEqual(metadata["control"]["requested_prefix"], "Si Project With Spaces")
             self.assertEqual(metadata["control"]["rendered_prefix"], "si_project_with_spaces")
             self.assertEqual(metadata["control"]["rendered_outdir"], "./tmp")

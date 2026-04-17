@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 QE_RUNS_DIR = Path("qe_runs")
+QE_CONVERGENCE_DIR = QE_RUNS_DIR / "convergence" / "cutoff"
 QE_RUN_COMMAND = ("pw.x", "-in", "pw.in")
 QE_OUTPUT_FILENAME = "pw.out"
 DOS_COMMAND = ("dos.x", "-i", "dos.in")

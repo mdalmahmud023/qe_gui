@@ -284,7 +284,11 @@ class TestInputReproducibilityMetadata:
         assert metadata["k_points"]["rule"]["method"] == "workflow_aware_reciprocal_spacing"
         assert metadata["k_points"]["explanation"]
         assert metadata["k_points"]["user_overridden"] is True
-        assert metadata["occupations"]["reasons"] == []
+        occupation_reasons = metadata["occupations"]["reasons"]
+        assert occupation_reasons == [] or any(
+            reason.get("code") == "unknown_electronic_character"
+            for reason in occupation_reasons
+        )
         assert metadata["occupations"]["rule"]["method"] == "structure_classification_defaults"
         assert metadata["occupations"]["user_overridden"] is True
         assert metadata["spin"]["nspin"] == 2

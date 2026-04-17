@@ -6,9 +6,28 @@ from pathlib import Path
 
 import streamlit as st
 
+from ..convergence import (
+    CUTOFF_RATIO_RULE_OPTIONS,
+    CUTOFF_STUDY_MANIFEST_FILENAME,
+    CUTOFF_STUDY_SUMMARY_FILENAME,
+    RATIO_RULE_CUSTOM,
+    CutoffSweepSpec,
+    EcutrhoMode,
+    build_cutoff_study,
+    build_cutoff_sweep_warnings,
+    discover_cutoff_studies,
+    inspect_metadata_dual_support,
+    load_cutoff_study_manifest,
+    load_cutoff_study_summary,
+    refresh_cutoff_study,
+    resolve_point_ecutrho,
+)
 from ..core.project_context import ProjectContext
 from ..core.state_keys import (
     ATOMS_STATE_KEY,
+    CUTOFF_STUDY_LATEST_PATH_STATE_KEY,
+    CUTOFF_STUDY_PARAMS_STATE_KEY,
+    CUTOFF_STUDY_SELECTED_PATH_STATE_KEY,
     DEFAULT_PSEUDO_SETTINGS,
     PSEUDO_DIR_STATE_KEY,
     PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY,
@@ -31,6 +50,8 @@ from ..core.state_keys import (
     QE_OCCUPATIONS_OPTIONS,
     QE_PARAMS_STATE_KEY,
     QE_SMEARING_OPTIONS,
+    SETUP_WORKFLOW_MODE_OPTIONS,
+    SETUP_WORKFLOW_MODE_STATE_KEY,
 )
 from ..core.structure_state import (
     clear_generated_qe_input_state,
@@ -46,6 +67,7 @@ from ..core.structure_state import (
     sync_pseudopotential_settings_state,
 )
 from ..core.workspace import QE_RUNS_DIR
+from ..core.workspace import QE_CONVERGENCE_DIR
 from ..services.input_generator import (
     CalculationContext,
     ElectronicCharacter,
@@ -76,7 +98,7 @@ from ..services.reproducibility import (
     build_input_reproducibility_metadata,
     write_input_reproducibility_metadata,
 )
-from .shared import render_status_messages
+from .shared import render_path_captions, render_status_messages, render_table
 
 # Internal state key for the conv_thr widget (not yet in state_keys.py to
 # avoid a breaking migration; added here as a local constant).
@@ -84,6 +106,7 @@ _QE_CONV_THR_STATE_KEY = "qe_conv_thr"
 _PSEUDO_WIDGET_SYNC_STATE_KEY = "_pseudo_widget_sync_pending"
 _DEFAULT_CONV_THR = 1.0e-6
 _DEFAULT_MIXING_BETA = 0.7
+_DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
 _VDW_METHOD_OPTIONS = tuple(VdwMethod)
 _VDW_METHOD_LABELS: dict[VdwMethod, str] = {
     VdwMethod.NONE: "None",
@@ -95,6 +118,16 @@ _VDW_METHOD_LABELS: dict[VdwMethod, str] = {
     VdwMethod.VDW_DF: "vdW-DF",
     VdwMethod.VDW_DF2: "vdW-DF2",
     VdwMethod.RVV10: "rVV10",
+}
+_WORKFLOW_MODE_LABELS = {
+    "standard": "Standard pw.x",
+    "cutoff_convergence": "Cutoff Convergence",
+}
+_ECUTRHO_MODE_LABELS = {
+    EcutrhoMode.METADATA_DUAL.value: "Pseudo metadata dual ratios",
+    EcutrhoMode.RATIO_RULE.value: "Ratio rule",
+    EcutrhoMode.MANUAL_ABSOLUTE.value: "Manual absolute ecutrho",
+    EcutrhoMode.MANUAL_RATIO.value: "Manual ecutrho ratio",
 }
 
 
@@ -108,6 +141,158 @@ class GenerationPersistResult:
     metadata_path: Path | None = None
     generation_context: CalculationContext | None = None
     error_message: str | None = None
+
+
+def get_setup_workflow_mode() -> str:
+    """Return the normalized Setup-page workflow mode."""
+    mode = str(st.session_state.get(SETUP_WORKFLOW_MODE_STATE_KEY, "standard")).strip().lower()
+    return mode if mode in SETUP_WORKFLOW_MODE_OPTIONS else "standard"
+
+
+def _coerce_positive_float(value: object, default: float) -> float:
+    """Return a positive finite float or the supplied default."""
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(candidate) or candidate <= 0:
+        return float(default)
+    return candidate
+
+
+def _default_ratio_rule_fields(ratio: float) -> tuple[str, float | None]:
+    """Map one numeric cutoff ratio onto the built-in rule selector."""
+    normalized_ratio = _coerce_positive_float(ratio, 8.0)
+    for option in CUTOFF_RATIO_RULE_OPTIONS:
+        if option == RATIO_RULE_CUSTOM:
+            continue
+        option_value = float(option.rstrip("xX"))
+        if abs(normalized_ratio - option_value) <= 1.0e-9:
+            return option, None
+    return RATIO_RULE_CUSTOM, normalized_ratio
+
+
+def default_cutoff_study_parameters(
+    resolved_entries: dict | None = None,
+    atoms=None,
+) -> dict:
+    """Return default parameters for the cutoff convergence workflow."""
+    defaults = default_qe_parameters(resolved_entries=resolved_entries, atoms=atoms)
+    metadata_dual_info = inspect_metadata_dual_support(resolved_entries or {})
+    ratio_value = defaults["ecutrho"] / defaults["ecutwfc"] if defaults["ecutwfc"] > 0 else 8.0
+    ratio_rule, custom_ratio = _default_ratio_rule_fields(ratio_value)
+    rounded_start = max(20.0, math.floor(max(defaults["ecutwfc"] - 20.0, 20.0) / 10.0) * 10.0)
+    step_ry = 10.0
+    start_ecutwfc_ry = rounded_start
+    stop_ecutwfc_ry = start_ecutwfc_ry + 4 * step_ry
+    default_mode = (
+        EcutrhoMode.METADATA_DUAL.value
+        if metadata_dual_info["available"]
+        else EcutrhoMode.RATIO_RULE.value
+    )
+
+    return {
+        "calculation": "scf",
+        "prefix": defaults["prefix"],
+        "prefix_source": defaults["prefix_source"],
+        "outdir": defaults["outdir"],
+        "outdir_source": defaults["outdir_source"],
+        "occupations": defaults["occupations"],
+        "smearing": defaults["smearing"],
+        "degauss": defaults["degauss"],
+        "nspin": defaults["nspin"],
+        "spin_source": defaults["spin_source"],
+        "starting_magnetization": defaults["starting_magnetization"],
+        "noncolin": defaults["noncolin"],
+        "lspinorb": defaults["lspinorb"],
+        "dftu_enabled": defaults["dftu_enabled"],
+        "hubbard_u": defaults["hubbard_u"],
+        "vdw_method": defaults["vdw_method"],
+        "k_points_grid": defaults["k_points_grid"],
+        "conv_thr": defaults["conv_thr"],
+        "mixing_beta": defaults["mixing_beta"],
+        "start_ecutwfc_ry": start_ecutwfc_ry,
+        "stop_ecutwfc_ry": stop_ecutwfc_ry,
+        "step_ry": step_ry,
+        "tolerance_mev_per_atom": _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM,
+        "ecutrho_mode": default_mode,
+        "ratio_rule": ratio_rule,
+        "custom_ratio": custom_ratio,
+        "manual_ecutrho_ry": defaults["ecutrho"],
+        "manual_ratio": ratio_value,
+    }
+
+
+def _sanitize_saved_cutoff_study_parameters(
+    saved_parameters: dict | None,
+    *,
+    resolved_entries: dict | None = None,
+    atoms=None,
+) -> dict:
+    """Normalize persisted cutoff-study parameters and drop stale values."""
+    raw = dict(saved_parameters or {})
+    defaults = default_cutoff_study_parameters(resolved_entries=resolved_entries, atoms=atoms)
+    metadata_dual_info = inspect_metadata_dual_support(resolved_entries or {})
+    shared_defaults = _sanitize_saved_qe_parameters(raw, resolved_entries=resolved_entries, atoms=atoms)
+
+    normalized = dict(defaults)
+    normalized.update(
+        {
+            "prefix": shared_defaults["prefix"],
+            "prefix_source": shared_defaults["prefix_source"],
+            "outdir": shared_defaults["outdir"],
+            "outdir_source": shared_defaults["outdir_source"],
+            "occupations": str(raw.get("occupations", defaults["occupations"])),
+            "smearing": str(raw.get("smearing", defaults["smearing"])),
+            "degauss": float(raw.get("degauss", defaults["degauss"])),
+            "nspin": shared_defaults["nspin"],
+            "spin_source": shared_defaults["spin_source"],
+            "starting_magnetization": shared_defaults["starting_magnetization"],
+            "noncolin": shared_defaults["noncolin"],
+            "lspinorb": shared_defaults["lspinorb"],
+            "dftu_enabled": shared_defaults["dftu_enabled"],
+            "hubbard_u": shared_defaults["hubbard_u"],
+            "vdw_method": shared_defaults["vdw_method"],
+            "k_points_grid": [int(value) for value in raw.get("k_points_grid", defaults["k_points_grid"])],
+            "conv_thr": float(raw.get("conv_thr", defaults["conv_thr"])),
+            "mixing_beta": float(raw.get("mixing_beta", defaults["mixing_beta"])),
+            "calculation": "scf",
+        }
+    )
+
+    normalized["start_ecutwfc_ry"] = _coerce_positive_float(raw.get("start_ecutwfc_ry"), defaults["start_ecutwfc_ry"])
+    normalized["stop_ecutwfc_ry"] = _coerce_positive_float(raw.get("stop_ecutwfc_ry"), defaults["stop_ecutwfc_ry"])
+    normalized["step_ry"] = _coerce_positive_float(raw.get("step_ry"), defaults["step_ry"])
+    normalized["tolerance_mev_per_atom"] = _coerce_positive_float(
+        raw.get("tolerance_mev_per_atom"),
+        defaults["tolerance_mev_per_atom"],
+    )
+    ratio_rule = str(raw.get("ratio_rule") or defaults["ratio_rule"])
+    normalized["ratio_rule"] = ratio_rule if ratio_rule in CUTOFF_RATIO_RULE_OPTIONS else defaults["ratio_rule"]
+    normalized["custom_ratio"] = _coerce_positive_float(raw.get("custom_ratio"), defaults["custom_ratio"] or 8.0)
+    normalized["manual_ecutrho_ry"] = _coerce_positive_float(raw.get("manual_ecutrho_ry"), defaults["manual_ecutrho_ry"])
+    normalized["manual_ratio"] = _coerce_positive_float(raw.get("manual_ratio"), defaults["manual_ratio"])
+
+    requested_mode = str(raw.get("ecutrho_mode") or defaults["ecutrho_mode"])
+    if requested_mode == EcutrhoMode.METADATA_DUAL.value and not metadata_dual_info["available"]:
+        normalized["ecutrho_mode"] = EcutrhoMode.RATIO_RULE.value
+    elif requested_mode in {mode.value for mode in EcutrhoMode}:
+        normalized["ecutrho_mode"] = requested_mode
+    else:
+        normalized["ecutrho_mode"] = defaults["ecutrho_mode"]
+
+    return normalized
+
+
+def get_cutoff_study_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:
+    """Return the current cutoff-study parameters from session state or defaults."""
+    saved = st.session_state.get(CUTOFF_STUDY_PARAMS_STATE_KEY)
+    if saved is not None:
+        sanitized = _sanitize_saved_cutoff_study_parameters(saved, resolved_entries=resolved_entries, atoms=atoms)
+        if sanitized != saved:
+            st.session_state[CUTOFF_STUDY_PARAMS_STATE_KEY] = sanitized
+        return sanitized
+    return default_cutoff_study_parameters(resolved_entries=resolved_entries, atoms=atoms)
 
 
 def _normalize_pseudopotential_widget_settings(settings: dict | None) -> dict[str, object]:
@@ -171,7 +356,10 @@ def render_page(ctx: ProjectContext) -> None:
     st.divider()
     render_qe_input_form(ctx)
     st.divider()
-    render_generated_qe_input_preview(ctx)
+    if get_setup_workflow_mode() == "cutoff_convergence":
+        render_cutoff_study_results(ctx)
+    else:
+        render_generated_qe_input_preview(ctx)
 
 
 def render_pseudopotential_status() -> None:
@@ -347,6 +535,9 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             # Clear previously saved form values so the fields re-initialise
             # from the freshly resolved SSSP cutoffs on re-render.
             st.session_state.pop(QE_PARAMS_STATE_KEY, None)
+            st.session_state.pop(CUTOFF_STUDY_PARAMS_STATE_KEY, None)
+            st.session_state.pop(CUTOFF_STUDY_SELECTED_PATH_STATE_KEY, None)
+            st.session_state.pop(CUTOFF_STUDY_LATEST_PATH_STATE_KEY, None)
             set_resolution_status(
                 state="resolved",
                 message=(
@@ -364,13 +555,8 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
 
 def render_qe_input_form(ctx: ProjectContext) -> None:
     """Render the QE input form and gate runnable generation on pseudo resolution."""
-    # Resolve SSSP entries first so defaults can use them
-    _resolved_entries_for_defaults = st.session_state.get("pseudo_resolved_entries") or {}
-    defaults = get_qe_parameters(
-        resolved_entries=_resolved_entries_for_defaults or None,
-        atoms=ctx.atoms,
-    )
-    default_k_grid = defaults["k_points_grid"]
+    resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
+    metadata_dual_info = inspect_metadata_dual_support(resolved_entries)
     current_pseudo_settings = get_current_pseudo_settings()
     blocker_message = get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
@@ -379,8 +565,6 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         run_active=run_active,
     )
 
-    # --- SSSP-suggested cutoff hints via CutoffDecision ---
-    resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
     cutoff_decision = None
     if resolved_entries and ctx.atoms is not None:
         try:
@@ -389,7 +573,29 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             pass
 
     st.markdown("### QE Input Parameters")
-    st.caption("Configure the base `pw.x` input for the current structure.")
+    st.caption("Configure either a standard `pw.x` input or a reproducible cutoff convergence study.")
+
+    current_workflow_mode = get_setup_workflow_mode()
+    st.radio(
+        "Workflow Type",
+        options=SETUP_WORKFLOW_MODE_OPTIONS,
+        index=SETUP_WORKFLOW_MODE_OPTIONS.index(current_workflow_mode),
+        key=SETUP_WORKFLOW_MODE_STATE_KEY,
+        format_func=lambda mode: _WORKFLOW_MODE_LABELS.get(mode, mode.replace("_", " ").title()),
+        horizontal=True,
+    )
+    workflow_mode = get_setup_workflow_mode()
+    defaults = (
+        get_qe_parameters(resolved_entries=resolved_entries or None, atoms=ctx.atoms)
+        if workflow_mode == "standard"
+        else get_cutoff_study_parameters(resolved_entries=resolved_entries or None, atoms=ctx.atoms)
+    )
+    default_k_grid = defaults["k_points_grid"]
+    if workflow_mode == "cutoff_convergence":
+        st.caption(
+            "Cutoff Convergence keeps the current k-point grid fixed, generates one SCF input per cutoff point, "
+            "and later refreshes finished runs into a convergence summary."
+        )
 
     if blocker_message:
         if ctx.atoms is None:
@@ -412,11 +618,19 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
 
     with st.container():
         row_one_col1, row_one_col1_5, row_one_col2, row_one_col3 = st.columns(4)
-        calculation = row_one_col1.selectbox(
-            "Calculation Type",
-            options=QE_CALCULATION_OPTIONS,
-            index=QE_CALCULATION_OPTIONS.index(defaults["calculation"]),
-        )
+        if workflow_mode == "standard":
+            calculation = row_one_col1.selectbox(
+                "Calculation Type",
+                options=QE_CALCULATION_OPTIONS,
+                index=QE_CALCULATION_OPTIONS.index(defaults["calculation"]),
+            )
+        else:
+            calculation = row_one_col1.selectbox(
+                "Calculation Type",
+                options=("scf",),
+                index=0,
+                disabled=True,
+            )
         occupations = row_one_col1_5.selectbox(
             "Occupations",
             options=QE_OCCUPATIONS_OPTIONS,
@@ -450,32 +664,134 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             help="QE scratch directory written into `&CONTROL`. Relative paths resolve from `qe_runs/`.",
         )
 
-        row_two_col1, row_two_col2 = st.columns(2)
-        ecutwfc = row_two_col1.number_input(
-            "Kinetic Energy Cutoff for Wavefunctions (ecutwfc, Ry)",
-            min_value=0.0,
-            value=float(defaults["ecutwfc"]),
-            step=5.0,
-            format="%.1f",
-        )
-        if cutoff_decision is not None:
-            source_label = "SSSP metadata" if cutoff_decision.source == "sssp_metadata" else "heuristic fallback"
-            row_two_col1.caption(
-                f"Auto-set from {source_label}: **{cutoff_decision.ecutwfc_ry:.0f} Ry** "
-                f"(max across {len(cutoff_decision.per_element)} element(s))"
+        if workflow_mode == "standard":
+            row_two_col1, row_two_col2 = st.columns(2)
+            ecutwfc = row_two_col1.number_input(
+                "Kinetic Energy Cutoff for Wavefunctions (ecutwfc, Ry)",
+                min_value=0.0,
+                value=float(defaults["ecutwfc"]),
+                step=5.0,
+                format="%.1f",
             )
-        ecutrho = row_two_col2.number_input(
-            "Kinetic Energy Cutoff for Charge Density (ecutrho, Ry)",
-            min_value=0.0,
-            value=float(defaults["ecutrho"]),
-            step=5.0,
-            format="%.1f",
-        )
-        if cutoff_decision is not None:
-            row_two_col2.caption(
-                f"Auto-set from {source_label}: **{cutoff_decision.ecutrho_ry:.0f} Ry** "
-                f"(cutoff_rho from SSSP manifest, not assumed 4× ecutwfc)"
+            if cutoff_decision is not None:
+                source_label = "SSSP metadata" if cutoff_decision.source == "sssp_metadata" else "heuristic fallback"
+                row_two_col1.caption(
+                    f"Auto-set from {source_label}: **{cutoff_decision.ecutwfc_ry:.0f} Ry** "
+                    f"(max across {len(cutoff_decision.per_element)} element(s))"
+                )
+            ecutrho = row_two_col2.number_input(
+                "Kinetic Energy Cutoff for Charge Density (ecutrho, Ry)",
+                min_value=0.0,
+                value=float(defaults["ecutrho"]),
+                step=5.0,
+                format="%.1f",
             )
+            if cutoff_decision is not None:
+                row_two_col2.caption(
+                    f"Auto-set from {source_label}: **{cutoff_decision.ecutrho_ry:.0f} Ry** "
+                    f"(cutoff_rho from SSSP manifest, not assumed 4× ecutwfc)"
+                )
+        else:
+            st.markdown("**Cutoff Sweep**")
+            sweep_col1, sweep_col2, sweep_col3, sweep_col4 = st.columns(4)
+            start_ecutwfc_ry = sweep_col1.number_input(
+                "Start ecutwfc (Ry)",
+                min_value=0.0,
+                value=float(defaults["start_ecutwfc_ry"]),
+                step=5.0,
+                format="%.1f",
+            )
+            stop_ecutwfc_ry = sweep_col2.number_input(
+                "Stop ecutwfc (Ry)",
+                min_value=0.0,
+                value=float(defaults["stop_ecutwfc_ry"]),
+                step=5.0,
+                format="%.1f",
+            )
+            step_ry = sweep_col3.number_input(
+                "Step (Ry)",
+                min_value=0.0,
+                value=float(defaults["step_ry"]),
+                step=1.0,
+                format="%.1f",
+            )
+            tolerance_mev_per_atom = sweep_col4.number_input(
+                "Tolerance (meV/atom)",
+                min_value=0.0,
+                value=float(defaults["tolerance_mev_per_atom"]),
+                step=0.1,
+                format="%.2f",
+            )
+            available_ecutrho_modes = _available_ecutrho_modes(
+                metadata_dual_available=bool(metadata_dual_info["available"])
+            )
+            default_ecutrho_mode = (
+                defaults["ecutrho_mode"]
+                if defaults["ecutrho_mode"] in available_ecutrho_modes
+                else available_ecutrho_modes[0]
+            )
+            ecutrho_mode_col1, ecutrho_mode_col2 = st.columns(2)
+            ecutrho_mode = ecutrho_mode_col1.selectbox(
+                "ecutrho mode",
+                options=available_ecutrho_modes,
+                index=available_ecutrho_modes.index(default_ecutrho_mode),
+                format_func=lambda mode: _ECUTRHO_MODE_LABELS[mode],
+            )
+            ratio_rule = defaults["ratio_rule"]
+            custom_ratio = defaults["custom_ratio"]
+            manual_ecutrho_ry = defaults["manual_ecutrho_ry"]
+            manual_ratio = defaults["manual_ratio"]
+            if ecutrho_mode == EcutrhoMode.RATIO_RULE.value:
+                ratio_rule = ecutrho_mode_col2.selectbox(
+                    "Ratio rule",
+                    options=CUTOFF_RATIO_RULE_OPTIONS,
+                    index=CUTOFF_RATIO_RULE_OPTIONS.index(defaults["ratio_rule"]),
+                )
+                if ratio_rule == RATIO_RULE_CUSTOM:
+                    custom_ratio = st.number_input(
+                        "Custom ecutrho / ecutwfc ratio",
+                        min_value=0.0,
+                        value=float(defaults["custom_ratio"] or 8.0),
+                        step=0.1,
+                        format="%.2f",
+                    )
+            elif ecutrho_mode == EcutrhoMode.MANUAL_ABSOLUTE.value:
+                manual_ecutrho_ry = ecutrho_mode_col2.number_input(
+                    "Manual ecutrho (Ry)",
+                    min_value=0.0,
+                    value=float(defaults["manual_ecutrho_ry"]),
+                    step=5.0,
+                    format="%.1f",
+                )
+            elif ecutrho_mode == EcutrhoMode.MANUAL_RATIO.value:
+                manual_ratio = ecutrho_mode_col2.number_input(
+                    "Manual ecutrho / ecutwfc ratio",
+                    min_value=0.0,
+                    value=float(defaults["manual_ratio"]),
+                    step=0.1,
+                    format="%.2f",
+                )
+            else:
+                dual_ratio_text = ", ".join(
+                    f"{species}: {ratio:.2f}x"
+                    for species, ratio in sorted((metadata_dual_info.get("dual_ratios") or {}).items())
+                )
+                ecutrho_mode_col2.caption(
+                    "Point ecutrho values will be derived from pseudopotential dual ratios and the maximum "
+                    f"species requirement will be used. {dual_ratio_text}"
+                )
+            if cutoff_decision is not None:
+                baseline_source = "SSSP metadata" if cutoff_decision.source == "sssp_metadata" else "heuristic fallback"
+                st.caption(
+                    f"Baseline cutoff provenance: {baseline_source}, recommended single-point cutoffs "
+                    f"`ecutwfc={cutoff_decision.ecutwfc_ry:g} Ry`, `ecutrho={cutoff_decision.ecutrho_ry:g} Ry`."
+                )
+            if not metadata_dual_info["available"]:
+                for warning_message in metadata_dual_info["warnings"]:
+                    st.warning(
+                        warning_message
+                        + " QE Studio defaults new cutoff studies to an explicit ratio-based ecutrho policy."
+                    )
 
         st.markdown("**K-Points Grid**")
         row_three_col1, row_three_col2, row_three_col3 = st.columns(3)
@@ -608,12 +924,10 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 ),
             )
 
-        qe_parameters = {
+        common_parameters = {
             "calculation": calculation,
             "prefix": prefix,
             "outdir": outdir,
-            "ecutwfc": ecutwfc,
-            "ecutrho": ecutrho,
             "occupations": occupations,
             "smearing": smearing,
             "degauss": degauss,
@@ -628,40 +942,91 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             "hubbard_u": hubbard_u_parameters,
             "vdw_method": vdw_method.value,
         }
-        qe_parameters["prefix_source"] = (
+        common_parameters["prefix_source"] = (
             "auto" if str(prefix).strip() == str(defaults.get("prefix", "")).strip() else "user"
         )
-        qe_parameters["outdir_source"] = (
+        common_parameters["outdir_source"] = (
             "auto" if str(outdir).strip() == str(defaults.get("outdir", "")).strip() else "user"
         )
-        qe_parameters["spin_source"] = (
+        common_parameters["spin_source"] = (
             "auto"
-            if qe_parameters["nspin"] == defaults.get("nspin", 1)
-            and _flatten_starting_magnetization_state(qe_parameters["starting_magnetization"])
+            if common_parameters["nspin"] == defaults.get("nspin", 1)
+            and _flatten_starting_magnetization_state(common_parameters["starting_magnetization"])
             == _flatten_starting_magnetization_state(default_starting_magnetization)
             else "user"
         )
-        validation_error = _validate_qe_submission_parameters(qe_parameters)
         preview_issues: list[ValidationIssue] = []
-        preview_context: CalculationContext | None = None
-        if ctx.atoms is not None and validation_error is None:
-            try:
-                preview_context = _build_generation_context_from_parameters(
-                    ctx.atoms,
-                    qe_parameters,
-                    resolved_entries=resolved_entries or None,
-                )
-            except Exception:
-                preview_context = None
-            else:
-                preview_issues = build_generation_validation_issues(
-                    ctx.atoms,
-                    preview_context,
-                    requested_workflow=qe_parameters["calculation"],
-                )
+        preview_warnings: list[str] = []
+        validation_error: str | None = None
+
+        if workflow_mode == "standard":
+            qe_parameters = {
+                **common_parameters,
+                "ecutwfc": ecutwfc,
+                "ecutrho": ecutrho,
+            }
+            validation_error = _validate_qe_submission_parameters(qe_parameters)
+            if ctx.atoms is not None and validation_error is None:
+                try:
+                    preview_context = _build_generation_context_from_parameters(
+                        ctx.atoms,
+                        qe_parameters,
+                        resolved_entries=resolved_entries or None,
+                    )
+                except Exception:
+                    preview_context = None
+                else:
+                    preview_issues = build_generation_validation_issues(
+                        ctx.atoms,
+                        preview_context,
+                        requested_workflow=qe_parameters["calculation"],
+                    )
+        else:
+            qe_parameters = {
+                **common_parameters,
+                "calculation": "scf",
+                "start_ecutwfc_ry": start_ecutwfc_ry,
+                "stop_ecutwfc_ry": stop_ecutwfc_ry,
+                "step_ry": step_ry,
+                "tolerance_mev_per_atom": tolerance_mev_per_atom,
+                "ecutrho_mode": ecutrho_mode,
+                "ratio_rule": ratio_rule,
+                "custom_ratio": custom_ratio,
+                "manual_ecutrho_ry": manual_ecutrho_ry,
+                "manual_ratio": manual_ratio,
+            }
+            validation_error = _validate_cutoff_study_submission_parameters(
+                qe_parameters,
+                metadata_dual_info=metadata_dual_info,
+                resolved_entries=resolved_entries or None,
+            )
+            if ctx.atoms is not None and validation_error is None:
+                try:
+                    preview_context, sweep_spec = _build_cutoff_generation_context_from_parameters(
+                        ctx.atoms,
+                        qe_parameters,
+                        resolved_entries=resolved_entries or None,
+                    )
+                except Exception as exc:
+                    preview_context = None
+                    validation_error = str(exc)
+                else:
+                    preview_issues = build_generation_validation_issues(
+                        ctx.atoms,
+                        preview_context,
+                        requested_workflow="scf",
+                    )
+                    preview_warnings = build_cutoff_sweep_warnings(
+                        sweep_spec,
+                        point_count=len(sweep_spec.ecutwfc_values()),
+                        metadata_dual_info=metadata_dual_info,
+                    )
 
         blocking_preview_issues = [issue for issue in preview_issues if issue.level == "error"]
         warning_preview_issues = [issue for issue in preview_issues if issue.level == "warning"]
+        if preview_warnings:
+            st.markdown("**Warnings**")
+            render_status_messages([("warning", message) for message in preview_warnings])
         if warning_preview_issues:
             st.markdown("**Warnings**")
             _render_validation_issues(warning_preview_issues)
@@ -670,7 +1035,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             _render_validation_issues(blocking_preview_issues)
 
         submitted = st.button(
-            "Generate Input File",
+            "Generate Input File" if workflow_mode == "standard" else "Generate Cutoff Study",
             use_container_width=True,
             disabled=bool(submit_block_reason or blocking_preview_issues),
         )
@@ -692,7 +1057,10 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     if validation_error:
-        st.error(f"Failed to generate the Quantum ESPRESSO input file: {validation_error}")
+        if workflow_mode == "standard":
+            st.error(f"Failed to generate the Quantum ESPRESSO input file: {validation_error}")
+        else:
+            st.error(f"Failed to generate the cutoff convergence study: {validation_error}")
         return
 
     pseudopotentials = st.session_state.get(PSEUDO_RESOLVED_MAP_STATE_KEY)
@@ -702,44 +1070,76 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         st.error("Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file.")
         return
 
-    result = _generate_and_persist_qe_input(
-        atoms,
-        qe_parameters,
-        pseudopotentials,
-        pseudo_dir,
-        run_dir=QE_RUNS_DIR,
-        current_pseudo_settings=current_pseudo_settings,
-        resolved_entries=resolved_entries or None,
-        source_metadata=get_current_source_metadata(),
-        structure_signature=get_current_active_structure_signature(),
-        structure_mode=get_structure_mode(),
-    )
-    if not result.success:
-        if result.validation_issues:
-            st.markdown("**Blocking Errors**")
-            _render_validation_issues([issue for issue in result.validation_issues if issue.level == "error"])
-        if result.error_message:
-            st.error(result.error_message)
+    if workflow_mode == "standard":
+        result = _generate_and_persist_qe_input(
+            atoms,
+            qe_parameters,
+            pseudopotentials,
+            pseudo_dir,
+            run_dir=QE_RUNS_DIR,
+            current_pseudo_settings=current_pseudo_settings,
+            resolved_entries=resolved_entries or None,
+            source_metadata=get_current_source_metadata(),
+            structure_signature=get_current_active_structure_signature(),
+            structure_mode=get_structure_mode(),
+        )
+        if not result.success:
+            if result.validation_issues:
+                st.markdown("**Blocking Errors**")
+                _render_validation_issues([issue for issue in result.validation_issues if issue.level == "error"])
+            if result.error_message:
+                st.error(result.error_message)
+            return
+
+        assert result.qe_input_text is not None
+        assert result.internal_path is not None
+        assert result.ui_path is not None
+        assert result.metadata_path is not None
+        assert result.generation_context is not None
+
+        reset_run_state(st.session_state)
+        st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
+        st.session_state[QE_INPUT_TEXT_STATE_KEY] = result.qe_input_text
+        st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(result.internal_path)
+        st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(result.ui_path)
+        record_generated_input_provenance(
+            QE_RUNS_DIR,
+            ui_path=str(result.ui_path),
+            internal_path=str(result.internal_path),
+            metadata_path=str(result.metadata_path),
+        )
+        st.success("Generated updated QE input files under `qe_runs/`.")
         return
 
-    assert result.qe_input_text is not None
-    assert result.internal_path is not None
-    assert result.ui_path is not None
-    assert result.metadata_path is not None
-    assert result.generation_context is not None
+    try:
+        base_ctx, sweep_spec = _build_cutoff_generation_context_from_parameters(
+            atoms,
+            qe_parameters,
+            resolved_entries=resolved_entries or None,
+        )
+        study_result = build_cutoff_study(
+            atoms,
+            base_ctx,
+            pseudopotentials,
+            pseudo_dir,
+            sweep_spec=sweep_spec,
+            pseudo_settings=current_pseudo_settings,
+            source_metadata=get_current_source_metadata(),
+            structure_signature=get_current_active_structure_signature(),
+            structure_mode=get_structure_mode(),
+            studies_root=QE_CONVERGENCE_DIR,
+        )
+    except Exception as exc:
+        st.error(f"Failed to generate the cutoff convergence study: {exc}")
+        return
 
-    reset_run_state(st.session_state)
-    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
-    st.session_state[QE_INPUT_TEXT_STATE_KEY] = result.qe_input_text
-    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(result.internal_path)
-    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(result.ui_path)
-    record_generated_input_provenance(
-        QE_RUNS_DIR,
-        ui_path=str(result.ui_path),
-        internal_path=str(result.internal_path),
-        metadata_path=str(result.metadata_path),
+    st.session_state[CUTOFF_STUDY_PARAMS_STATE_KEY] = qe_parameters
+    st.session_state[CUTOFF_STUDY_LATEST_PATH_STATE_KEY] = str(study_result["study_dir"])
+    st.session_state[CUTOFF_STUDY_SELECTED_PATH_STATE_KEY] = str(study_result["study_dir"])
+    st.success(
+        "Generated cutoff convergence inputs under "
+        f"`{study_result['study_dir']}`."
     )
-    st.success("Generated updated QE input files under `qe_runs/`.")
 
 
 def render_generated_qe_input_preview(ctx: ProjectContext) -> None:
@@ -763,6 +1163,95 @@ def render_generated_qe_input_preview(ctx: ProjectContext) -> None:
         st.code(preview_text, language="fortran")
 
 
+def render_cutoff_study_results(ctx: ProjectContext) -> None:
+    """Render the cutoff-study selection, refresh controls, and summary table."""
+    st.markdown("### Cutoff Study Results")
+    studies = discover_cutoff_studies(QE_CONVERGENCE_DIR)
+    if not studies:
+        st.info("Generate a cutoff convergence study from this page to review its manifest and parsed results.")
+        return
+
+    st.session_state[CUTOFF_STUDY_LATEST_PATH_STATE_KEY] = str(studies[0])
+    selected_path = str(st.session_state.get(CUTOFF_STUDY_SELECTED_PATH_STATE_KEY) or "")
+    valid_paths = [str(path) for path in studies]
+    if selected_path not in valid_paths:
+        selected_path = valid_paths[0]
+        st.session_state[CUTOFF_STUDY_SELECTED_PATH_STATE_KEY] = selected_path
+
+    selected_path = st.selectbox(
+        "Available cutoff studies",
+        options=valid_paths,
+        index=valid_paths.index(selected_path),
+        format_func=lambda path: Path(path).name,
+        key=CUTOFF_STUDY_SELECTED_PATH_STATE_KEY,
+    )
+    study_dir = Path(selected_path)
+    manifest_path = study_dir / CUTOFF_STUDY_MANIFEST_FILENAME
+    summary_path = study_dir / CUTOFF_STUDY_SUMMARY_FILENAME
+    render_path_captions(
+        [
+            ("Study directory", str(study_dir)),
+            ("Manifest", str(manifest_path)),
+            ("Summary", str(summary_path)),
+        ]
+    )
+
+    refresh_clicked = st.button("Refresh Cutoff Study Results", use_container_width=True)
+    if refresh_clicked:
+        try:
+            summary = refresh_cutoff_study(study_dir)
+        except Exception as exc:
+            st.error(f"Failed to refresh the cutoff study summary: {exc}")
+            return
+    else:
+        summary = load_cutoff_study_summary(study_dir)
+        if summary is None:
+            try:
+                summary = refresh_cutoff_study(study_dir)
+            except Exception as exc:
+                st.warning(f"The cutoff study summary is unavailable: {exc}")
+                return
+
+    recommendation = dict(summary.get("recommendation", {}))
+    status = str(summary.get("study_status") or recommendation.get("status") or "incomplete")
+    message = str(recommendation.get("message") or "Cutoff study summary is available.")
+    if status == "complete":
+        st.success(message)
+    elif status == "unconverged":
+        st.warning(message)
+    else:
+        st.info(message)
+
+    summary_warnings = [str(message) for message in summary.get("warnings", [])]
+    if summary_warnings:
+        render_status_messages([("warning", warning) for warning in summary_warnings])
+
+    rows = []
+    for point in summary.get("points", []):
+        output_path = point.get("output_path")
+        rows.append(
+            {
+                "Point": str(point.get("index", "")),
+                "ecutwfc (Ry)": _format_optional_number(point.get("ecutwfc_ry")),
+                "ecutrho (Ry)": _format_optional_number(point.get("ecutrho_ry")),
+                "Status": str(point.get("status", "unknown")).replace("_", " "),
+                "Total Energy (Ry)": _format_optional_number(point.get("total_energy_ry"), digits=8),
+                "Energy/atom (eV)": _format_optional_number(point.get("energy_per_atom_ev"), digits=8),
+                "Delta (meV/atom)": _format_optional_number(point.get("delta_mev_per_atom"), digits=4),
+                "pw.out": str(Path(output_path).name) if output_path else "Missing",
+            }
+        )
+    render_table(rows, title="### Cutoff Convergence Table")
+
+    with st.expander("Study Manifest", expanded=False):
+        try:
+            manifest = load_cutoff_study_manifest(study_dir)
+        except Exception as exc:
+            st.warning(f"Unable to read the study manifest: {exc}")
+        else:
+            st.json(manifest)
+
+
 def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
     """Load the current `pw.in` preview from session state or disk."""
     preview_text = st.session_state.get(QE_INPUT_TEXT_STATE_KEY)
@@ -771,6 +1260,17 @@ def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
     if ctx.input_files.ui_path.is_file():
         return ctx.input_files.ui_path.read_text(encoding="utf-8")
     return None
+
+
+def _format_optional_number(value: object, *, digits: int = 1) -> str:
+    """Return a compact table-friendly numeric string."""
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return "Unavailable"
+    if not math.isfinite(numeric_value):
+        return "Unavailable"
+    return f"{numeric_value:.{digits}f}"
 
 
 def _default_starting_magnetization_state(starting_magnetization: dict[str, float]) -> dict[str, dict[str, object]]:
@@ -1072,6 +1572,129 @@ def _sanitize_saved_qe_parameters(
 
 def _validate_qe_submission_parameters(qe_parameters: dict) -> str | None:
     """Return a user-facing validation error for invalid UI-only combinations."""
+    return None
+
+
+def _available_ecutrho_modes(*, metadata_dual_available: bool) -> tuple[str, ...]:
+    """Return the selectable ecutrho modes for the cutoff-study form."""
+    options = [EcutrhoMode.RATIO_RULE.value, EcutrhoMode.MANUAL_ABSOLUTE.value, EcutrhoMode.MANUAL_RATIO.value]
+    if metadata_dual_available:
+        options.insert(0, EcutrhoMode.METADATA_DUAL.value)
+    return tuple(options)
+
+
+def _build_cutoff_sweep_spec_from_parameters(cutoff_parameters: dict) -> CutoffSweepSpec:
+    """Build a typed cutoff-sweep specification from the flat UI payload."""
+    return CutoffSweepSpec(
+        start_ecutwfc_ry=float(cutoff_parameters["start_ecutwfc_ry"]),
+        stop_ecutwfc_ry=float(cutoff_parameters["stop_ecutwfc_ry"]),
+        step_ry=float(cutoff_parameters["step_ry"]),
+        tolerance_mev_per_atom=float(cutoff_parameters["tolerance_mev_per_atom"]),
+        ecutrho_mode=str(cutoff_parameters["ecutrho_mode"]),
+        ratio_rule=str(cutoff_parameters.get("ratio_rule", "8x")),
+        custom_ratio=(
+            None
+            if cutoff_parameters.get("custom_ratio") in (None, "")
+            else float(cutoff_parameters["custom_ratio"])
+        ),
+        manual_ecutrho_ry=(
+            None
+            if cutoff_parameters.get("manual_ecutrho_ry") in (None, "")
+            else float(cutoff_parameters["manual_ecutrho_ry"])
+        ),
+        manual_ratio=(
+            None
+            if cutoff_parameters.get("manual_ratio") in (None, "")
+            else float(cutoff_parameters["manual_ratio"])
+        ),
+    )
+
+
+def _build_qe_request_from_cutoff_parameters(
+    cutoff_parameters: dict,
+    *,
+    sweep_spec: CutoffSweepSpec,
+    resolved_entries: dict[str, dict] | None = None,
+) -> dict:
+    """Return the shared QE request payload for a cutoff study."""
+    reference_ecutwfc = float(sweep_spec.stop_ecutwfc_ry)
+    reference_ecutrho = resolve_point_ecutrho(
+        sweep_spec,
+        ecutwfc_ry=reference_ecutwfc,
+        resolved_entries=resolved_entries or {},
+    )
+    return {
+        "calculation": "scf",
+        "prefix": cutoff_parameters["prefix"],
+        "outdir": cutoff_parameters["outdir"],
+        "ecutwfc": reference_ecutwfc,
+        "ecutrho": reference_ecutrho,
+        "occupations": cutoff_parameters["occupations"],
+        "smearing": cutoff_parameters["smearing"],
+        "degauss": cutoff_parameters["degauss"],
+        "k_points_grid": cutoff_parameters["k_points_grid"],
+        "conv_thr": cutoff_parameters["conv_thr"],
+        "mixing_beta": cutoff_parameters["mixing_beta"],
+        "nspin": cutoff_parameters["nspin"],
+        "starting_magnetization": cutoff_parameters["starting_magnetization"],
+        "noncolin": cutoff_parameters["noncolin"],
+        "lspinorb": cutoff_parameters["lspinorb"],
+        "dftu_enabled": cutoff_parameters["dftu_enabled"],
+        "hubbard_u": cutoff_parameters["hubbard_u"],
+        "vdw_method": cutoff_parameters["vdw_method"],
+    }
+
+
+def _build_cutoff_generation_context_from_parameters(
+    atoms,
+    cutoff_parameters: dict,
+    *,
+    resolved_entries: dict[str, dict] | None = None,
+) -> tuple[CalculationContext, CutoffSweepSpec]:
+    """Build the reference QE context plus sweep spec for one cutoff study."""
+    sweep_spec = _build_cutoff_sweep_spec_from_parameters(cutoff_parameters)
+    qe_request = _build_qe_request_from_cutoff_parameters(
+        cutoff_parameters,
+        sweep_spec=sweep_spec,
+        resolved_entries=resolved_entries,
+    )
+    return (
+        _build_generation_context_from_parameters(
+            atoms,
+            qe_request,
+            resolved_entries=resolved_entries,
+        ),
+        sweep_spec,
+    )
+
+
+def _validate_cutoff_study_submission_parameters(
+    cutoff_parameters: dict,
+    *,
+    metadata_dual_info: dict[str, object],
+    resolved_entries: dict[str, dict] | None = None,
+) -> str | None:
+    """Return a blocking user-facing validation message for cutoff-study submissions."""
+    if message := _validate_qe_submission_parameters(cutoff_parameters):
+        return message
+    try:
+        sweep_spec = _build_cutoff_sweep_spec_from_parameters(cutoff_parameters)
+        sweep_spec.validate()
+    except Exception as exc:
+        return str(exc)
+    if (
+        sweep_spec.normalized_ecutrho_mode == EcutrhoMode.METADATA_DUAL
+        and not bool(metadata_dual_info.get("available"))
+    ):
+        return "Metadata-derived ecutrho mode is unavailable because at least one resolved pseudopotential lacks cutoff metadata."
+    try:
+        resolve_point_ecutrho(
+            sweep_spec,
+            ecutwfc_ry=sweep_spec.stop_ecutwfc_ry,
+            resolved_entries=resolved_entries or {},
+        )
+    except Exception as exc:
+        return str(exc)
     return None
 
 
