@@ -652,6 +652,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             "ecutwfc": ecutwfc,
             "ecutrho": ecutrho,
         }
+        st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
+        
         validation_error = _validate_qe_submission_parameters(qe_parameters)
         if ctx.atoms is not None and validation_error is None:
             try:
