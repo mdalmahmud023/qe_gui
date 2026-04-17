@@ -45,7 +45,10 @@ from .ui_setup import (
     _validate_qe_submission_parameters,
     default_qe_parameters,
     get_qe_parameters,
+    QE_PARAMS_STATE_KEY,
 )
+from ..services.plotting.study_plots import plot_cutoff_convergence
+from ..services.studies.study_summary_view import detect_baseline_drift
 
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
 
@@ -337,7 +340,7 @@ def _format_optional_number(value: object, *, digits: int = 1) -> str:
     return f"{numeric_value:.{digits}f}"
 
 
-def render_cutoff_study_results(ctx: ProjectContext) -> None:
+def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
     """Render the cutoff-study selection, refresh controls, and summary table."""
     st.markdown("### Cutoff Study Results")
     studies = discover_cutoff_studies(QE_CONVERGENCE_DIR)
@@ -362,15 +365,24 @@ def render_cutoff_study_results(ctx: ProjectContext) -> None:
     study_dir = Path(selected_path)
     manifest_path = study_dir / CUTOFF_STUDY_MANIFEST_FILENAME
     summary_path = study_dir / CUTOFF_STUDY_SUMMARY_FILENAME
-    render_path_captions(
-        [
-            ("Study directory", str(study_dir)),
-            ("Manifest", str(manifest_path)),
-            ("Summary", str(summary_path)),
-        ]
-    )
+    
+    with st.expander("Study Paths", expanded=False):
+        render_path_captions(
+            [
+                ("Study directory", str(study_dir)),
+                ("Manifest", str(manifest_path)),
+                ("Summary", str(summary_path)),
+            ]
+        )
 
     refresh_clicked = st.button("Refresh Cutoff Study Results", use_container_width=True)
+    
+    try:
+        manifest = load_cutoff_study_manifest(study_dir)
+    except Exception as exc:
+        st.warning(f"Unable to read the study manifest: {exc}")
+        return
+
     if refresh_clicked:
         try:
             summary = refresh_cutoff_study(study_dir)
@@ -386,20 +398,67 @@ def render_cutoff_study_results(ctx: ProjectContext) -> None:
                 st.warning(f"The cutoff study summary is unavailable: {exc}")
                 return
 
+    # Check for baseline drift
+    drift_warnings = detect_baseline_drift(active_baseline, manifest, active_structure_signature)
+    if drift_warnings:
+        st.warning("Active Setup has changed since this study was generated. Results may no longer apply exactly.")
+        for msg in drift_warnings:
+            st.caption(f"- {msg}")
+    else:
+        st.success("This study matches the active Setup baseline.")
+
     recommendation = dict(summary.get("recommendation", {}))
     status = str(summary.get("study_status") or recommendation.get("status") or "incomplete")
     message = str(recommendation.get("message") or "Cutoff study summary is available.")
-    if status == "complete":
-        st.success(message)
-    elif status == "unconverged":
-        st.warning(message)
-    else:
-        st.info(message)
+    
+    # 2-column layout for Summary and Chart
+    col_summary, col_chart = st.columns([1, 2])
+    
+    with col_summary:
+        st.markdown("#### Study Summary")
+        if status == "complete":
+            st.success("Status: Complete")
+        elif status == "unconverged":
+            st.warning("Status: Unconverged")
+        else:
+            st.info(f"Status: {status.capitalize()}")
+            
+        points = summary.get("points", [])
+        successful_points = [p for p in points if p.get("status") == "success"]
+        
+        st.write(f"**Points Tested:** {len(points)}")
+        st.write(f"**Successful Runs:** {len(successful_points)}")
+        
+        sweep_spec = summary.get("sweep_spec", {})
+        tolerance = sweep_spec.get("tolerance_mev_per_atom")
+        if tolerance is not None:
+            st.write(f"**Tolerance:** {tolerance} meV/atom")
+            
+        st.divider()
+        st.write("**Recommendation:**")
+        if status == "complete":
+            st.success(message)
+            if st.button("Apply Recommended Cutoff to Setup", use_container_width=True):
+                # Update Setup Baseline
+                if "QE_PARAMS_STATE_KEY" not in st.session_state:
+                    st.session_state[QE_PARAMS_STATE_KEY] = active_baseline
+                
+                st.session_state[QE_PARAMS_STATE_KEY]["ecutwfc"] = float(recommendation["recommended_ecutwfc_ry"])
+                st.session_state[QE_PARAMS_STATE_KEY]["ecutrho"] = float(recommendation["recommended_ecutrho_ry"])
+                st.toast("Recommended cutoffs successfully applied to Setup baseline!")
+        else:
+            st.warning(message)
 
-    summary_warnings = [str(message) for message in summary.get("warnings", [])]
+    with col_chart:
+        fig = plot_cutoff_convergence(summary)
+        st.plotly_chart(fig, use_container_width=True)
+
+    summary_warnings = [str(warning) for warning in summary.get("warnings", [])]
     if summary_warnings:
+        st.markdown("**Study Warnings**")
         render_status_messages([("warning", warning) for warning in summary_warnings])
 
+    # Data Table
     rows = []
     for point in summary.get("points", []):
         output_path = point.get("output_path")
@@ -415,15 +474,10 @@ def render_cutoff_study_results(ctx: ProjectContext) -> None:
                 "pw.out": str(Path(output_path).name) if output_path else "Missing",
             }
         )
-    render_table(rows, title="### Cutoff Convergence Table")
+    render_table(rows, title="### Cutoff Convergence Data")
 
-    with st.expander("Study Manifest", expanded=False):
-        try:
-            manifest = load_cutoff_study_manifest(study_dir)
-        except Exception as exc:
-            st.warning(f"Unable to read the study manifest: {exc}")
-        else:
-            st.json(manifest)
+    with st.expander("Study Manifest Raw", expanded=False):
+        st.json(manifest)
 
 
 def render_cutoff_study_config(ctx: ProjectContext, baseline: dict, pseudopotentials: dict, pseudo_dir: str, resolved_entries: dict, atoms) -> None:
@@ -654,4 +708,4 @@ def render_page(ctx: ProjectContext) -> None:
         st.info("Equation of State (EOS) workflow is not yet implemented.")
 
     st.divider()
-    render_cutoff_study_results(ctx)
+    render_cutoff_study_results(ctx, baseline, get_current_active_structure_signature())
