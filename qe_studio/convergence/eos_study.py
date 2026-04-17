@@ -183,11 +183,12 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
     
     for point_data in manifest.get("points", []):
         run_dir = study_dir / point_data["run_dir_name"]
-        output_file = run_dir / EOS_POINT_OUTPUT_FILENAME
-        
-        # Parse energy (we can reuse the cutoff parser since it just looks for total energy)
-        point_result = parse_cutoff_point_output(output_file, atom_count=atom_count)
-        
+        point_result = parse_cutoff_point_output(
+            run_dir,
+            atom_count=atom_count,
+            output_filename=EOS_POINT_OUTPUT_FILENAME,
+        )
+
         result_dict = {
             "index": point_data["index"],
             "scale_factor": point_data["scale_factor"],
@@ -195,14 +196,14 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
             "label": point_data["label"],
             "run_dir_name": point_data["run_dir_name"],
             "status": point_result.status,
+            "total_energy_ry": point_result.total_energy_ry,
             "energy_per_atom_ev": point_result.energy_per_atom_ev,
+            "output_path": str(point_result.output_path) if point_result.output_path is not None else None,
+            "job_done": point_result.job_done,
+            "warnings": list(point_result.warnings),
         }
-        
+
         if point_result.status == "success" and point_result.energy_per_atom_ev is not None:
-            # We will use total energy per atom or total energy? 
-            # The Birch-Murnaghan expects total energy usually, or energy per atom. 
-            # E0 will be in whatever units we provide.
-            # `parse_cutoff_point_output` returns `energy_per_atom_ev`.
             volumes.append(point_data["volume"])
             energies.append(point_result.energy_per_atom_ev)
 
@@ -212,7 +213,8 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
     fit_result = fit_eos(volumes, energies, model_name=manifest["sweep_spec"].get("fit_model", "birch_murnaghan"))
 
     # Determine Study Status
-    has_running = any(r["status"] == "missing" for r in results)
+    running_statuses = {"missing_output", "missing_job_done"}
+    has_running = any(r["status"] in running_statuses for r in results)
     has_failed = any(r["status"] == "failed" for r in results)
     
     if has_running:

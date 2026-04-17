@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from qe_studio.pages import ui_studies
 from qe_studio.services import qe_runner
 
@@ -104,3 +106,37 @@ def test_sync_study_run_state_marks_runtime_lost_when_worker_disappears() -> Non
     assert "runtime state was lost" in "".join(state[qe_runner.RUN_TAIL_LINES_STATE_KEY]).lower()
     assert ui_studies._STUDY_RUN_ID_KEY not in state
     assert ui_studies._STUDY_RUN_OWNER_KEY not in state
+
+
+def test_eos_summary_needs_refresh_when_output_exists(tmp_path: Path) -> None:
+    study_dir = tmp_path / "eos-study"
+    point_dir = study_dir / "point_scale_1p0000"
+    point_dir.mkdir(parents=True)
+    (point_dir / "pw.out").write_text("JOB DONE.\n", encoding="utf-8")
+
+    summary = {
+        "points": [
+            {
+                "run_dir_name": "point_scale_1p0000",
+                "status": "missing_output",
+            }
+        ]
+    }
+
+    assert ui_studies._eos_summary_needs_refresh(study_dir, summary) is True
+
+
+def test_eos_summary_does_not_refresh_without_matching_output(tmp_path: Path) -> None:
+    study_dir = tmp_path / "eos-study"
+    study_dir.mkdir()
+
+    summary = {
+        "points": [
+            {
+                "run_dir_name": "point_scale_1p0000",
+                "status": "missing_output",
+            }
+        ]
+    }
+
+    assert ui_studies._eos_summary_needs_refresh(study_dir, summary) is False

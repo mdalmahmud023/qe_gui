@@ -393,6 +393,23 @@ _STUDY_RUN_ID_KEY = "study_active_run_id"
 _STUDY_RUN_OWNER_KEY = "study_active_run_owner"
 
 
+def _eos_summary_needs_refresh(study_dir: Path, summary: dict | None) -> bool:
+    """Return True when the stored EOS summary disagrees with files on disk."""
+    if not summary:
+        return True
+
+    for point in summary.get("points", []):
+        status = str(point.get("status") or "")
+        if status not in {"missing_output", "missing_job_done"}:
+            continue
+        run_dir_name = point.get("run_dir_name")
+        if not run_dir_name:
+            continue
+        if (study_dir / str(run_dir_name) / "pw.out").is_file():
+            return True
+    return False
+
+
 def _sync_study_run_state(
     state: MutableMapping[str, object],
     *,
@@ -1393,7 +1410,7 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
                 summary = refresh_eos_study(study_dir)
             else:
                 summary = load_eos_study_summary(study_dir)
-                if not summary:
+                if _eos_summary_needs_refresh(study_dir, summary):
                     summary = refresh_eos_study(study_dir)
 
         if not summary:
