@@ -16,6 +16,8 @@ EOS_STUDY_SUMMARY_FILENAME = "eos_study_summary.json"
 CUTOFF_POINT_OUTPUT_FILENAME = "pw.out"
 KPOINT_POINT_OUTPUT_FILENAME = "pw.out"
 EOS_POINT_OUTPUT_FILENAME = "pw.out"
+EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV = "cell_total_ev"
+EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3 = "cell_total_ang3"
 RATIO_RULE_CUSTOM = "custom"
 CUTOFF_RATIO_RULE_OPTIONS = ("4x", "6x", "8x", "12x", RATIO_RULE_CUSTOM)
 _FLOAT_TOLERANCE = 1.0e-9
@@ -167,6 +169,7 @@ class PointResult:
 
     status: str
     total_energy_ry: float | None = None
+    total_energy_ev: float | None = None
     energy_per_atom_ev: float | None = None
     delta_mev_per_atom: float | None = None
     warnings: tuple[str, ...] = ()
@@ -177,6 +180,7 @@ class PointResult:
         return {
             "status": self.status,
             "total_energy_ry": self.total_energy_ry,
+            "total_energy_ev": self.total_energy_ev,
             "energy_per_atom_ev": self.energy_per_atom_ev,
             "delta_mev_per_atom": self.delta_mev_per_atom,
             "warnings": list(self.warnings),

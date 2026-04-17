@@ -3,6 +3,7 @@ from __future__ import annotations
 import plotly.graph_objects as go
 from qe_studio.services.plotting.study_plots import (
     plot_cutoff_convergence,
+    plot_eos_study,
     plot_kpoint_convergence,
 )
 
@@ -141,3 +142,64 @@ def test_plot_kpoint_convergence_with_categorical_recommendation():
     assert len(fig.layout.annotations) == 1
     annotation = fig.layout.annotations[0]
     assert annotation.x == "4x4x4"
+
+
+def test_plot_eos_study_display_modes():
+    summary_data = {
+        "points": [
+            {
+                "index": 1,
+                "scale_factor": 0.98,
+                "volume": 98.0,
+                "status": "success",
+                "total_energy_ev": -19.8,
+                "energy_per_atom_ev": -9.9,
+            },
+            {
+                "index": 2,
+                "scale_factor": 1.00,
+                "volume": 100.0,
+                "status": "success",
+                "total_energy_ev": -20.0,
+                "energy_per_atom_ev": -10.0,
+            },
+            {
+                "index": 3,
+                "scale_factor": 1.02,
+                "volume": 102.0,
+                "status": "success",
+                "total_energy_ev": -19.7,
+                "energy_per_atom_ev": -9.85,
+            },
+        ],
+        "fit": {
+            "success": True,
+            "V0": 100.0,
+            "E0": -20.0,
+            "B0": 120.0,
+            "B0_prime": 4.0,
+            "natoms_in_fitted_cell": 2,
+        },
+    }
+
+    fig_cell_total = plot_eos_study(summary_data, display_mode="cell_total")
+    fig_per_atom = plot_eos_study(summary_data, display_mode="per_atom")
+
+    assert isinstance(fig_cell_total, go.Figure)
+    assert isinstance(fig_per_atom, go.Figure)
+    assert fig_cell_total.layout.xaxis.title.text == "Volume (Å³)"
+    assert fig_cell_total.layout.yaxis.title.text == "Energy (eV)"
+    assert fig_per_atom.layout.xaxis.title.text == "Volume/atom (Å³)"
+    assert fig_per_atom.layout.yaxis.title.text == "Energy/atom (eV)"
+
+    cell_trace = fig_cell_total.data[0]
+    per_atom_trace = fig_per_atom.data[0]
+    assert cell_trace.x == (98.0, 100.0, 102.0)
+    assert cell_trace.y == (-19.8, -20.0, -19.7)
+    assert per_atom_trace.x == (49.0, 50.0, 51.0)
+    assert per_atom_trace.y == (-9.9, -10.0, -9.85)
+
+    assert fig_cell_total.layout.shapes[0].x0 == 100.0
+    assert fig_per_atom.layout.shapes[0].x0 == 50.0
+    assert "Fitted-Cell Energy" in cell_trace.text[0]
+    assert "Energy/atom" in per_atom_trace.text[0]

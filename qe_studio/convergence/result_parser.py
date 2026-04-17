@@ -16,15 +16,17 @@ JOB_DONE_MARKER = "JOB DONE."
 def parse_cutoff_point_output(
     run_dir: Path | str,
     *,
-    atom_count: int,
+    atom_count: int | None,
     output_filename: str = CUTOFF_POINT_OUTPUT_FILENAME,
 ) -> PointResult:
-    """Parse one QE ``pw.out`` and extract the final total energy per atom."""
+    """Parse one QE ``pw.out`` and extract the final total energy."""
     run_dir = Path(run_dir)
     output_path = run_dir / output_filename
 
-    if atom_count <= 0:
-        raise ValueError("Cutoff-point parsing requires a positive atom count.")
+    try:
+        atom_count_value = int(atom_count) if atom_count is not None else None
+    except (TypeError, ValueError):
+        atom_count_value = None
 
     if not output_path.is_file():
         return PointResult(
@@ -63,11 +65,20 @@ def parse_cutoff_point_output(
         )
 
     total_energy_ry = float(matches[-1])
+    total_energy_ev = total_energy_ry * RY_TO_EV
+    warnings: tuple[str, ...] = ()
+    energy_per_atom_ev: float | None = None
+    if atom_count_value is not None and atom_count_value > 0:
+        energy_per_atom_ev = total_energy_ev / atom_count_value
+    else:
+        warnings = ("Atom count is unavailable or invalid, so per-atom energy could not be derived.",)
+
     return PointResult(
         status="success",
         total_energy_ry=total_energy_ry,
-        energy_per_atom_ev=(total_energy_ry * RY_TO_EV) / atom_count,
-        warnings=(),
+        total_energy_ev=total_energy_ev,
+        energy_per_atom_ev=energy_per_atom_ev,
+        warnings=warnings,
         output_path=output_path,
         job_done=True,
     )

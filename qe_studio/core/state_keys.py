@@ -12,6 +12,7 @@ KPOINT_STUDY_LATEST_PATH_STATE_KEY = "kpoint_study_latest_path"
 EOS_STUDY_PARAMS_STATE_KEY = "eos_study_parameters"
 EOS_STUDY_SELECTED_PATH_STATE_KEY = "eos_study_selected_path"
 EOS_STUDY_LATEST_PATH_STATE_KEY = "eos_study_latest_path"
+EOS_DISPLAY_MODE_WIDGET_KEY = "eos_display_mode_widget"
 
 ATOMS_STATE_KEY = "structure_atoms"
 RAW_ATOMS_STATE_KEY = "structure_raw_atoms"

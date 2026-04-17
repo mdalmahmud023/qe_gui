@@ -8,6 +8,8 @@ from pathlib import Path
 from ..services.input_generator import generate_qe_input_text, CalculationContext
 from .models import (
     CONVERGENCE_SCHEMA_VERSION,
+    EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
+    EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3,
     EOS_POINT_OUTPUT_FILENAME,
     EOS_STUDY_MANIFEST_FILENAME,
     EOS_STUDY_SUMMARY_FILENAME,
@@ -174,12 +176,30 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
     if manifest is None:
         return None
 
-    atom_count = int(manifest.get("structure", {}).get("atom_count") or manifest.get("atom_count") or 1)
+    atom_count_candidates = [
+        manifest.get("structure", {}).get("atom_count"),
+        manifest.get("atom_count"),
+    ]
+    atom_count: int | None = None
+    for candidate in atom_count_candidates:
+        try:
+            parsed_value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if parsed_value > 0:
+            atom_count = parsed_value
+            break
+
     results: list[dict] = []
     from .eos_fit import fit_eos  # Lazy import to avoid circular dependency
-    
-    volumes = []
-    energies = []
+
+    volumes: list[float] = []
+    total_energies_ev: list[float] = []
+    summary_warnings: list[str] = []
+    if atom_count is None:
+        summary_warnings.append(
+            "The fitted-cell atom count is unavailable or invalid, so per-atom EOS display is disabled."
+        )
     
     for point_data in manifest.get("points", []):
         run_dir = study_dir / point_data["run_dir_name"]
@@ -197,20 +217,27 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
             "run_dir_name": point_data["run_dir_name"],
             "status": point_result.status,
             "total_energy_ry": point_result.total_energy_ry,
+            "total_energy_ev": point_result.total_energy_ev,
             "energy_per_atom_ev": point_result.energy_per_atom_ev,
             "output_path": str(point_result.output_path) if point_result.output_path is not None else None,
             "job_done": point_result.job_done,
             "warnings": list(point_result.warnings),
         }
 
-        if point_result.status == "success" and point_result.energy_per_atom_ev is not None:
+        if point_result.status == "success" and point_result.total_energy_ev is not None:
             volumes.append(point_data["volume"])
-            energies.append(point_result.energy_per_atom_ev)
+            total_energies_ev.append(point_result.total_energy_ev)
+        if point_result.warnings:
+            summary_warnings.extend(point_result.warnings)
 
         results.append(result_dict)
 
     # Perform EOS Fitting
-    fit_result = fit_eos(volumes, energies, model_name=manifest["sweep_spec"].get("fit_model", "birch_murnaghan"))
+    fit_result = fit_eos(
+        volumes,
+        total_energies_ev,
+        model_name=manifest["sweep_spec"].get("fit_model", "birch_murnaghan"),
+    )
 
     # Determine Study Status
     running_statuses = {"missing_output", "missing_job_done"}
@@ -233,6 +260,7 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "status": overall_status,
         "points": results,
+        "warnings": summary_warnings,
         "fit": {
             "available": fit_result.available,
             "success": fit_result.success,
@@ -242,6 +270,9 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
             "B0": fit_result.B0,
             "B0_prime": fit_result.B0_prime,
             "a0": fit_result.a0,
+            "natoms_in_fitted_cell": atom_count,
+            "energy_basis": EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
+            "volume_basis": EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3,
             "warnings": fit_result.warnings,
             "errors": fit_result.errors,
         },

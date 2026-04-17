@@ -110,13 +110,13 @@ def test_refresh_eos_study_parses_outputs_and_builds_fit(atoms, base_context, tm
     atom_count = len(atoms)
     volumes = [point.volume for point in points]
     V0_true = volumes[len(volumes) // 2]
-    E0_true = -10.0
+    E0_true = -20.0
     B0_ev_ang3 = 0.5
     B0_prime = 4.0
-    energies_per_atom = [birch_murnaghan(volume, E0_true, V0_true, B0_ev_ang3, B0_prime) for volume in volumes]
+    total_energies = [birch_murnaghan(volume, E0_true, V0_true, B0_ev_ang3, B0_prime) for volume in volumes]
 
-    for point, energy_per_atom in zip(points, energies_per_atom, strict=True):
-        total_energy_ry = (energy_per_atom * atom_count) / RY_TO_EV
+    for point, total_energy_ev in zip(points, total_energies, strict=True):
+        total_energy_ry = total_energy_ev / RY_TO_EV
         (point.run_dir / "pw.out").write_text(
             "\n".join(
                 [
@@ -135,8 +135,15 @@ def test_refresh_eos_study_parses_outputs_and_builds_fit(atoms, base_context, tm
     assert summary["status"] == "complete"
     assert all(point["status"] == "success" for point in summary["points"])
     assert all(point["output_path"].endswith("pw.out") for point in summary["points"])
+    assert all(point["total_energy_ev"] is not None for point in summary["points"])
+    assert summary["fit"]["natoms_in_fitted_cell"] == atom_count
+    assert summary["fit"]["energy_basis"] == "cell_total_ev"
+    assert summary["fit"]["volume_basis"] == "cell_total_ang3"
     assert summary["fit"]["success"] is True
     assert summary["fit"]["available"] is True
+    assert summary["fit"]["E0"] == pytest.approx(E0_true, rel=1e-4)
+    assert summary["fit"]["V0"] == pytest.approx(V0_true, rel=1e-4)
+    assert summary["points"][0]["energy_per_atom_ev"] == pytest.approx(summary["points"][0]["total_energy_ev"] / atom_count, rel=1e-6)
 
 
 def test_refresh_eos_study_marks_missing_outputs_as_running(atoms, base_context, tmp_path):
@@ -150,3 +157,32 @@ def test_refresh_eos_study_marks_missing_outputs_as_running(atoms, base_context,
     assert summary is not None
     assert summary["status"] == "running"
     assert all(point["status"] == "missing_output" for point in summary["points"])
+
+
+def test_eos_fit_bulk_modulus_invariant_under_atom_count_scaling():
+    from qe_studio.convergence.eos_fit import birch_murnaghan
+
+    base_atom_count = 2
+    replication_factor = 4
+    E0_base = -20.0
+    V0_base = 50.0
+    B0_ev_ang3 = 0.5
+    B0_prime = 4.0
+
+    base_volumes = np.linspace(45.0, 55.0, 9)
+    base_energies = [birch_murnaghan(volume, E0_base, V0_base, B0_ev_ang3, B0_prime) for volume in base_volumes]
+    supercell_volumes = [replication_factor * volume for volume in base_volumes]
+    supercell_energies = [replication_factor * energy for energy in base_energies]
+
+    base_fit = fit_eos(list(base_volumes), list(base_energies))
+    supercell_fit = fit_eos(supercell_volumes, supercell_energies)
+
+    assert base_fit.success is True
+    assert supercell_fit.success is True
+    assert supercell_fit.B0 == pytest.approx(base_fit.B0, rel=1e-6)
+    assert supercell_fit.V0 == pytest.approx(base_fit.V0 * replication_factor, rel=1e-6)
+    assert supercell_fit.E0 == pytest.approx(base_fit.E0 * replication_factor, rel=1e-6)
+
+    supercell_atom_count = base_atom_count * replication_factor
+    assert (supercell_fit.V0 / supercell_atom_count) == pytest.approx(base_fit.V0 / base_atom_count, rel=1e-6)
+    assert (supercell_fit.E0 / supercell_atom_count) == pytest.approx(base_fit.E0 / base_atom_count, rel=1e-6)

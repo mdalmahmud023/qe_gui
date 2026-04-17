@@ -115,6 +115,11 @@ def test_eos_summary_needs_refresh_when_output_exists(tmp_path: Path) -> None:
     (point_dir / "pw.out").write_text("JOB DONE.\n", encoding="utf-8")
 
     summary = {
+        "fit": {
+            "energy_basis": "cell_total_ev",
+            "volume_basis": "cell_total_ang3",
+            "natoms_in_fitted_cell": 2,
+        },
         "points": [
             {
                 "run_dir_name": "point_scale_1p0000",
@@ -131,6 +136,11 @@ def test_eos_summary_does_not_refresh_without_matching_output(tmp_path: Path) ->
     study_dir.mkdir()
 
     summary = {
+        "fit": {
+            "energy_basis": "cell_total_ev",
+            "volume_basis": "cell_total_ang3",
+            "natoms_in_fitted_cell": 2,
+        },
         "points": [
             {
                 "run_dir_name": "point_scale_1p0000",
@@ -140,3 +150,59 @@ def test_eos_summary_does_not_refresh_without_matching_output(tmp_path: Path) ->
     }
 
     assert ui_studies._eos_summary_needs_refresh(study_dir, summary) is False
+
+
+def test_eos_summary_needs_refresh_when_fit_basis_is_legacy(tmp_path: Path) -> None:
+    study_dir = tmp_path / "eos-study"
+    study_dir.mkdir()
+
+    summary = {
+        "fit": {
+            "natoms_in_fitted_cell": 2,
+        },
+        "points": [],
+    }
+
+    assert ui_studies._eos_summary_needs_refresh(study_dir, summary) is True
+
+
+def test_resolve_eos_fitted_cell_atom_count_rejects_inconsistent_metadata() -> None:
+    manifest = {
+        "atom_count": 2,
+        "structure": {"atom_count": 4},
+    }
+    summary = {
+        "fit": {
+            "natoms_in_fitted_cell": 2,
+        }
+    }
+
+    natoms, warning = ui_studies._resolve_eos_fitted_cell_atom_count(manifest, summary)
+
+    assert natoms is None
+    assert warning is not None
+
+
+def test_get_eos_fit_display_values_keeps_bulk_modulus_invariant() -> None:
+    fit = {
+        "E0": -20.0,
+        "V0": 100.0,
+        "B0": 120.0,
+    }
+
+    cell_total = ui_studies._get_eos_fit_display_values(
+        fit,
+        display_mode="cell_total",
+        natoms_in_fitted_cell=4,
+    )
+    per_atom = ui_studies._get_eos_fit_display_values(
+        fit,
+        display_mode="per_atom",
+        natoms_in_fitted_cell=4,
+    )
+
+    assert cell_total["bulk_modulus_value"] == per_atom["bulk_modulus_value"] == 120.0
+    assert cell_total["volume_value"] == 100.0
+    assert per_atom["volume_value"] == 25.0
+    assert cell_total["energy_value"] == -20.0
+    assert per_atom["energy_value"] == -5.0
