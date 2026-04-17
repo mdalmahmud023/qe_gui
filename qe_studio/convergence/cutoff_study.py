@@ -29,6 +29,7 @@ from ..services.reproducibility import (
     resolve_generator_version_info,
     write_input_reproducibility_metadata,
 )
+from .shared import attach_successive_energy_deltas, deduplicate_messages, make_unique_study_dir
 
 
 _FLOAT_TOLERANCE = 1.0e-9
@@ -55,7 +56,7 @@ def build_cutoff_study(
 
     generator_info = resolve_generator_version_info()
     generated_at = datetime.now(timezone.utc).isoformat()
-    study_dir = _make_unique_study_dir(studies_root, prefix=base_ctx.control.prefix, generated_at=generated_at)
+    study_dir = make_unique_study_dir(studies_root, prefix=base_ctx.control.prefix, generated_at=generated_at)
     study_dir.mkdir(parents=True, exist_ok=True)
 
     ecutwfc_values = sweep_spec.ecutwfc_values()
@@ -410,24 +411,6 @@ def build_cutoff_study_manifest(
     }
 
 
-def attach_successive_energy_deltas(point_results: Sequence[PointResult]) -> list[PointResult]:
-    """Return point results with successive energy-per-atom deltas populated."""
-    updated_results: list[PointResult] = []
-    previous_success_energy: float | None = None
-    for result in point_results:
-        if result.status == "success" and result.energy_per_atom_ev is not None and previous_success_energy is not None:
-            delta = abs(result.energy_per_atom_ev - previous_success_energy) * 1000.0
-            updated_results.append(dataclasses.replace(result, delta_mev_per_atom=delta))
-            previous_success_energy = result.energy_per_atom_ev
-        else:
-            updated_results.append(result)
-            if result.status == "success" and result.energy_per_atom_ev is not None:
-                previous_success_energy = result.energy_per_atom_ev
-            else:
-                previous_success_energy = None
-    return updated_results
-
-
 def build_cutoff_sweep_warnings(
     sweep_spec: CutoffSweepSpec,
     *,
@@ -435,6 +418,7 @@ def build_cutoff_sweep_warnings(
     metadata_dual_info: dict[str, Any],
 ) -> list[str]:
     """Return non-fatal scientific warnings about the configured sweep."""
+    from .shared import deduplicate_messages
     warnings: list[str] = []
     if point_count < 4:
         warnings.append(
@@ -467,30 +451,6 @@ def write_cutoff_study_json(path: Path | str, payload: dict[str, Any]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
-
-
-def deduplicate_messages(messages: Sequence[str]) -> list[str]:
-    """Return messages without duplicates while preserving order."""
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for message in messages:
-        if not message or message in seen:
-            continue
-        seen.add(message)
-        ordered.append(message)
-    return ordered
-
-
-def _make_unique_study_dir(studies_root: Path | str, *, prefix: str, generated_at: str) -> Path:
-    root = Path(studies_root)
-    timestamp = datetime.fromisoformat(generated_at).strftime("%Y%m%dT%H%M%SZ")
-    base_name = f"{sanitize_qe_prefix(prefix)}_{timestamp}"
-    candidate = root / base_name
-    suffix = 2
-    while candidate.exists():
-        candidate = root / f"{base_name}_{suffix}"
-        suffix += 1
-    return candidate
 
 
 def _format_cutoff_token(value: float) -> str:

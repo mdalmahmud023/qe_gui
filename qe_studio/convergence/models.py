@@ -9,7 +9,10 @@ from typing import Any
 CONVERGENCE_SCHEMA_VERSION = 1
 CUTOFF_STUDY_MANIFEST_FILENAME = "cutoff_study_manifest.json"
 CUTOFF_STUDY_SUMMARY_FILENAME = "cutoff_study_summary.json"
+KPOINT_STUDY_MANIFEST_FILENAME = "kpoint_study_manifest.json"
+KPOINT_STUDY_SUMMARY_FILENAME = "kpoint_study_summary.json"
 CUTOFF_POINT_OUTPUT_FILENAME = "pw.out"
+KPOINT_POINT_OUTPUT_FILENAME = "pw.out"
 RATIO_RULE_CUSTOM = "custom"
 CUTOFF_RATIO_RULE_OPTIONS = ("4x", "6x", "8x", "12x", RATIO_RULE_CUSTOM)
 _FLOAT_TOLERANCE = 1.0e-9
@@ -19,6 +22,7 @@ class ConvergenceWorkflowType(str, Enum):
     """Supported scientific convergence workflows."""
 
     CUTOFF = "cutoff"
+    KPOINT = "kpoint"
 
 
 class EcutrhoMode(str, Enum):
@@ -192,6 +196,138 @@ class CutoffRecommendation:
             "status": self.status,
             "recommended_ecutwfc_ry": self.recommended_ecutwfc_ry,
             "recommended_ecutrho_ry": self.recommended_ecutrho_ry,
+            "message": self.message,
+            "warnings": list(self.warnings),
+        }
+
+
+class DimensionalityMode(str, Enum):
+    """How the k-point grid should be varied based on dimensionality."""
+
+    ISOTROPIC_3D = "3d_isotropic"
+    IN_PLANE_2D = "2d_in_plane"
+    WIRE_1D = "1d_wire"
+    MOLECULE_0D = "0d_molecule"
+
+
+@dataclass(frozen=True)
+class KPointSweepSpec:
+    """Scientific specification for one k-point convergence sweep."""
+
+    mode: str
+    start_value: int
+    stop_value: int
+    step: int
+    tolerance_mev_per_atom: float
+    baseline_k_grid: tuple[int, int, int] = (1, 1, 1)
+
+    @property
+    def normalized_mode(self) -> DimensionalityMode:
+        return self.mode if isinstance(self.mode, DimensionalityMode) else DimensionalityMode(str(self.mode))
+
+    def validate(self) -> None:
+        if self.start_value <= 0:
+            raise ValueError("K-point sweep start value must be positive.")
+        if self.stop_value <= 0:
+            raise ValueError("K-point sweep stop value must be positive.")
+        if self.stop_value < self.start_value:
+            raise ValueError("K-point sweep stop value must be greater than or equal to the start value.")
+        if self.step <= 0:
+            raise ValueError("K-point sweep step size must be positive.")
+        if self.tolerance_mev_per_atom <= 0:
+            raise ValueError("K-point convergence tolerance must be positive.")
+            
+        self.k_point_values()
+
+    def k_point_values(self) -> list[int]:
+        """Return the sweep grid of values to use."""
+        values: list[int] = []
+        step_index = 0
+        while True:
+            candidate = self.start_value + step_index * self.step
+            if candidate > self.stop_value:
+                break
+            values.append(int(candidate))
+            step_index += 1
+            if step_index > 1000:
+                raise ValueError("K-point sweep produced too many points; check the sweep bounds.")
+                
+        if not values or values[-1] != self.stop_value:
+            raise ValueError("K-point sweep must land exactly on the stop value.")
+        return values
+        
+    def generate_grid_for_value(self, value: int) -> tuple[int, int, int]:
+        mode = self.normalized_mode
+        if mode == DimensionalityMode.ISOTROPIC_3D:
+            return (value, value, value)
+        elif mode == DimensionalityMode.IN_PLANE_2D:
+            return (value, value, 1)
+        elif mode == DimensionalityMode.WIRE_1D:
+            return (1, 1, value)
+        else:
+            return (1, 1, 1)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.normalized_mode.value,
+            "start_value": self.start_value,
+            "stop_value": self.stop_value,
+            "step": self.step,
+            "tolerance_mev_per_atom": self.tolerance_mev_per_atom,
+            "baseline_k_grid": list(self.baseline_k_grid),
+            "k_point_values": self.k_point_values(),
+        }
+
+
+@dataclass(frozen=True)
+class KPointStudyPoint:
+    """One generated input point inside a k-point convergence study."""
+
+    index: int
+    k_points_grid: tuple[int, int, int]
+    grid_label: str
+    run_dir: Path
+    input_paths: dict[str, Path] = field(default_factory=dict)
+    metadata_path: Path | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "k_points_grid": list(self.k_points_grid),
+            "grid_label": self.grid_label,
+            "run_dir": str(self.run_dir),
+            "input_paths": {key: str(value) for key, value in self.input_paths.items()},
+            "metadata_path": str(self.metadata_path) if self.metadata_path is not None else None,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "KPointStudyPoint":
+        k_grid = payload["k_points_grid"]
+        return cls(
+            index=int(payload["index"]),
+            k_points_grid=(int(k_grid[0]), int(k_grid[1]), int(k_grid[2])),
+            grid_label=str(payload["grid_label"]),
+            run_dir=Path(payload["run_dir"]),
+            input_paths={key: Path(value) for key, value in dict(payload.get("input_paths", {})).items()},
+            metadata_path=Path(payload["metadata_path"]) if payload.get("metadata_path") else None,
+        )
+
+
+@dataclass(frozen=True)
+class KPointRecommendation:
+    """Recommendation payload for one fully or partially parsed k-point study."""
+
+    status: str
+    recommended_k_grid: tuple[int, int, int] | None = None
+    grid_label: str = ""
+    message: str = ""
+    warnings: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "recommended_k_grid": list(self.recommended_k_grid) if self.recommended_k_grid else None,
+            "grid_label": self.grid_label,
             "message": self.message,
             "warnings": list(self.warnings),
         }

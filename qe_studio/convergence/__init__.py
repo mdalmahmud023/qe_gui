@@ -23,6 +23,19 @@ from .models import (
     EcutrhoMode,
     PointResult,
     RATIO_RULE_CUSTOM,
+    KPOINT_STUDY_MANIFEST_FILENAME,
+    KPOINT_STUDY_SUMMARY_FILENAME,
+    KPointRecommendation,
+    KPointStudyPoint,
+    KPointSweepSpec,
+    DimensionalityMode,
+)
+from .kpoint_study import (
+    build_kpoint_study,
+    discover_kpoint_studies,
+    load_kpoint_study_manifest,
+    load_kpoint_study_summary,
+    refresh_kpoint_study,
 )
 from .recommendation import format_recommendation_message, recommend_cutoffs
 from .result_parser import parse_cutoff_point_output
@@ -53,4 +66,15 @@ __all__ = [
     "recommend_cutoffs",
     "refresh_cutoff_study",
     "resolve_point_ecutrho",
+    "KPOINT_STUDY_MANIFEST_FILENAME",
+    "KPOINT_STUDY_SUMMARY_FILENAME",
+    "KPointRecommendation",
+    "KPointStudyPoint",
+    "KPointSweepSpec",
+    "DimensionalityMode",
+    "build_kpoint_study",
+    "discover_kpoint_studies",
+    "load_kpoint_study_manifest",
+    "load_kpoint_study_summary",
+    "refresh_kpoint_study",
 ]

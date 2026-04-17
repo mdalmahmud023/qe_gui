@@ -20,6 +20,15 @@ from ..convergence import (
     load_cutoff_study_summary,
     refresh_cutoff_study,
     resolve_point_ecutrho,
+    DimensionalityMode,
+    KPOINT_STUDY_MANIFEST_FILENAME,
+    KPOINT_STUDY_SUMMARY_FILENAME,
+    KPointSweepSpec,
+    build_kpoint_study,
+    discover_kpoint_studies,
+    load_kpoint_study_manifest,
+    load_kpoint_study_summary,
+    refresh_kpoint_study,
 )
 from ..core.project_context import ProjectContext
 from ..core.state_keys import (
@@ -47,7 +56,7 @@ from .ui_setup import (
     get_qe_parameters,
     QE_PARAMS_STATE_KEY,
 )
-from ..services.plotting.study_plots import plot_cutoff_convergence
+from ..services.plotting.study_plots import plot_cutoff_convergence, plot_kpoint_convergence
 from ..services.studies.study_summary_view import detect_baseline_drift
 
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
@@ -664,6 +673,236 @@ def render_cutoff_study_config(ctx: ProjectContext, baseline: dict, pseudopotent
     st.success(f"Generated cutoff convergence inputs under `{study_result['study_dir']}`.")
 
 
+KPOINT_STUDY_PARAMS_STATE_KEY = "kpoint_study_params"
+KPOINT_STUDY_SELECTED_PATH_STATE_KEY = "kpoint_study_selected_path"
+KPOINT_STUDY_LATEST_PATH_STATE_KEY = "kpoint_study_latest_path"
+
+def _build_kpoint_generation_context_from_parameters(atoms, parameters: dict, *, resolved_entries: dict) -> tuple[CalculationContext, KPointSweepSpec]:
+    ctx = _build_generation_context_from_parameters(
+        atoms,
+        parameters,
+        resolved_entries=resolved_entries,
+    )
+    sweep_spec = KPointSweepSpec(
+        mode=parameters["dimensionality_mode"],
+        start_value=int(parameters["start_grid_value"]),
+        stop_value=int(parameters["stop_grid_value"]),
+        step=int(parameters["step_grid_value"]),
+        tolerance_mev_per_atom=float(parameters["tolerance_mev_per_atom"]),
+        baseline_k_grid=tuple(parameters.get("k_points_grid", (1, 1, 1))),
+    )
+    return ctx, sweep_spec
+
+
+def render_kpoint_study_config(ctx: ProjectContext, baseline: dict, pseudopotentials: dict, pseudo_dir: str, resolved_entries: dict, atoms) -> None:
+    st.markdown("### K-Point Study Configuration")
+    
+    st.info("The K-point study uses the active Setup parameters as a fixed baseline and sweeps the k-point grid.", icon="ℹ️")
+    
+    pbc = atoms.pbc
+    if not any(pbc):
+        st.warning("This structure appears to be 0D (e.g. isolated molecule). K-point convergence is not typically necessary as Gamma-only is sufficient.")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        dim_mode = st.selectbox(
+            "Dimensionality Mode",
+            options=[e.value for e in DimensionalityMode],
+            index=0 if all(pbc) else 1 if sum(pbc) == 2 else 2 if sum(pbc) == 1 else 3,
+            help="Select how the grid should be scaled."
+        )
+    with col2:
+        start_grid = st.number_input("Start Grid Parameter", min_value=1, value=2, step=1, help="The starting multiplier for the periodic axes.")
+        stop_grid = st.number_input("Stop Grid Parameter", min_value=2, value=8, step=1, help="The ending multiplier for the periodic axes.")
+    with col3:
+        step_grid = st.number_input("Step", min_value=1, value=2, step=1)
+        tol_mev = st.number_input("Tolerance (meV/atom)", min_value=0.1, value=_DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM, step=0.1, format="%.2f")
+
+    st.markdown("**Grid Scaling Explanation:**")
+    if dim_mode == DimensionalityMode.ISOTROPIC_3D.value:
+        st.caption("3D Isotropic: All three axes (kx, ky, kz) will be scaled equally.")
+    elif dim_mode == DimensionalityMode.IN_PLANE_2D.value:
+        st.caption("2D In-Plane: The kx and ky axes will be scaled equally. Kz will remain fixed at 1.")
+    elif dim_mode == DimensionalityMode.WIRE_1D.value:
+        st.caption("1D Wire: Only kz will be scaled. Kx and Ky will remain fixed at 1.")
+    else:
+        st.caption("0D Molecule: K-point grid remains fixed at 1x1x1 (Gamma-only).")
+
+    qe_parameters = dict(baseline)
+    qe_parameters.update({
+        "calculation": "scf",
+        "dimensionality_mode": dim_mode,
+        "start_grid_value": start_grid,
+        "stop_grid_value": stop_grid,
+        "step_grid_value": step_grid,
+        "tolerance_mev_per_atom": tol_mev,
+    })
+
+    if not st.button("Generate K-Point Convergence Study", type="primary"):
+        return
+
+    try:
+        base_ctx, sweep_spec = _build_kpoint_generation_context_from_parameters(
+            atoms,
+            qe_parameters,
+            resolved_entries=resolved_entries,
+        )
+        study_result = build_kpoint_study(
+            atoms,
+            base_ctx,
+            pseudopotentials,
+            pseudo_dir,
+            sweep_spec=sweep_spec,
+            pseudo_settings=get_current_pseudo_settings(),
+            source_metadata=get_current_source_metadata(),
+            structure_signature=get_current_active_structure_signature(),
+            structure_mode=get_structure_mode(),
+            studies_root=QE_CONVERGENCE_DIR,
+        )
+    except Exception as exc:
+        st.error(f"Failed to generate the k-point convergence study: {exc}")
+        return
+
+    st.session_state[KPOINT_STUDY_PARAMS_STATE_KEY] = qe_parameters
+    st.session_state[KPOINT_STUDY_LATEST_PATH_STATE_KEY] = str(study_result["study_dir"])
+    st.session_state[KPOINT_STUDY_SELECTED_PATH_STATE_KEY] = str(study_result["study_dir"])
+    st.success(f"Generated k-point convergence inputs under `{study_result['study_dir']}`.")
+
+
+def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
+    st.markdown("### K-Point Study Results")
+    studies = discover_kpoint_studies(QE_CONVERGENCE_DIR)
+    if not studies:
+        st.info("Generate a k-point convergence study from this page to review its manifest and parsed results.")
+        return
+
+    st.session_state[KPOINT_STUDY_LATEST_PATH_STATE_KEY] = str(studies[0])
+    selected_path = str(st.session_state.get(KPOINT_STUDY_SELECTED_PATH_STATE_KEY) or "")
+    valid_paths = [str(path) for path in studies]
+    if selected_path not in valid_paths:
+        selected_path = valid_paths[0]
+        st.session_state[KPOINT_STUDY_SELECTED_PATH_STATE_KEY] = selected_path
+
+    selected_path = st.selectbox(
+        "Available k-point studies",
+        options=valid_paths,
+        index=valid_paths.index(selected_path),
+        format_func=lambda path: Path(path).name,
+        key=KPOINT_STUDY_SELECTED_PATH_STATE_KEY,
+    )
+    study_dir = Path(selected_path)
+    manifest_path = study_dir / KPOINT_STUDY_MANIFEST_FILENAME
+    summary_path = study_dir / KPOINT_STUDY_SUMMARY_FILENAME
+    
+    with st.expander("Study Paths", expanded=False):
+        render_path_captions(
+            [
+                ("Study directory", str(study_dir)),
+                ("Manifest", str(manifest_path)),
+                ("Summary", str(summary_path)),
+            ]
+        )
+
+    refresh_clicked = st.button("Refresh K-Point Study Results", use_container_width=True)
+    
+    try:
+        manifest = load_kpoint_study_manifest(study_dir)
+    except Exception as exc:
+        st.warning(f"Unable to read the study manifest: {exc}")
+        return
+
+    if refresh_clicked:
+        try:
+            summary = refresh_kpoint_study(study_dir)
+        except Exception as exc:
+            st.error(f"Failed to refresh the k-point study summary: {exc}")
+            return
+    else:
+        summary = load_kpoint_study_summary(study_dir)
+        if summary is None:
+            try:
+                summary = refresh_kpoint_study(study_dir)
+            except Exception as exc:
+                st.warning(f"The k-point study summary is unavailable: {exc}")
+                return
+
+    drift_warnings = detect_baseline_drift(active_baseline, manifest, active_structure_signature)
+    if drift_warnings:
+        st.warning("Active Setup has changed since this study was generated. Results may no longer apply exactly.")
+        for msg in drift_warnings:
+            st.caption(f"- {msg}")
+    else:
+        st.success("This study matches the active Setup baseline.")
+
+    recommendation = dict(summary.get("recommendation", {}))
+    status = str(summary.get("study_status") or recommendation.get("status") or "incomplete")
+    message = str(recommendation.get("message") or "K-point study summary is available.")
+    
+    col_summary, col_chart = st.columns([1, 2])
+    
+    with col_summary:
+        st.markdown("#### Study Summary")
+        if status == "complete":
+            st.success("Status: Complete")
+        elif status == "unconverged":
+            st.warning("Status: Unconverged")
+        else:
+            st.info(f"Status: {status.capitalize()}")
+            
+        points = summary.get("points", [])
+        successful_points = [p for p in points if p.get("status") == "success"]
+        
+        st.write(f"**Points Tested:** {len(points)}")
+        st.write(f"**Successful Runs:** {len(successful_points)}")
+        
+        sweep_spec = summary.get("sweep_spec", {})
+        st.write(f"**Dimensionality Mode:** {sweep_spec.get('mode', 'N/A')}")
+        tolerance = sweep_spec.get("tolerance_mev_per_atom")
+        if tolerance is not None:
+            st.write(f"**Tolerance:** {tolerance} meV/atom")
+            
+        st.divider()
+        st.write("**Recommendation:**")
+        if status == "complete":
+            st.success(message)
+            if st.button("Apply Recommended K-grid to Setup", use_container_width=True):
+                if "QE_PARAMS_STATE_KEY" not in st.session_state:
+                    st.session_state[QE_PARAMS_STATE_KEY] = active_baseline
+                
+                st.session_state[QE_PARAMS_STATE_KEY]["k_points_grid"] = recommendation["recommended_k_grid"]
+                st.toast("Recommended k-points grid successfully applied to Setup baseline!")
+        else:
+            st.warning(message)
+
+    with col_chart:
+        fig = plot_kpoint_convergence(summary)
+        st.plotly_chart(fig, use_container_width=True)
+
+    summary_warnings = [str(warning) for warning in summary.get("warnings", [])]
+    if summary_warnings:
+        st.markdown("**Study Warnings**")
+        render_status_messages([("warning", warning) for warning in summary_warnings])
+
+    rows = []
+    for point in summary.get("points", []):
+        output_path = point.get("output_path")
+        rows.append(
+            {
+                "Point": str(point.get("index", "")),
+                "Grid": str(point.get("grid_label", "")),
+                "Status": str(point.get("status", "unknown")).replace("_", " "),
+                "Total Energy (Ry)": _format_optional_number(point.get("total_energy_ry"), digits=8),
+                "Energy/atom (eV)": _format_optional_number(point.get("energy_per_atom_ev"), digits=8),
+                "Delta (meV/atom)": _format_optional_number(point.get("delta_mev_per_atom"), digits=4),
+                "pw.out": str(Path(output_path).name) if output_path else "Missing",
+            }
+        )
+    render_table(rows, title="### K-Point Convergence Data")
+
+    with st.expander("Study Manifest Raw", expanded=False):
+        st.json(manifest)
+
+
 def render_page(ctx: ProjectContext) -> None:
     """Render the Studies page."""
     st.subheader("Studies")
@@ -700,12 +939,13 @@ def render_page(ctx: ProjectContext) -> None:
 
     with tabs[0]:
         render_cutoff_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
+        st.divider()
+        render_cutoff_study_results(ctx, baseline, get_current_active_structure_signature())
 
     with tabs[1]:
-        st.info("K-Point Convergence workflow is not yet implemented.")
+        render_kpoint_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
+        st.divider()
+        render_kpoint_study_results(ctx, baseline, get_current_active_structure_signature())
 
     with tabs[2]:
         st.info("Equation of State (EOS) workflow is not yet implemented.")
-
-    st.divider()
-    render_cutoff_study_results(ctx, baseline, get_current_active_structure_signature())

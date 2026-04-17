@@ -98,3 +98,86 @@ def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
     )
 
     return fig
+
+
+def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
+    """Create a Plotly figure for a k-point convergence study.
+
+    Args:
+        summary_data: The parsed k-point study summary JSON payload.
+
+    Returns:
+        A Plotly Figure object.
+    """
+    points = summary_data.get("points", [])
+    recommendation = summary_data.get("recommendation", {})
+
+    valid_x = []
+    valid_y = []
+    hover_texts = []
+    
+    for point in points:
+        grid_label = point.get("grid_label")
+        energy_ev = point.get("energy_per_atom_ev")
+        total_energy_ry = point.get("total_energy_ry")
+        delta_mev = point.get("delta_mev_per_atom")
+        status = str(point.get("status", "unknown")).replace("_", " ")
+        
+        hover_parts = [
+            f"<b>Grid:</b> {grid_label}",
+            f"<b>Status:</b> {status}",
+        ]
+        if total_energy_ry is not None:
+            hover_parts.append(f"<b>Total Energy:</b> {total_energy_ry:.6f} Ry")
+        if energy_ev is not None:
+            hover_parts.append(f"<b>Energy/Atom:</b> {energy_ev:.6f} eV")
+        if delta_mev is not None:
+            hover_parts.append(f"<b>Δ Energy:</b> {delta_mev:.2f} meV/atom")
+            
+        hover_texts.append("<br>".join(hover_parts))
+        
+        if energy_ev is not None:
+            valid_x.append(grid_label)
+            valid_y.append(energy_ev)
+
+    fig = go.Figure()
+
+    if valid_x and valid_y:
+        fig.add_trace(
+            go.Scatter(
+                x=valid_x,
+                y=valid_y,
+                mode="lines+markers",
+                name="Energy/Atom",
+                line=dict(color="#2ca02c", width=2),
+                marker=dict(size=8, color="#2ca02c", symbol="circle"),
+                hoverinfo="text",
+                text=[hover_texts[points.index(p)] for p in points if p.get("energy_per_atom_ev") is not None],
+            )
+        )
+
+    recommended_grid_label = recommendation.get("grid_label")
+    rec_status = recommendation.get("status")
+
+    if rec_status == "complete" and recommended_grid_label:
+        fig.add_vline(
+            x=recommended_grid_label,
+            line_width=2,
+            line_dash="dash",
+            line_color="green",
+            annotation_text=f"Suggested Minimum Grid ({recommended_grid_label})",
+            annotation_position="top right",
+        )
+
+    fig.update_layout(
+        title="K-Point Convergence",
+        xaxis_title="K-Point Grid",
+        yaxis_title="Energy per Atom (eV)",
+        hovermode="closest",
+        template="plotly_white",
+        margin=dict(l=40, r=40, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(type='category')
+    )
+
+    return fig

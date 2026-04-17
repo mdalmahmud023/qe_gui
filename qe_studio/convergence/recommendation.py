@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .models import CutoffRecommendation, CutoffStudyPoint, PointResult
+from .models import CutoffRecommendation, CutoffStudyPoint, PointResult, KPointRecommendation, KPointStudyPoint
 
 
 _FLOAT_TOLERANCE = 1.0e-9
@@ -19,6 +19,18 @@ def format_recommendation_message(
         "Recommended production cutoff: "
         f"ecutwfc = {ecutwfc_ry:g} Ry, "
         f"ecutrho = {ecutrho_ry:g} Ry based on tolerance {tolerance_mev_per_atom:g} meV/atom."
+    )
+
+
+def format_kpoint_recommendation_message(
+    *,
+    grid_label: str,
+    tolerance_mev_per_atom: float,
+) -> str:
+    """Return the canonical user-facing recommendation string for k-points."""
+    return (
+        f"Recommended production k-point grid: {grid_label} "
+        f"based on tolerance {tolerance_mev_per_atom:g} meV/atom."
     )
 
 
@@ -83,5 +95,69 @@ def recommend_cutoffs(
     return CutoffRecommendation(
         status="unconverged",
         message="Cutoff study is unconverged: extend the sweep to higher cutoffs.",
+        warnings=tuple(warnings),
+    )
+
+
+def recommend_kpoints(
+    study_points: Sequence[KPointStudyPoint],
+    point_results: Sequence[PointResult],
+    *,
+    tolerance_mev_per_atom: float,
+) -> KPointRecommendation:
+    """Apply the conservative tail-stability rule to a completed k-point sweep."""
+    if len(study_points) != len(point_results):
+        raise ValueError("Study points and parsed point results must have the same length.")
+    if tolerance_mev_per_atom <= 0:
+        raise ValueError("K-point recommendation tolerance must be positive.")
+
+    warnings: list[str] = []
+    if len(study_points) < 3:
+        warnings.append("At least three k-point grids are required before a recommendation can be made.")
+        return KPointRecommendation(
+            status="incomplete",
+            message="K-point study is incomplete: fewer than three points were generated.",
+            warnings=tuple(warnings),
+        )
+
+    unsuccessful = [
+        (point, result)
+        for point, result in zip(study_points, point_results, strict=False)
+        if result.status != "success"
+    ]
+    if unsuccessful:
+        warnings.append("Some k-point grids are missing, failed, or do not contain a usable final energy.")
+        return KPointRecommendation(
+            status="incomplete",
+            message="K-point study is incomplete: some point results are missing or failed.",
+            warnings=tuple(warnings),
+        )
+
+    energies_per_atom = [float(result.energy_per_atom_ev) for result in point_results if result.energy_per_atom_ev is not None]
+    deltas_mev_per_atom = [
+        abs(energies_per_atom[index] - energies_per_atom[index - 1]) * 1000.0
+        for index in range(1, len(energies_per_atom))
+    ]
+
+    for candidate_index, candidate_point in enumerate(study_points[:-2]):
+        tail_deltas = deltas_mev_per_atom[candidate_index:]
+        if len(tail_deltas) < 2:
+            continue
+        if all(delta <= tolerance_mev_per_atom + _FLOAT_TOLERANCE for delta in tail_deltas):
+            return KPointRecommendation(
+                status="complete",
+                recommended_k_grid=candidate_point.k_points_grid,
+                grid_label=candidate_point.grid_label,
+                message=format_kpoint_recommendation_message(
+                    grid_label=candidate_point.grid_label,
+                    tolerance_mev_per_atom=tolerance_mev_per_atom,
+                ),
+                warnings=tuple(warnings),
+            )
+
+    warnings.append("The highest tested k-point grid still does not satisfy the convergence tolerance.")
+    return KPointRecommendation(
+        status="unconverged",
+        message="K-point study is unconverged: extend the sweep to denser grids.",
         warnings=tuple(warnings),
     )
