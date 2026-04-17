@@ -73,6 +73,30 @@ from ..convergence import (
     load_eos_study_summary,
     refresh_eos_study,
 )
+from ..convergence.study_runner import (
+    build_cutoff_study_steps,
+    build_eos_study_steps,
+    build_kpoint_study_steps,
+    is_pw_available,
+)
+from ..services.qe_runner import (
+    ACTIVE_RUN_ID_STATE_KEY,
+    DEFAULT_MAX_TAIL_LINES,
+    RUN_ACTIVE_STATE_KEY,
+    RUN_FINISHED_STATE_KEY,
+    RUN_JOB_LABEL_STATE_KEY,
+    RUN_PHASE_LABEL_STATE_KEY,
+    RUN_RETURNCODE_STATE_KEY,
+    RUN_TAIL_LINES_STATE_KEY,
+    apply_run_events,
+    cleanup_run,
+    drain_run_events,
+    get_run_context,
+    mark_runtime_lost,
+    reset_run_state,
+    run_chained_jobs,
+    set_run_started,
+)
 
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
 
@@ -364,6 +388,194 @@ def _format_optional_number(value: object, *, digits: int = 1) -> str:
     return f"{numeric_value:.{digits}f}"
 
 
+# ---------------------------------------------------------------------------
+# Study run controls — shared across Cutoff, K-Point, and EOS
+# ---------------------------------------------------------------------------
+
+# Per-study-type state key for the active run id so each tab tracks its own job
+_STUDY_RUN_ID_KEY = "study_active_run_id"
+_STUDY_RUN_OWNER_KEY = "study_active_run_owner"
+
+
+@st.fragment(run_every=1)
+def _study_live_console_fragment(owner_key: str) -> None:
+    """Auto-refreshing console that streams output for the active study run."""
+    active_run_id = st.session_state.get(_STUDY_RUN_ID_KEY)
+    active_owner = st.session_state.get(_STUDY_RUN_OWNER_KEY)
+
+    if active_run_id is None or active_owner != owner_key:
+        return  # No active run for this study type
+
+    context = get_run_context(active_run_id)
+    if context is None:
+        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
+        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
+        st.rerun(scope="app")
+        return
+
+    events = drain_run_events(active_run_id)
+    tail: list[str] = list(st.session_state.get(RUN_TAIL_LINES_STATE_KEY, []))
+    run_completed = False
+    returncode: int | None = None
+
+    for event in events:
+        from ..services.qe_runner import EVENT_TYPE_LINE, EVENT_TYPE_COMPLETE, EVENT_TYPE_PHASE
+        if event.type in (EVENT_TYPE_LINE, EVENT_TYPE_PHASE) and event.line:
+            tail.append(event.line)
+        elif event.type == EVENT_TYPE_COMPLETE:
+            run_completed = True
+            returncode = event.returncode
+
+    tail = tail[-DEFAULT_MAX_TAIL_LINES:]
+    st.session_state[RUN_TAIL_LINES_STATE_KEY] = tail
+
+    phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY, "")
+    for event in events:
+        from ..services.qe_runner import EVENT_TYPE_PHASE
+        if event.type == EVENT_TYPE_PHASE and event.phase_label:
+            phase = event.phase_label
+            st.session_state[RUN_PHASE_LABEL_STATE_KEY] = phase
+
+    if tail:
+        st.code("".join(tail[-80:]), language="text")
+    else:
+        st.info(f"⏳ Waiting for pw.x output… (step: {phase})" if phase else "⏳ Starting pw.x…")
+
+    if run_completed:
+        cleanup_run(active_run_id)
+        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
+        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
+        st.session_state[RUN_FINISHED_STATE_KEY] = True
+        st.session_state[RUN_RETURNCODE_STATE_KEY] = returncode
+        st.rerun(scope="app")
+    elif not context.thread.is_alive():
+        cleanup_run(active_run_id)
+        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
+        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
+        st.rerun(scope="app")
+
+
+def render_study_run_controls(
+    *,
+    study_dir: Path,
+    manifest: dict,
+    study_type: str,  # "cutoff" | "kpoint" | "eos"
+    owner_key: str,
+    on_run_complete_refresh: bool = True,
+) -> None:
+    """Render Run / Stop controls and a live console for one study type."""
+    active_run_id = st.session_state.get(_STUDY_RUN_ID_KEY)
+    active_owner = st.session_state.get(_STUDY_RUN_OWNER_KEY)
+    this_study_running = active_run_id is not None and active_owner == owner_key
+    any_job_running = active_run_id is not None  # global lock (only one pw.x at a time)
+
+    # --- Count pending (no pw.out) vs total points ---
+    points_data = manifest.get("points", [])
+    pending_count = 0
+    for p in points_data:
+        if study_type == "eos":
+            run_dir_name = p.get("run_dir_name")
+            out = (study_dir / run_dir_name / "pw.out") if run_dir_name else None
+        else:
+            run_dir = Path(p.get("run_dir", ""))
+            out = run_dir / "pw.out" if run_dir.name else None
+        if out and not out.is_file():
+            pending_count += 1
+
+    total_count = len(points_data)
+
+    # Status line
+    finished = st.session_state.get(RUN_FINISHED_STATE_KEY, False)
+    returncode = st.session_state.get(RUN_RETURNCODE_STATE_KEY)
+
+    col_status, col_run, col_stop = st.columns([3, 1, 1])
+
+    with col_status:
+        if this_study_running:
+            phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY, "")
+            st.info(f"⚙️ Running… {phase}" if phase else "⚙️ Running…")
+        elif finished and active_run_id is None and active_owner == owner_key:
+            if returncode == 0:
+                st.success("✅ Study run completed successfully.")
+            else:
+                st.error(f"❌ Study run finished with exit code {returncode}.")
+        else:
+            if pending_count == 0:
+                st.success(f"✅ All {total_count} point(s) have outputs.")
+            else:
+                st.warning(f"⚠️ {pending_count} of {total_count} point(s) have no `pw.out` yet.")
+
+    run_label = "▶ Run Study" if pending_count > 0 else "↺ Re-run Study"
+
+    with col_run:
+        run_clicked = st.button(
+            run_label,
+            key=f"run_study_{owner_key}",
+            disabled=any_job_running,
+            use_container_width=True,
+            type="primary",
+        )
+
+    with col_stop:
+        stop_clicked = st.button(
+            "⏹ Stop",
+            key=f"stop_study_{owner_key}",
+            disabled=not this_study_running,
+            use_container_width=True,
+        )
+
+    if stop_clicked and this_study_running:
+        ctx_obj = get_run_context(str(active_run_id))
+        if ctx_obj and ctx_obj.process is not None:
+            try:
+                ctx_obj.process.terminate()
+            except Exception:
+                pass
+        cleanup_run(str(active_run_id))
+        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
+        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
+        st.rerun()
+
+    if run_clicked:
+        if not is_pw_available():
+            st.error("❌ `pw.x` was not found on your PATH. Install Quantum ESPRESSO and ensure `pw.x` is accessible.")
+        else:
+            if study_type == "cutoff":
+                steps = build_cutoff_study_steps(study_dir, manifest)
+            elif study_type == "kpoint":
+                steps = build_kpoint_study_steps(study_dir, manifest)
+            elif study_type == "eos":
+                steps = build_eos_study_steps(study_dir, manifest)
+            else:
+                steps = []
+
+            if not steps:
+                st.error("No runnable input files (`pw.in`) were found in this study. Regenerate the study.")
+            else:
+                # Clear previous run state for this study
+                st.session_state[RUN_TAIL_LINES_STATE_KEY] = []
+                st.session_state[RUN_FINISHED_STATE_KEY] = False
+                st.session_state[RUN_RETURNCODE_STATE_KEY] = None
+                st.session_state[RUN_PHASE_LABEL_STATE_KEY] = steps[0].label
+
+                run_id, _ = run_chained_jobs(
+                    job_label=f"{study_type.upper()} Convergence Study",
+                    steps=steps,
+                )
+                st.session_state[_STUDY_RUN_ID_KEY] = run_id
+                st.session_state[_STUDY_RUN_OWNER_KEY] = owner_key
+                st.rerun()
+
+    # Live console — only renders when this study type is active
+    if this_study_running:
+        with st.expander("🖥️ Live Console", expanded=True):
+            _study_live_console_fragment(owner_key)
+    elif st.session_state.get(RUN_TAIL_LINES_STATE_KEY) and active_owner == owner_key:
+        with st.expander("📋 Last Run Output", expanded=False):
+            tail = st.session_state.get(RUN_TAIL_LINES_STATE_KEY, [])
+            st.code("".join(tail), language="text")
+
+
 def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
     """Render the cutoff-study selection, refresh controls, and summary table."""
     st.markdown("### Cutoff Study Results")
@@ -399,13 +611,23 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
             ]
         )
 
-    refresh_clicked = st.button("Refresh Cutoff Study Results", use_container_width=True)
+    refresh_clicked = st.button("Refresh Results", key="refresh_cutoff", use_container_width=True)
     
     try:
         manifest = load_cutoff_study_manifest(study_dir)
     except Exception as exc:
         st.warning(f"Unable to read the study manifest: {exc}")
         return
+
+    st.divider()
+    st.markdown("#### Run Study")
+    render_study_run_controls(
+        study_dir=study_dir,
+        manifest=manifest,
+        study_type="cutoff",
+        owner_key="cutoff",
+    )
+    st.divider()
 
     if refresh_clicked:
         try:
@@ -816,13 +1038,23 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
             ]
         )
 
-    refresh_clicked = st.button("Refresh K-Point Study Results", use_container_width=True)
+    refresh_clicked = st.button("Refresh Results", key="refresh_kpoint", use_container_width=True)
     
     try:
         manifest = load_kpoint_study_manifest(study_dir)
     except Exception as exc:
         st.warning(f"Unable to read the study manifest: {exc}")
         return
+
+    st.divider()
+    st.markdown("#### Run Study")
+    render_study_run_controls(
+        study_dir=study_dir,
+        manifest=manifest,
+        study_type="kpoint",
+        owner_key="kpoint",
+    )
+    st.divider()
 
     if refresh_clicked:
         try:
@@ -1126,6 +1358,16 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
             st.warning("⚠️ **Baseline Mismatch:** Active Setup settings have changed since this study was generated.\n\n" + "\n".join(f"- {m}" for m in drift_warnings))
         else:
             st.success("✅ This study matches the active Setup baseline.")
+
+        st.divider()
+        st.markdown("#### Run Study")
+        render_study_run_controls(
+            study_dir=study_dir,
+            manifest=manifest,
+            study_type="eos",
+            owner_key="eos",
+        )
+        st.divider()
 
         col_ref, col_btn = st.columns([3, 1])
         with col_btn:
