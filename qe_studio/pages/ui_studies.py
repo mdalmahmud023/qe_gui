@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Callable, MutableMapping
 
 import streamlit as st
 
@@ -80,11 +81,8 @@ from ..convergence.study_runner import (
     is_pw_available,
 )
 from ..services.qe_runner import (
-    ACTIVE_RUN_ID_STATE_KEY,
     DEFAULT_MAX_TAIL_LINES,
-    RUN_ACTIVE_STATE_KEY,
     RUN_FINISHED_STATE_KEY,
-    RUN_JOB_LABEL_STATE_KEY,
     RUN_PHASE_LABEL_STATE_KEY,
     RUN_RETURNCODE_STATE_KEY,
     RUN_TAIL_LINES_STATE_KEY,
@@ -93,9 +91,7 @@ from ..services.qe_runner import (
     drain_run_events,
     get_run_context,
     mark_runtime_lost,
-    reset_run_state,
     run_chained_jobs,
-    set_run_started,
 )
 
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
@@ -397,62 +393,85 @@ _STUDY_RUN_ID_KEY = "study_active_run_id"
 _STUDY_RUN_OWNER_KEY = "study_active_run_owner"
 
 
-@st.fragment(run_every=1)
-def _study_live_console_fragment(owner_key: str) -> None:
-    """Auto-refreshing console that streams output for the active study run."""
-    active_run_id = st.session_state.get(_STUDY_RUN_ID_KEY)
-    active_owner = st.session_state.get(_STUDY_RUN_OWNER_KEY)
+def _sync_study_run_state(
+    state: MutableMapping[str, object],
+    *,
+    owner_key: str,
+    get_context_fn: Callable[[str | None], object | None] = get_run_context,
+    drain_events_fn: Callable[[str | None], list] = drain_run_events,
+    cleanup_fn: Callable[[str | None], None] = cleanup_run,
+) -> str:
+    """Poll one study run and merge queued events into session-like state."""
+    active_run_id = state.get(_STUDY_RUN_ID_KEY)
+    active_owner = state.get(_STUDY_RUN_OWNER_KEY)
 
     if active_run_id is None or active_owner != owner_key:
-        return  # No active run for this study type
+        return "inactive"
 
-    context = get_run_context(active_run_id)
+    run_id = str(active_run_id)
+    context = get_context_fn(run_id)
     if context is None:
-        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
-        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
+        mark_runtime_lost(state)
+        state.pop(_STUDY_RUN_ID_KEY, None)
+        state.pop(_STUDY_RUN_OWNER_KEY, None)
+        return "runtime_lost"
+
+    events = drain_events_fn(run_id)
+    run_completed = apply_run_events(
+        state,
+        events,
+        max_tail_lines=DEFAULT_MAX_TAIL_LINES,
+    )
+    if run_completed:
+        cleanup_fn(run_id)
+        state.pop(_STUDY_RUN_ID_KEY, None)
+        state.pop(_STUDY_RUN_OWNER_KEY, None)
+        return "completed"
+
+    if not context.thread.is_alive():
+        mark_runtime_lost(state)
+        cleanup_fn(run_id)
+        state.pop(_STUDY_RUN_ID_KEY, None)
+        state.pop(_STUDY_RUN_OWNER_KEY, None)
+        return "runtime_lost"
+
+    return "running"
+
+
+@st.fragment(run_every=1)
+def _study_run_status_fragment(owner_key: str) -> None:
+    """Render the currently running study step and keep it in sync."""
+    result = _sync_study_run_state(st.session_state, owner_key=owner_key)
+
+    if result == "running":
+        phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY, "")
+        st.info(f"⚙️ Running… {phase}" if phase else "⚙️ Running…")
+        return
+
+    if result == "runtime_lost":
+        st.error("❌ Live run state was lost. Refresh the results to inspect any completed points.")
         st.rerun(scope="app")
         return
 
-    events = drain_run_events(active_run_id)
+    if result == "completed":
+        st.rerun(scope="app")
+
+
+@st.fragment(run_every=1)
+def _study_live_console_fragment(owner_key: str) -> None:
+    """Render the stored live tail for the active study run."""
+    active_run_id = st.session_state.get(_STUDY_RUN_ID_KEY)
+    active_owner = st.session_state.get(_STUDY_RUN_OWNER_KEY)
+    if active_run_id is None or active_owner != owner_key:
+        return
+
     tail: list[str] = list(st.session_state.get(RUN_TAIL_LINES_STATE_KEY, []))
-    run_completed = False
-    returncode: int | None = None
-
-    for event in events:
-        from ..services.qe_runner import EVENT_TYPE_LINE, EVENT_TYPE_COMPLETE, EVENT_TYPE_PHASE
-        if event.type in (EVENT_TYPE_LINE, EVENT_TYPE_PHASE) and event.line:
-            tail.append(event.line)
-        elif event.type == EVENT_TYPE_COMPLETE:
-            run_completed = True
-            returncode = event.returncode
-
-    tail = tail[-DEFAULT_MAX_TAIL_LINES:]
-    st.session_state[RUN_TAIL_LINES_STATE_KEY] = tail
-
-    phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY, "")
-    for event in events:
-        from ..services.qe_runner import EVENT_TYPE_PHASE
-        if event.type == EVENT_TYPE_PHASE and event.phase_label:
-            phase = event.phase_label
-            st.session_state[RUN_PHASE_LABEL_STATE_KEY] = phase
+    phase = str(st.session_state.get(RUN_PHASE_LABEL_STATE_KEY) or "")
 
     if tail:
         st.code("".join(tail[-80:]), language="text")
     else:
         st.info(f"⏳ Waiting for pw.x output… (step: {phase})" if phase else "⏳ Starting pw.x…")
-
-    if run_completed:
-        cleanup_run(active_run_id)
-        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
-        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
-        st.session_state[RUN_FINISHED_STATE_KEY] = True
-        st.session_state[RUN_RETURNCODE_STATE_KEY] = returncode
-        st.rerun(scope="app")
-    elif not context.thread.is_alive():
-        cleanup_run(active_run_id)
-        st.session_state.pop(_STUDY_RUN_ID_KEY, None)
-        st.session_state.pop(_STUDY_RUN_OWNER_KEY, None)
-        st.rerun(scope="app")
 
 
 def render_study_run_controls(
@@ -492,8 +511,7 @@ def render_study_run_controls(
 
     with col_status:
         if this_study_running:
-            phase = st.session_state.get(RUN_PHASE_LABEL_STATE_KEY, "")
-            st.info(f"⚙️ Running… {phase}" if phase else "⚙️ Running…")
+            _study_run_status_fragment(owner_key)
         elif finished and active_run_id is None and active_owner == owner_key:
             if returncode == 0:
                 st.success("✅ Study run completed successfully.")
@@ -568,7 +586,7 @@ def render_study_run_controls(
 
     # Live console — only renders when this study type is active
     if this_study_running:
-        with st.expander("🖥️ Live Console", expanded=True):
+        with st.expander("🖥️ Live Console", expanded=False):
             _study_live_console_fragment(owner_key)
     elif st.session_state.get(RUN_TAIL_LINES_STATE_KEY) and active_owner == owner_key:
         with st.expander("📋 Last Run Output", expanded=False):
@@ -1464,5 +1482,3 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
                     for p in points
                 ]
             )
-
-
