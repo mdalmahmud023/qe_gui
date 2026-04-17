@@ -42,22 +42,33 @@ def detect_baseline_drift(
             warnings.append("The active pseudopotential set has changed since this study was generated.")
             
     # Check K-Points (if this is a cutoff study, k-points should match)
-    workflow_type = study_manifest.get("workflow_type", "cutoff")
+    workflow_type = study_manifest.get("workflow_type", study_manifest.get("study_type", "cutoff"))
     
     active_k_points = active_baseline.get("k_points_grid")
-    manifest_k_points = study_manifest.get("fixed_k_points")
-    if workflow_type == "cutoff" and active_k_points is not None and manifest_k_points is not None:
+    
+    if workflow_type == "cutoff":
+        manifest_k_points = study_manifest.get("fixed_k_points")
+    elif workflow_type == "eos":
+        manifest_k_points = study_manifest.get("baseline_snapshot", {}).get("physics_parameters", {}).get("k_points_grid")
+    else:
+        manifest_k_points = None
+        
+    if workflow_type in ("cutoff", "eos") and active_k_points is not None and manifest_k_points is not None:
         if list(active_k_points) != list(manifest_k_points):
             active_k_str = "x".join(str(k) for k in active_k_points)
             manifest_k_str = "x".join(str(k) for k in manifest_k_points)
             warnings.append(f"K-point grid has changed (Active: {active_k_str}, Study: {manifest_k_str}).")
 
-    # Check Cutoffs (if this is a k-point study, cutoffs should match)
-    if workflow_type == "kpoint":
+    # Check Cutoffs (if this is a k-point study or EOS study, cutoffs should match)
+    if workflow_type in ("kpoint", "eos"):
         active_ecutwfc = active_baseline.get("ecutwfc")
         active_ecutrho = active_baseline.get("ecutrho")
         
-        manifest_cutoffs = study_manifest.get("baseline_cutoffs", {})
+        if workflow_type == "eos":
+            manifest_cutoffs = study_manifest.get("baseline_snapshot", {}).get("physics_parameters", {})
+        else:
+            manifest_cutoffs = study_manifest.get("baseline_cutoffs", {})
+            
         manifest_ecutwfc = manifest_cutoffs.get("ecutwfc")
         manifest_ecutrho = manifest_cutoffs.get("ecutrho")
         

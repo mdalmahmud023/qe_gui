@@ -11,8 +11,11 @@ CUTOFF_STUDY_MANIFEST_FILENAME = "cutoff_study_manifest.json"
 CUTOFF_STUDY_SUMMARY_FILENAME = "cutoff_study_summary.json"
 KPOINT_STUDY_MANIFEST_FILENAME = "kpoint_study_manifest.json"
 KPOINT_STUDY_SUMMARY_FILENAME = "kpoint_study_summary.json"
+EOS_STUDY_MANIFEST_FILENAME = "eos_study_manifest.json"
+EOS_STUDY_SUMMARY_FILENAME = "eos_study_summary.json"
 CUTOFF_POINT_OUTPUT_FILENAME = "pw.out"
 KPOINT_POINT_OUTPUT_FILENAME = "pw.out"
+EOS_POINT_OUTPUT_FILENAME = "pw.out"
 RATIO_RULE_CUSTOM = "custom"
 CUTOFF_RATIO_RULE_OPTIONS = ("4x", "6x", "8x", "12x", RATIO_RULE_CUSTOM)
 _FLOAT_TOLERANCE = 1.0e-9
@@ -23,6 +26,7 @@ class ConvergenceWorkflowType(str, Enum):
 
     CUTOFF = "cutoff"
     KPOINT = "kpoint"
+    EOS = "eos"
 
 
 class EcutrhoMode(str, Enum):
@@ -331,3 +335,67 @@ class KPointRecommendation:
             "message": self.message,
             "warnings": list(self.warnings),
         }
+
+
+@dataclass(frozen=True)
+class EosSweepSpec:
+    """Scientific specification for an Equation of State volume sweep."""
+
+    mode: str  # "isotropic_scale"
+    start_scale: float
+    stop_scale: float
+    num_points: int
+    fit_model: str = "birch_murnaghan"
+
+    def validate(self) -> None:
+        if self.mode != "isotropic_scale":
+            raise ValueError(f"Unsupported EOS mode: {self.mode}")
+        if self.num_points < 3:
+            raise ValueError("EOS sweep must have at least 3 points.")
+        if self.start_scale <= 0 or self.stop_scale <= 0:
+            raise ValueError("Scale factors must be strictly positive.")
+
+    def scale_values(self) -> list[float]:
+        """Return the precise list of scale factors to sample."""
+        if self.num_points == 1:
+            return [(self.start_scale + self.stop_scale) / 2.0]
+        step = (self.stop_scale - self.start_scale) / (self.num_points - 1)
+        return [self.start_scale + i * step for i in range(self.num_points)]
+
+
+@dataclass(frozen=True)
+class EosStudyPoint:
+    """A single scaling point in an EOS study."""
+
+    index: int
+    scale_factor: float
+    volume: float
+    label: str
+    run_dir: Path
+
+
+@dataclass(frozen=True)
+class EosFitResult:
+    """The result of fitting an equation of state to the study data."""
+
+    available: bool
+    success: bool
+    model: str
+    E0: float | None = None
+    V0: float | None = None
+    B0: float | None = None
+    B0_prime: float | None = None
+    a0: float | None = None
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class EosRecommendation:
+    """The final recommendation from an EOS study."""
+
+    status: str  # "complete", "failed", "unconverged"
+    fit_result: EosFitResult
+    recommended_volume: float | None = None
+    recommended_a0: float | None = None
+    reason: str | None = None

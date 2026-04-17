@@ -29,6 +29,13 @@ from .models import (
     KPointStudyPoint,
     KPointSweepSpec,
     DimensionalityMode,
+    EOS_STUDY_MANIFEST_FILENAME,
+    EOS_STUDY_SUMMARY_FILENAME,
+    EOS_POINT_OUTPUT_FILENAME,
+    EosSweepSpec,
+    EosStudyPoint,
+    EosFitResult,
+    EosRecommendation,
 )
 from .kpoint_study import (
     build_kpoint_study,
@@ -37,6 +44,14 @@ from .kpoint_study import (
     load_kpoint_study_summary,
     refresh_kpoint_study,
 )
+from .eos_study import (
+    build_eos_study,
+    discover_eos_studies,
+    load_eos_study_manifest,
+    load_eos_study_summary,
+    refresh_eos_study,
+)
+from .eos_fit import fit_eos, birch_murnaghan
 from .recommendation import format_recommendation_message, recommend_cutoffs
 from .result_parser import parse_cutoff_point_output
 
@@ -77,4 +92,18 @@ __all__ = [
     "load_kpoint_study_manifest",
     "load_kpoint_study_summary",
     "refresh_kpoint_study",
+    "EOS_STUDY_MANIFEST_FILENAME",
+    "EOS_STUDY_SUMMARY_FILENAME",
+    "EOS_POINT_OUTPUT_FILENAME",
+    "EosSweepSpec",
+    "EosStudyPoint",
+    "EosFitResult",
+    "EosRecommendation",
+    "build_eos_study",
+    "discover_eos_studies",
+    "load_eos_study_manifest",
+    "load_eos_study_summary",
+    "refresh_eos_study",
+    "fit_eos",
+    "birch_murnaghan",
 ]

@@ -181,3 +181,118 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
     )
 
     return fig
+
+
+def plot_eos_study(summary_data: dict[str, Any]) -> go.Figure:
+    """Create a Plotly figure for an Equation of State (EOS) study.
+
+    Args:
+        summary_data: The parsed EOS study summary JSON payload.
+
+    Returns:
+        A Plotly Figure object.
+    """
+    points = summary_data.get("points", [])
+    fit_data = summary_data.get("fit", {})
+
+    valid_v = []
+    valid_e = []
+    hover_texts = []
+    
+    for point in points:
+        volume = point.get("volume")
+        energy_ev = point.get("energy_per_atom_ev")
+        scale = point.get("scale_factor")
+        status = str(point.get("status", "unknown")).replace("_", " ")
+        
+        hover_parts = [
+            f"<b>Scale:</b> {scale:.4f}",
+            f"<b>Volume:</b> {volume:.2f} Å³",
+            f"<b>Status:</b> {status}",
+        ]
+        if energy_ev is not None:
+            hover_parts.append(f"<b>Energy/Atom:</b> {energy_ev:.6f} eV")
+            
+        hover_texts.append("<br>".join(hover_parts))
+        
+        if energy_ev is not None and volume is not None:
+            valid_v.append(volume)
+            valid_e.append(energy_ev)
+
+    fig = go.Figure()
+
+    # Raw DFT points
+    if valid_v and valid_e:
+        fig.add_trace(
+            go.Scatter(
+                x=valid_v,
+                y=valid_e,
+                mode="markers",
+                name="DFT Data",
+                marker=dict(size=10, color="#d62728", symbol="circle"),
+                hoverinfo="text",
+                text=[hover_texts[points.index(p)] for p in points if p.get("energy_per_atom_ev") is not None],
+            )
+        )
+
+    # Fitted Curve
+    if fit_data.get("success"):
+        import numpy as np
+        from qe_studio.convergence.eos_fit import birch_murnaghan
+        
+        V0 = fit_data.get("V0")
+        E0 = fit_data.get("E0")
+        B0 = fit_data.get("B0")
+        B0_prime = fit_data.get("B0_prime")
+        
+        if all(x is not None for x in [V0, E0, B0, B0_prime]) and valid_v:
+            # We need to convert B0 from GPa back to eV/Ang^3 to use the function properly
+            # Or we can just use the B0 in eV/Ang^3. Wait, B0 is saved in GPa!
+            EV_TO_JOULES = 1.602176634e-19
+            ANGSTROM3_TO_M3 = 1e-30
+            EV_ANG3_TO_GPA = EV_TO_JOULES / ANGSTROM3_TO_M3 / 1e9
+            
+            B0_ev_ang3 = B0 / EV_ANG3_TO_GPA
+            
+            v_min = min(valid_v)
+            v_max = max(valid_v)
+            v_range = v_max - v_min
+            
+            # Extend curve slightly beyond data points
+            v_plot = np.linspace(v_min - 0.1 * v_range, v_max + 0.1 * v_range, 200)
+            e_plot = birch_murnaghan(v_plot, E0, V0, B0_ev_ang3, B0_prime)
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=v_plot,
+                    y=e_plot,
+                    mode="lines",
+                    name="Birch-Murnaghan Fit",
+                    line=dict(color="#1f77b4", width=2),
+                    hoverinfo="skip"
+                )
+            )
+
+    # If fit available, draw V0 line
+    V0 = fit_data.get("V0")
+    if fit_data.get("success") and V0 is not None:
+        fig.add_vline(
+            x=V0,
+            line_width=2,
+            line_dash="dash",
+            line_color="green",
+            annotation_text=f"Equilibrium Volume ({V0:.2f} Å³)",
+            annotation_position="top right",
+        )
+
+    fig.update_layout(
+        title="Equation of State (EOS)",
+        xaxis_title="Volume (Å³)",
+        yaxis_title="Energy per Atom (eV)",
+        hovermode="closest",
+        template="plotly_white",
+        margin=dict(l=40, r=40, t=60, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    return fig

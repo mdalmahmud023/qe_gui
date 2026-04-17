@@ -36,6 +36,12 @@ from ..core.state_keys import (
     CUTOFF_STUDY_LATEST_PATH_STATE_KEY,
     CUTOFF_STUDY_PARAMS_STATE_KEY,
     CUTOFF_STUDY_SELECTED_PATH_STATE_KEY,
+    KPOINT_STUDY_LATEST_PATH_STATE_KEY,
+    KPOINT_STUDY_PARAMS_STATE_KEY,
+    KPOINT_STUDY_SELECTED_PATH_STATE_KEY,
+    EOS_STUDY_LATEST_PATH_STATE_KEY,
+    EOS_STUDY_PARAMS_STATE_KEY,
+    EOS_STUDY_SELECTED_PATH_STATE_KEY,
     PSEUDO_DIR_STATE_KEY,
     PSEUDO_RESOLVED_MAP_STATE_KEY,
 )
@@ -56,8 +62,17 @@ from .ui_setup import (
     get_qe_parameters,
     QE_PARAMS_STATE_KEY,
 )
-from ..services.plotting.study_plots import plot_cutoff_convergence, plot_kpoint_convergence
+from ..services.plotting.study_plots import plot_cutoff_convergence, plot_kpoint_convergence, plot_eos_study
 from ..services.studies.study_summary_view import detect_baseline_drift
+
+from ..convergence import (
+    EosSweepSpec,
+    build_eos_study,
+    discover_eos_studies,
+    load_eos_study_manifest,
+    load_eos_study_summary,
+    refresh_eos_study,
+)
 
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
 
@@ -673,9 +688,7 @@ def render_cutoff_study_config(ctx: ProjectContext, baseline: dict, pseudopotent
     st.success(f"Generated cutoff convergence inputs under `{study_result['study_dir']}`.")
 
 
-KPOINT_STUDY_PARAMS_STATE_KEY = "kpoint_study_params"
-KPOINT_STUDY_SELECTED_PATH_STATE_KEY = "kpoint_study_selected_path"
-KPOINT_STUDY_LATEST_PATH_STATE_KEY = "kpoint_study_latest_path"
+
 
 def _build_kpoint_generation_context_from_parameters(atoms, parameters: dict, *, resolved_entries: dict) -> tuple[CalculationContext, KPointSweepSpec]:
     ctx = _build_generation_context_from_parameters(
@@ -948,4 +961,266 @@ def render_page(ctx: ProjectContext) -> None:
         render_kpoint_study_results(ctx, baseline, get_current_active_structure_signature())
 
     with tabs[2]:
-        st.info("Equation of State (EOS) workflow is not yet implemented.")
+        st.subheader("Equation of State (EOS) Study")
+        st.markdown("Determine the equilibrium lattice volume by isotropically scaling the cell and fitting the Birch-Murnaghan equation of state.")
+        st.divider()
+        render_eos_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
+        st.divider()
+        render_eos_study_results(ctx, baseline, get_current_active_structure_signature())
+
+
+def default_eos_study_parameters() -> dict:
+    return {
+        "mode": "isotropic_scale",
+        "start_scale": 0.95,
+        "stop_scale": 1.05,
+        "num_points": 7,
+        "fit_model": "birch_murnaghan",
+    }
+
+
+def _sanitize_saved_eos_study_parameters(saved_parameters: dict | None) -> dict:
+    raw = dict(saved_parameters or {})
+    defaults = default_eos_study_parameters()
+    return {
+        "mode": str(raw.get("mode", defaults["mode"])),
+        "start_scale": float(raw.get("start_scale", defaults["start_scale"])),
+        "stop_scale": float(raw.get("stop_scale", defaults["stop_scale"])),
+        "num_points": int(raw.get("num_points", defaults["num_points"])),
+        "fit_model": str(raw.get("fit_model", defaults["fit_model"])),
+    }
+
+
+def get_eos_study_parameters() -> dict:
+    saved = st.session_state.get(EOS_STUDY_PARAMS_STATE_KEY)
+    if saved is not None:
+        sanitized = _sanitize_saved_eos_study_parameters(saved)
+        if sanitized != saved:
+            st.session_state[EOS_STUDY_PARAMS_STATE_KEY] = sanitized
+        return sanitized
+    return default_eos_study_parameters()
+
+
+def render_eos_study_config(ctx: ProjectContext, baseline: dict, pseudopotentials: dict, pseudo_dir: str, resolved_entries: dict, atoms) -> None:
+    if atoms is None:
+        st.warning("Please load or build a structure in the Setup page first.")
+        return
+
+    # Render Baseline Summary
+    st.markdown("**Baseline Context**")
+    cols = st.columns(4)
+    cols[0].metric("Structure", atoms.get_chemical_formula())
+    cols[1].metric("K-Point Grid", "x".join(map(str, baseline.get("k_points_grid", [1, 1, 1]))))
+    cols[2].metric("Wavefunction Cutoff", f"{baseline.get('ecutwfc', 0)} Ry")
+    cols[3].metric("Charge Cutoff", f"{baseline.get('ecutrho', 0)} Ry")
+
+    if get_structure_mode() != "primitive":
+        st.info("💡 EOS is often cleaner to perform on a primitive cell to minimize computational cost, but the source cell is valid.")
+
+    st.markdown("### Generate EOS Study")
+    params = get_eos_study_parameters()
+    with st.form("eos_study_form"):
+        col1, col2, col3 = st.columns(3)
+        start_scale = col1.number_input(
+            "Start Scale Factor",
+            min_value=0.5,
+            max_value=2.0,
+            value=params["start_scale"],
+            step=0.01,
+            format="%.4f",
+        )
+        stop_scale = col2.number_input(
+            "Stop Scale Factor",
+            min_value=0.5,
+            max_value=2.0,
+            value=params["stop_scale"],
+            step=0.01,
+            format="%.4f",
+        )
+        num_points = col3.number_input(
+            "Number of Points",
+            min_value=3,
+            max_value=21,
+            value=params["num_points"],
+            step=1,
+        )
+
+        submitted = st.form_submit_button("Generate EOS Study", use_container_width=True)
+        if submitted:
+            params["start_scale"] = start_scale
+            params["stop_scale"] = stop_scale
+            params["num_points"] = num_points
+            st.session_state[EOS_STUDY_PARAMS_STATE_KEY] = params
+
+            if start_scale >= stop_scale:
+                st.error("Stop scale must be greater than start scale.")
+                return
+
+            sweep_spec = EosSweepSpec(
+                mode=params["mode"],
+                start_scale=start_scale,
+                stop_scale=stop_scale,
+                num_points=num_points,
+                fit_model=params["fit_model"],
+            )
+
+            # Build generation context
+            base_context = _build_generation_context_from_parameters(
+                atoms,
+                baseline,
+                resolved_entries=resolved_entries,
+            )
+
+            with st.spinner("Generating Equation of State study inputs..."):
+                study_dir, points = build_eos_study(
+                    atoms,
+                    base_context,
+                    baseline,
+                    sweep_spec,
+                    QE_CONVERGENCE_DIR,
+                    pseudopotentials,
+                    pseudo_dir,
+                )
+            st.session_state[EOS_STUDY_LATEST_PATH_STATE_KEY] = str(study_dir)
+            st.session_state[EOS_STUDY_SELECTED_PATH_STATE_KEY] = str(study_dir)
+            st.success(f"Generated EOS study inputs under `{study_dir.name}`.")
+
+
+def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
+    st.markdown("### View Study Results")
+    studies = discover_eos_studies(QE_CONVERGENCE_DIR)
+    if not studies:
+        st.info("No EOS studies found.")
+        return
+
+    latest_path = st.session_state.get(EOS_STUDY_LATEST_PATH_STATE_KEY)
+    selected_path = st.session_state.get(EOS_STUDY_SELECTED_PATH_STATE_KEY)
+    
+    if selected_path and Path(selected_path) in studies:
+        default_index = studies.index(Path(selected_path))
+    elif latest_path and Path(latest_path) in studies:
+        default_index = studies.index(Path(latest_path))
+    else:
+        default_index = 0
+
+    study_dir = st.selectbox(
+        "Select EOS Study",
+        studies,
+        index=default_index,
+        format_func=lambda p: p.name,
+        key="eos_study_selector",
+    )
+    if not study_dir:
+        return
+
+    st.session_state[EOS_STUDY_SELECTED_PATH_STATE_KEY] = str(study_dir)
+
+    with st.spinner("Loading study..."):
+        manifest = load_eos_study_manifest(study_dir)
+        if not manifest:
+            st.error("Invalid or missing manifest.")
+            return
+
+        drift_warnings = detect_baseline_drift(active_baseline, manifest, active_structure_signature)
+        if drift_warnings:
+            st.warning("⚠️ **Baseline Mismatch:** Active Setup settings have changed since this study was generated.\n\n" + "\n".join(f"- {m}" for m in drift_warnings))
+        else:
+            st.success("✅ This study matches the active Setup baseline.")
+
+        col_ref, col_btn = st.columns([3, 1])
+        with col_btn:
+            if st.button("Refresh Results", key="refresh_eos", use_container_width=True):
+                summary = refresh_eos_study(study_dir)
+            else:
+                summary = load_eos_study_summary(study_dir)
+                if not summary:
+                    summary = refresh_eos_study(study_dir)
+
+        if not summary:
+            st.error("Could not parse study results.")
+            return
+
+        status = summary.get("status", "unknown")
+        points = summary.get("points", [])
+        fit = summary.get("fit", {})
+
+        st.markdown(f"**Study Status:** `{status}`")
+        if status == "running":
+            st.info("⏳ Calculation is still running or outputs are missing.")
+
+        # Plotly chart
+        fig = plot_eos_study(summary)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Summary Cards
+        st.markdown("### Fit Summary")
+        if fit.get("success"):
+            f1, f2, f3, f4 = st.columns(4)
+            f1.metric("Equilibrium Volume (V₀)", f"{fit.get('V0'):.2f} Å³")
+            f2.metric("Equilibrium Energy (E₀)", f"{fit.get('E0'):.4f} eV/atom")
+            f3.metric("Bulk Modulus (B₀)", f"{fit.get('B0'):.1f} GPa")
+            f4.metric("Fit Model", fit.get("model", "birch_murnaghan").replace("_", " ").title())
+            
+            for warning in fit.get("warnings", []):
+                st.warning(f"⚠️ {warning}")
+        else:
+            st.error("Could not fit Equation of State to the provided points.")
+            for err in fit.get("errors", []):
+                st.error(f"❌ {err}")
+
+        # Apply logic
+        if fit.get("success") and fit.get("V0") is not None:
+            st.markdown("### Apply Equilibrium")
+            st.info("Applying the equilibrium volume will update your active structure. This changes its signature, which may require re-resolving pseudopotentials or invalidating other studies.")
+            
+            if st.button("Apply Equilibrium Volume to Active Structure", type="primary"):
+                from ..core.structure_state import get_structure_mode, resolve_atoms_for_structure_mode, _store_active_structure
+                from ..core.state_keys import RAW_ATOMS_STATE_KEY, SOURCE_KIND_STATE_KEY, SOURCE_LABEL_STATE_KEY, SOURCE_FORMAT_STATE_KEY, SOURCE_DETAILS_STATE_KEY, STRUCTURE_FILE_BYTES_STATE_KEY
+                
+                # We apply the isotropic scaling to the active atoms object
+                raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+                if raw_atoms is not None:
+                    # Determine the required scale factor compared to current atoms
+                    active_atoms = ctx.atoms
+                    current_volume = active_atoms.get_volume()
+                    target_volume = fit.get("V0")
+                    volume_ratio = target_volume / current_volume
+                    # Volume is L^3, so linear scale factor is volume_ratio^(1/3)
+                    scale_factor = volume_ratio ** (1.0 / 3.0)
+                    
+                    # We must scale the raw atoms so that the full state remains consistent
+                    new_raw_atoms = raw_atoms.copy()
+                    new_raw_atoms.set_cell(new_raw_atoms.cell * scale_factor, scale_atoms=True)
+                    
+                    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(new_raw_atoms, get_structure_mode())
+                    
+                    _store_active_structure(
+                        new_raw_atoms,
+                        active_atoms,
+                        source_kind=st.session_state.get(SOURCE_KIND_STATE_KEY, "file"),
+                        source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
+                        source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
+                        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
+                        structure_mode=resolved_mode,
+                        structure_mode_message=status_message,
+                        payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
+                    )
+                    st.success(f"Successfully applied equilibrium volume {target_volume:.2f} Å³. Active structure updated.")
+                    st.rerun()
+
+        # Render points table
+        with st.expander("View Raw Data Points"):
+            render_table(
+                [
+                    {
+                        "Scale": f"{p['scale_factor']:.4f}",
+                        "Volume (Å³)": f"{p['volume']:.2f}",
+                        "Status": p.get("status", "unknown"),
+                        "Energy (eV/atom)": f"{p.get('energy_per_atom_ev', 0):.6f}" if p.get("energy_per_atom_ev") is not None else "-",
+                        "Directory": p.get("run_dir_name", ""),
+                    }
+                    for p in points
+                ]
+            )
+
+

@@ -5,6 +5,14 @@ CUTOFF_STUDY_PARAMS_STATE_KEY = "cutoff_study_parameters"
 CUTOFF_STUDY_SELECTED_PATH_STATE_KEY = "cutoff_study_selected_path"
 CUTOFF_STUDY_LATEST_PATH_STATE_KEY = "cutoff_study_latest_path"
 
+KPOINT_STUDY_PARAMS_STATE_KEY = "kpoint_study_parameters"
+KPOINT_STUDY_SELECTED_PATH_STATE_KEY = "kpoint_study_selected_path"
+KPOINT_STUDY_LATEST_PATH_STATE_KEY = "kpoint_study_latest_path"
+
+EOS_STUDY_PARAMS_STATE_KEY = "eos_study_parameters"
+EOS_STUDY_SELECTED_PATH_STATE_KEY = "eos_study_selected_path"
+EOS_STUDY_LATEST_PATH_STATE_KEY = "eos_study_latest_path"
+
 ATOMS_STATE_KEY = "structure_atoms"
 RAW_ATOMS_STATE_KEY = "structure_raw_atoms"
 STRUCTURE_FILE_BYTES_STATE_KEY = "structure_file_bytes"
