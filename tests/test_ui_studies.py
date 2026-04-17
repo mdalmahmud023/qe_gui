@@ -119,6 +119,12 @@ def test_eos_summary_needs_refresh_when_output_exists(tmp_path: Path) -> None:
             "energy_basis": "cell_total_ev",
             "volume_basis": "cell_total_ang3",
             "natoms_in_fitted_cell": 2,
+            "equilibrium_geometry": {
+                "available": True,
+                "conventional_cell": {
+                    "available": True,
+                },
+            },
         },
         "points": [
             {
@@ -140,6 +146,12 @@ def test_eos_summary_does_not_refresh_without_matching_output(tmp_path: Path) ->
             "energy_basis": "cell_total_ev",
             "volume_basis": "cell_total_ang3",
             "natoms_in_fitted_cell": 2,
+            "equilibrium_geometry": {
+                "available": True,
+                "conventional_cell": {
+                    "available": True,
+                },
+            },
         },
         "points": [
             {
@@ -158,6 +170,22 @@ def test_eos_summary_needs_refresh_when_fit_basis_is_legacy(tmp_path: Path) -> N
 
     summary = {
         "fit": {
+            "natoms_in_fitted_cell": 2,
+        },
+        "points": [],
+    }
+
+    assert ui_studies._eos_summary_needs_refresh(study_dir, summary) is True
+
+
+def test_eos_summary_needs_refresh_when_equilibrium_geometry_is_missing(tmp_path: Path) -> None:
+    study_dir = tmp_path / "eos-study"
+    study_dir.mkdir()
+
+    summary = {
+        "fit": {
+            "energy_basis": "cell_total_ev",
+            "volume_basis": "cell_total_ang3",
             "natoms_in_fitted_cell": 2,
         },
         "points": [],

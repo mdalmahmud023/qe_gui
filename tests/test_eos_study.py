@@ -4,7 +4,7 @@ import json
 import pytest
 import numpy as np
 
-from ase import Atoms
+from ase.build import bulk
 from qe_studio.services.input_generator import CalculationContext
 from qe_studio.convergence.models import EosSweepSpec, ConvergenceWorkflowType, EOS_STUDY_MANIFEST_FILENAME
 from qe_studio.convergence.eos_study import build_eos_study, refresh_eos_study
@@ -25,7 +25,7 @@ def base_context():
 
 @pytest.fixture
 def atoms():
-    return Atoms("Si2", cell=[[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]], pbc=True)
+    return bulk("Si", "diamond", a=5.4)
 
 
 def test_eos_sweep_spec_validation():
@@ -144,6 +144,12 @@ def test_refresh_eos_study_parses_outputs_and_builds_fit(atoms, base_context, tm
     assert summary["fit"]["E0"] == pytest.approx(E0_true, rel=1e-4)
     assert summary["fit"]["V0"] == pytest.approx(V0_true, rel=1e-4)
     assert summary["points"][0]["energy_per_atom_ev"] == pytest.approx(summary["points"][0]["total_energy_ev"] / atom_count, rel=1e-6)
+    equilibrium_geometry = summary["fit"]["equilibrium_geometry"]
+    assert equilibrium_geometry["available"] is True
+    assert equilibrium_geometry["fitted_cell"]["volume"] == pytest.approx(V0_true, rel=1e-4)
+    assert equilibrium_geometry["conventional_cell"]["available"] is True
+    assert equilibrium_geometry["conventional_cell"]["volume"] == pytest.approx(V0_true * 4.0, rel=1e-4)
+    assert summary["fit"]["a0"] == pytest.approx(5.4, rel=1e-4)
 
 
 def test_refresh_eos_study_marks_missing_outputs_as_running(atoms, base_context, tmp_path):
@@ -157,6 +163,44 @@ def test_refresh_eos_study_marks_missing_outputs_as_running(atoms, base_context,
     assert summary is not None
     assert summary["status"] == "running"
     assert all(point["status"] == "missing_output" for point in summary["points"])
+
+
+def test_refresh_eos_study_reconstructs_geometry_from_point_inputs(atoms, base_context, tmp_path):
+    from qe_studio.convergence.eos_fit import birch_murnaghan
+
+    spec = EosSweepSpec(mode="isotropic_scale", start_scale=0.95, stop_scale=1.05, num_points=5)
+    baseline = {"k_points_grid": [4, 4, 4], "ecutwfc": 30.0, "ecutrho": 120.0}
+    pseudopotentials = {"Si": "Si.upf"}
+    study_dir, points = build_eos_study(atoms, base_context, baseline, spec, tmp_path, pseudopotentials, "")
+
+    manifest_path = study_dir / EOS_STUDY_MANIFEST_FILENAME
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_data["structure"].pop("fitted_cell_snapshot", None)
+    manifest_path.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+
+    volumes = [point.volume for point in points]
+    V0_true = volumes[len(volumes) // 2]
+    total_energies = [birch_murnaghan(volume, -20.0, V0_true, 0.5, 4.0) for volume in volumes]
+    for point, total_energy_ev in zip(points, total_energies, strict=True):
+        total_energy_ry = total_energy_ev / RY_TO_EV
+        (point.run_dir / "pw.out").write_text(
+            "\n".join(
+                [
+                    "Program PWSCF",
+                    f"!    total energy              =   {total_energy_ry:.12f} Ry",
+                    "     JOB DONE.",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    summary = refresh_eos_study(study_dir)
+
+    assert summary is not None
+    assert summary["fit"]["equilibrium_geometry"]["available"] is True
+    assert summary["fit"]["equilibrium_geometry"]["source"] == f"reconstructed_from_{points[0].run_dir.name}"
+    assert summary["fit"]["equilibrium_geometry"]["conventional_cell"]["available"] is True
 
 
 def test_eos_fit_bulk_modulus_invariant_under_atom_count_scaling():

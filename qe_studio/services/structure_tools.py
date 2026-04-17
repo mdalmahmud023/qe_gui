@@ -15,6 +15,13 @@ class PrimitiveCellResult:
 
 
 @dataclass(frozen=True)
+class ConventionalCellResult:
+    atoms: Atoms
+    changed: bool
+    message: str
+
+
+@dataclass(frozen=True)
 class AutoBandPathResult:
     rows_text: str
     path_string: str
@@ -60,6 +67,45 @@ def make_primitive_atoms(
         else "The source structure already looks like a primitive cell."
     )
     return PrimitiveCellResult(atoms=primitive_atoms, changed=changed, message=message)
+
+
+def make_conventional_atoms(
+    atoms: Atoms,
+    *,
+    symprec: float = 1.0e-5,
+    angle_tolerance: float = -1.0,
+    no_idealize: bool = False,
+) -> ConventionalCellResult:
+    """Return a standardized conventional cell using spglib."""
+    cell = (
+        atoms.cell.array,
+        atoms.get_scaled_positions(wrap=True),
+        atoms.numbers,
+    )
+    standardized = spglib.standardize_cell(
+        cell,
+        to_primitive=False,
+        no_idealize=no_idealize,
+        symprec=symprec,
+        angle_tolerance=angle_tolerance,
+    )
+    if standardized is None:
+        raise ValueError("Could not determine a conventional cell for this structure.")
+
+    lattice, scaled_positions, numbers = standardized
+    conventional_atoms = Atoms(
+        numbers=numbers,
+        cell=lattice,
+        scaled_positions=scaled_positions,
+        pbc=atoms.pbc,
+    )
+    changed = len(conventional_atoms) != len(atoms) or not conventional_atoms.cell.array.round(8).tolist() == atoms.cell.array.round(8).tolist()
+    message = (
+        f"Using standardized conventional cell with {len(conventional_atoms)} atoms instead of the source {len(atoms)}-atom cell."
+        if changed
+        else "The source structure already looks like a conventional cell."
+    )
+    return ConventionalCellResult(atoms=conventional_atoms, changed=changed, message=message)
 
 
 def generate_band_path_rows(

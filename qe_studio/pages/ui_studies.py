@@ -175,6 +175,20 @@ def _resolve_eos_fitted_cell_atom_count(manifest: dict, summary: dict) -> tuple[
     return fitted_cell_atom_count, None
 
 
+def _eos_summary_has_equilibrium_geometry(summary: dict | None) -> bool:
+    """Return True when one EOS summary includes equilibrium geometry metadata."""
+    if not summary:
+        return False
+    fit = summary.get("fit", {})
+    geometry = fit.get("equilibrium_geometry")
+    if not isinstance(geometry, dict) or "available" not in geometry:
+        return False
+    conventional_cell = geometry.get("conventional_cell")
+    if not isinstance(conventional_cell, dict) or "available" not in conventional_cell:
+        return False
+    return True
+
+
 def _normalize_eos_display_mode(requested_mode: object, *, natoms_in_fitted_cell: int | None) -> str:
     """Resolve one requested EOS display mode onto a safe supported mode."""
     if requested_mode == _EOS_DISPLAY_MODE_PER_ATOM and natoms_in_fitted_cell is not None:
@@ -505,6 +519,8 @@ def _eos_summary_needs_refresh(study_dir: Path, summary: dict | None) -> bool:
     if not summary:
         return True
     if not _eos_summary_has_current_fit_basis(summary):
+        return True
+    if not _eos_summary_has_equilibrium_geometry(summary):
         return True
 
     for point in summary.get("points", []):
@@ -1593,6 +1609,42 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
                 f"{float(bulk_modulus_value):.1f} GPa" if bulk_modulus_value is not None else "Unavailable",
             )
             f4.metric("Fit Model", fit.get("model", "birch_murnaghan").replace("_", " ").title())
+
+            equilibrium_geometry = fit.get("equilibrium_geometry", {})
+            conventional_geometry = equilibrium_geometry.get("conventional_cell", {})
+            if isinstance(conventional_geometry, dict) and conventional_geometry.get("available"):
+                st.caption(
+                    "Standardized conventional-cell values below are derived from the fitted equilibrium structure. "
+                    "They do not change the internal EOS fit basis."
+                )
+                g1, g2, g3, g4 = st.columns(4)
+                g1.metric(
+                    "Equilibrium Volume (V0, standardized conventional cell)",
+                    f"{float(conventional_geometry['volume']):.2f} Å³",
+                )
+                g2.metric(
+                    "Lattice a (standardized conventional cell)",
+                    f"{float(conventional_geometry['a']):.4f} Å",
+                )
+                g3.metric(
+                    "Lattice b (standardized conventional cell)",
+                    f"{float(conventional_geometry['b']):.4f} Å",
+                )
+                g4.metric(
+                    "Lattice c (standardized conventional cell)",
+                    f"{float(conventional_geometry['c']):.4f} Å",
+                )
+                st.caption(
+                    "Angles: "
+                    f"α = {float(conventional_geometry['alpha']):.2f}°, "
+                    f"β = {float(conventional_geometry['beta']):.2f}°, "
+                    f"γ = {float(conventional_geometry['gamma']):.2f}°. "
+                    f"Standardized conventional-cell atom count: {int(conventional_geometry['atom_count'])}."
+                )
+
+            geometry_warnings = equilibrium_geometry.get("warnings", [])
+            for warning in geometry_warnings:
+                st.warning(f"⚠️ {warning}")
             
             for warning in fit.get("warnings", []):
                 st.warning(f"⚠️ {warning}")

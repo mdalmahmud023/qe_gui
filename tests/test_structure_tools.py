@@ -16,6 +16,17 @@ class StructureToolsTests(unittest.TestCase):
         self.assertTrue(result.changed)
         self.assertIn("primitive cell", result.message.lower())
 
+    def test_make_conventional_atoms_expands_primitive_silicon(self) -> None:
+        silicon_primitive = bulk("Si", "diamond", a=5.43)
+
+        result = stt.make_conventional_atoms(silicon_primitive)
+
+        self.assertEqual(len(silicon_primitive), 2)
+        self.assertEqual(len(result.atoms), 8)
+        self.assertTrue(result.changed)
+        self.assertAlmostEqual(result.atoms.get_volume(), silicon_primitive.get_volume() * 4.0)
+        self.assertIn("conventional cell", result.message.lower())
+
     def test_generate_band_path_rows_returns_labeled_rows(self) -> None:
         silicon_primitive = bulk("Si", "diamond", a=5.43)
 

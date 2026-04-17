@@ -1,11 +1,16 @@
 import json
 import logging
+import math
 import shutil
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ase import Atoms
+from ase.io import read as read_atoms
+
 from ..services.input_generator import generate_qe_input_text, CalculationContext
+from ..services.structure_tools import make_conventional_atoms
 from .models import (
     CONVERGENCE_SCHEMA_VERSION,
     EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
@@ -22,6 +27,168 @@ from .shared import make_unique_study_dir
 from .result_parser import parse_cutoff_point_output  # Reuse for energy extraction
 
 logger = logging.getLogger(__name__)
+_QE_INPUT_CANDIDATES = ("pw.in", "espresso.pwi")
+
+
+def _serialize_atoms_snapshot(atoms) -> dict[str, object]:
+    """Return one JSON-friendly fitted-cell structure snapshot."""
+    return {
+        "numbers": [int(number) for number in atoms.numbers.tolist()],
+        "cell": [[float(component) for component in row] for row in atoms.cell.array.tolist()],
+        "scaled_positions": [
+            [float(component) for component in row]
+            for row in atoms.get_scaled_positions(wrap=True).tolist()
+        ],
+        "pbc": [bool(value) for value in atoms.pbc],
+    }
+
+
+def _deserialize_atoms_snapshot(snapshot: dict | None) -> Atoms | None:
+    """Rebuild one ASE structure from a stored manifest snapshot."""
+    if not isinstance(snapshot, dict):
+        return None
+    try:
+        return Atoms(
+            numbers=[int(number) for number in snapshot["numbers"]],
+            cell=[[float(component) for component in row] for row in snapshot["cell"]],
+            scaled_positions=[
+                [float(component) for component in row]
+                for row in snapshot["scaled_positions"]
+            ],
+            pbc=[bool(value) for value in snapshot.get("pbc", (True, True, True))],
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _load_point_input_atoms(run_dir: Path) -> Atoms | None:
+    """Load one saved QE input structure from a study-point directory."""
+    for candidate_name in _QE_INPUT_CANDIDATES:
+        candidate_path = Path(run_dir) / candidate_name
+        if not candidate_path.is_file():
+            continue
+        try:
+            return read_atoms(candidate_path, format="espresso-in")
+        except Exception:
+            logger.warning("Failed to parse EOS point input in %s", candidate_path)
+    return None
+
+
+def _load_reference_fitted_cell_atoms(manifest: dict, study_dir: Path) -> tuple[Atoms | None, str | None]:
+    """Return the unscaled fitted-cell structure used to generate the EOS study."""
+    structure_payload = manifest.get("structure", {})
+    snapshot_atoms = _deserialize_atoms_snapshot(structure_payload.get("fitted_cell_snapshot"))
+    if snapshot_atoms is not None:
+        return snapshot_atoms, "manifest_snapshot"
+
+    for point_data in manifest.get("points", []):
+        run_dir_name = point_data.get("run_dir_name")
+        if not run_dir_name:
+            continue
+        point_atoms = _load_point_input_atoms(study_dir / str(run_dir_name))
+        if point_atoms is None:
+            continue
+        try:
+            scale_factor = float(point_data.get("scale_factor"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(scale_factor) or scale_factor <= 0:
+            continue
+        reference_atoms = point_atoms.copy()
+        if abs(scale_factor - 1.0) > 1.0e-12:
+            reference_atoms.set_cell(reference_atoms.cell * (1.0 / scale_factor), scale_atoms=True)
+        return reference_atoms, f"reconstructed_from_{run_dir_name}"
+
+    return None, None
+
+
+def _summarize_cell_geometry(atoms) -> dict[str, float | int]:
+    """Return a compact geometry summary for one equilibrium cell."""
+    a, b, c, alpha, beta, gamma = atoms.cell.cellpar()
+    return {
+        "a": float(a),
+        "b": float(b),
+        "c": float(c),
+        "alpha": float(alpha),
+        "beta": float(beta),
+        "gamma": float(gamma),
+        "volume": float(atoms.get_volume()),
+        "atom_count": int(len(atoms)),
+    }
+
+
+def _build_equilibrium_geometry_summary(
+    manifest: dict,
+    study_dir: Path,
+    *,
+    fitted_equilibrium_volume: float | None,
+) -> dict[str, object]:
+    """Derive fitted-cell and standardized conventional-cell geometry at V0."""
+    geometry_summary: dict[str, object] = {
+        "available": False,
+        "source": None,
+        "fitted_cell": None,
+        "conventional_cell": {
+            "available": False,
+            "warnings": [],
+        },
+        "warnings": [],
+    }
+    if fitted_equilibrium_volume is None:
+        geometry_summary["warnings"] = [
+            "Equilibrium geometry metadata is unavailable because the EOS fit did not produce V0.",
+        ]
+        return geometry_summary
+
+    reference_atoms, source_label = _load_reference_fitted_cell_atoms(manifest, study_dir)
+    if reference_atoms is None:
+        geometry_summary["warnings"] = [
+            "Equilibrium geometry metadata is unavailable because QE Studio could not reconstruct the fitted-cell structure for this EOS study.",
+        ]
+        return geometry_summary
+
+    reference_volume = float(reference_atoms.get_volume())
+    if not math.isfinite(reference_volume) or reference_volume <= 0:
+        geometry_summary["warnings"] = [
+            "Equilibrium geometry metadata is unavailable because the reconstructed fitted-cell volume is invalid.",
+        ]
+        return geometry_summary
+
+    scale_factor = (float(fitted_equilibrium_volume) / reference_volume) ** (1.0 / 3.0)
+    if not math.isfinite(scale_factor) or scale_factor <= 0:
+        geometry_summary["warnings"] = [
+            "Equilibrium geometry metadata is unavailable because the fitted equilibrium scale factor is invalid.",
+        ]
+        return geometry_summary
+
+    equilibrium_fitted_cell = reference_atoms.copy()
+    equilibrium_fitted_cell.set_cell(equilibrium_fitted_cell.cell * scale_factor, scale_atoms=True)
+    fitted_cell_summary = _summarize_cell_geometry(equilibrium_fitted_cell)
+    geometry_summary["available"] = True
+    geometry_summary["source"] = source_label
+    geometry_summary["fitted_cell"] = fitted_cell_summary
+
+    try:
+        conventional_result = make_conventional_atoms(equilibrium_fitted_cell)
+        conventional_summary = _summarize_cell_geometry(conventional_result.atoms)
+        conventional_summary["available"] = True
+        conventional_summary["volume_ratio_to_fitted_cell"] = (
+            float(conventional_summary["volume"]) / float(fitted_cell_summary["volume"])
+        )
+        conventional_summary["warnings"] = []
+        geometry_summary["conventional_cell"] = conventional_summary
+    except ValueError as exc:
+        warning_text = (
+            "Standardized conventional-cell geometry is unavailable because "
+            f"spglib could not determine a conventional cell: {exc}"
+        )
+        geometry_summary["warnings"] = [warning_text]
+        geometry_summary["conventional_cell"] = {
+            "available": False,
+            "warnings": [warning_text],
+        }
+
+    return geometry_summary
 
 
 def _format_eos_point_dir_name(point: EosStudyPoint) -> str:
@@ -118,6 +285,7 @@ def build_eos_study(
         "structure": {
             "formula": atoms.get_chemical_formula(),
             "atom_count": len(atoms),
+            "fitted_cell_snapshot": _serialize_atoms_snapshot(atoms),
         },
         "baseline_snapshot": {
             "physics_parameters": baseline,
@@ -253,6 +421,16 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
     else:
         overall_status = "complete"
 
+    equilibrium_geometry = _build_equilibrium_geometry_summary(
+        manifest,
+        study_dir,
+        fitted_equilibrium_volume=fit_result.V0,
+    )
+    conventional_cell_geometry = equilibrium_geometry.get("conventional_cell", {})
+    conventional_lattice_a = None
+    if isinstance(conventional_cell_geometry, dict) and conventional_cell_geometry.get("available"):
+        conventional_lattice_a = conventional_cell_geometry.get("a")
+
     summary = {
         "schema_version": manifest["schema_version"],
         "study_type": manifest["study_type"],
@@ -269,10 +447,11 @@ def refresh_eos_study(study_dir: Path) -> dict | None:
             "V0": fit_result.V0,
             "B0": fit_result.B0,
             "B0_prime": fit_result.B0_prime,
-            "a0": fit_result.a0,
+            "a0": conventional_lattice_a,
             "natoms_in_fitted_cell": atom_count,
             "energy_basis": EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
             "volume_basis": EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3,
+            "equilibrium_geometry": equilibrium_geometry,
             "warnings": fit_result.warnings,
             "errors": fit_result.errors,
         },
