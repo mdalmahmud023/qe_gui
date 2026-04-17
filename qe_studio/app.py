@@ -4,7 +4,7 @@ import streamlit as st
 
 from .core.project_context import build_project_context, initialize_job_summaries_state
 from .core.workspace import QE_RUNS_DIR
-from .pages import ui_analysis, ui_run, ui_setup, ui_structure
+from .pages import ui_analysis, ui_run, ui_setup, ui_structure, ui_studies
 from .services.qe_runner import initialize_run_state
 
 
@@ -91,7 +91,7 @@ def render_sidebar_project_summary(ctx) -> None:
 def render_workflow_indicator(active_title: str) -> None:
     """Render a lightweight workflow indicator in the shared app frame."""
     st.caption("Workflow")
-    steps = ("Structure", "Setup", "Run", "Analysis")
+    steps = ("Structure", "Setup", "Studies", "Run", "Analysis")
     columns = st.columns(len(steps))
     for column, title in zip(columns, steps):
         is_active = title == active_title
@@ -130,6 +130,9 @@ def main() -> None:
     def render_setup_page() -> None:
         ui_setup.render_page(ctx)
 
+    def render_studies_page() -> None:
+        ui_studies.render_page(ctx)
+
     def render_run_page() -> None:
         ui_run.render_page(ctx)
 
@@ -139,6 +142,7 @@ def main() -> None:
     pages = [
         st.Page(render_structure_page, title="Structure", url_path="structure", default=True),
         st.Page(render_setup_page, title="Setup", url_path="setup"),
+        st.Page(render_studies_page, title="Studies", url_path="studies"),
         st.Page(render_run_page, title="Run", url_path="run"),
         st.Page(render_analysis_page, title="Analysis", url_path="analysis"),
     ]

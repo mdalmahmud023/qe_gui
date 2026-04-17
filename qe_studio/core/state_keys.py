@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 QE_PARAMS_STATE_KEY = "qe_parameters"
-SETUP_WORKFLOW_MODE_STATE_KEY = "setup_workflow_mode"
 CUTOFF_STUDY_PARAMS_STATE_KEY = "cutoff_study_parameters"
 CUTOFF_STUDY_SELECTED_PATH_STATE_KEY = "cutoff_study_selected_path"
 CUTOFF_STUDY_LATEST_PATH_STATE_KEY = "cutoff_study_latest_path"
@@ -59,4 +58,3 @@ DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE = "crystal"
 QE_CALCULATION_OPTIONS = ("scf", "nscf", "relax", "vc-relax")
 QE_OCCUPATIONS_OPTIONS = ("smearing", "fixed", "tetrahedra")
 QE_SMEARING_OPTIONS = ("gaussian", "methfessel-paxton", "marzari-vanderbilt")
-SETUP_WORKFLOW_MODE_OPTIONS = ("standard", "cutoff_convergence")
