@@ -211,7 +211,18 @@ def test_resolve_eos_fitted_cell_atom_count_rejects_inconsistent_metadata() -> N
     assert warning is not None
 
 
-def test_get_eos_fit_display_values_keeps_bulk_modulus_invariant() -> None:
+def test_get_available_eos_display_modes_disables_normalized_modes_without_atom_count() -> None:
+    assert ui_studies._get_available_eos_display_modes(natoms_in_fitted_cell=None) == ["cell_total"]
+    assert ui_studies._get_available_eos_display_modes(natoms_in_fitted_cell=4) == [
+        "cell_total",
+        "per_atom",
+        "relative_per_atom",
+    ]
+    assert ui_studies._normalize_eos_display_mode("relative_per_atom", natoms_in_fitted_cell=None) == "cell_total"
+    assert ui_studies._EOS_DISPLAY_MODE_LABELS["relative_per_atom"] == "Relative: ΔE (meV/atom) vs Volume/atom (Å³/atom)"
+
+
+def test_get_eos_fit_display_values_keep_bulk_modulus_invariant_across_modes() -> None:
     fit = {
         "E0": -20.0,
         "V0": 100.0,
@@ -228,9 +239,17 @@ def test_get_eos_fit_display_values_keeps_bulk_modulus_invariant() -> None:
         display_mode="per_atom",
         natoms_in_fitted_cell=4,
     )
+    relative = ui_studies._get_eos_fit_display_values(
+        fit,
+        display_mode="relative_per_atom",
+        natoms_in_fitted_cell=4,
+    )
 
-    assert cell_total["bulk_modulus_value"] == per_atom["bulk_modulus_value"] == 120.0
+    assert cell_total["bulk_modulus_value"] == per_atom["bulk_modulus_value"] == relative["bulk_modulus_value"] == 120.0
     assert cell_total["volume_value"] == 100.0
     assert per_atom["volume_value"] == 25.0
+    assert relative["volume_value"] == 25.0
     assert cell_total["energy_value"] == -20.0
     assert per_atom["energy_value"] == -5.0
+    assert relative["energy_display_text"] == "fitted E0"
+    assert "ΔE = (E_total - E0_total) / N" in str(relative["energy_note"])

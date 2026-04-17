@@ -102,9 +102,11 @@ from ..services.qe_runner import (
 _DEFAULT_CUTOFF_TOLERANCE_MEV_PER_ATOM = 1.0
 _EOS_DISPLAY_MODE_CELL_TOTAL = "cell_total"
 _EOS_DISPLAY_MODE_PER_ATOM = "per_atom"
+_EOS_DISPLAY_MODE_RELATIVE_PER_ATOM = "relative_per_atom"
 _EOS_DISPLAY_MODE_LABELS = {
     _EOS_DISPLAY_MODE_CELL_TOTAL: "Cell total: Energy (eV) vs Volume (Å³)",
     _EOS_DISPLAY_MODE_PER_ATOM: "Per atom: Energy/atom (eV) vs Volume/atom (Å³)",
+    _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM: "Relative: ΔE (meV/atom) vs Volume/atom (Å³/atom)",
 }
 
 _ECUTRHO_MODE_LABELS = {
@@ -191,9 +193,17 @@ def _eos_summary_has_equilibrium_geometry(summary: dict | None) -> bool:
 
 def _normalize_eos_display_mode(requested_mode: object, *, natoms_in_fitted_cell: int | None) -> str:
     """Resolve one requested EOS display mode onto a safe supported mode."""
-    if requested_mode == _EOS_DISPLAY_MODE_PER_ATOM and natoms_in_fitted_cell is not None:
-        return _EOS_DISPLAY_MODE_PER_ATOM
+    if requested_mode in {_EOS_DISPLAY_MODE_PER_ATOM, _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM} and natoms_in_fitted_cell is not None:
+        return str(requested_mode)
     return _EOS_DISPLAY_MODE_CELL_TOTAL
+
+
+def _get_available_eos_display_modes(*, natoms_in_fitted_cell: int | None) -> list[str]:
+    """Return the EOS display modes that are safe for the current summary metadata."""
+    available_modes = [_EOS_DISPLAY_MODE_CELL_TOTAL]
+    if natoms_in_fitted_cell is not None:
+        available_modes.extend([_EOS_DISPLAY_MODE_PER_ATOM, _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM])
+    return available_modes
 
 
 def _get_eos_fit_display_values(
@@ -217,9 +227,39 @@ def _get_eos_fit_display_values(
             "display_mode": resolved_mode,
             "volume_label": "Equilibrium Volume/atom (V0/N)",
             "volume_value": v0_value,
+            "volume_unit": "Å³/atom",
             "energy_label": "Equilibrium Energy/atom (E0/N)",
             "energy_value": e0_value,
             "energy_unit": "eV/atom",
+            "energy_display_text": None,
+            "energy_note": None,
+            "bulk_modulus_label": "Bulk Modulus (B0)",
+            "bulk_modulus_value": fit.get("B0"),
+        }
+    if resolved_mode == _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM and natoms_in_fitted_cell is not None:
+        e0_per_atom = None if e0_value is None else float(e0_value) / natoms_in_fitted_cell
+        v0_value = None if v0_value is None else float(v0_value) / natoms_in_fitted_cell
+        reference_note = "Relative mode uses ΔE = (E_total - E0_total) / N, where fitted E0 is unavailable."
+        if e0_value is not None:
+            reference_note = (
+                "Relative mode uses ΔE = (E_total - E0_total) / N. "
+                f"Fitted E0 = {float(e0_value):.4f} eV for the simulated fitted cell"
+                + (
+                    f" ({float(e0_per_atom):.4f} eV/atom)."
+                    if e0_per_atom is not None
+                    else "."
+                )
+            )
+        return {
+            "display_mode": resolved_mode,
+            "volume_label": "Equilibrium Volume/atom (V0/N)",
+            "volume_value": v0_value,
+            "volume_unit": "Å³/atom",
+            "energy_label": "Reference Energy",
+            "energy_value": None,
+            "energy_unit": None,
+            "energy_display_text": "fitted E0",
+            "energy_note": reference_note,
             "bulk_modulus_label": "Bulk Modulus (B0)",
             "bulk_modulus_value": fit.get("B0"),
         }
@@ -228,9 +268,12 @@ def _get_eos_fit_display_values(
         "display_mode": _EOS_DISPLAY_MODE_CELL_TOTAL,
         "volume_label": "Equilibrium Volume (V0, fitted cell)",
         "volume_value": v0_value,
+        "volume_unit": "Å³",
         "energy_label": "Equilibrium Energy (E0, fitted cell)",
         "energy_value": e0_value,
         "energy_unit": "eV",
+        "energy_display_text": None,
+        "energy_note": None,
         "bulk_modulus_label": "Bulk Modulus (B0)",
         "bulk_modulus_value": fit.get("B0"),
     }
@@ -1550,9 +1593,9 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
         points = summary.get("points", [])
         fit = summary.get("fit", {})
         fitted_cell_atom_count, atom_count_warning = _resolve_eos_fitted_cell_atom_count(manifest, summary)
-        available_display_modes = [_EOS_DISPLAY_MODE_CELL_TOTAL]
-        if fitted_cell_atom_count is not None:
-            available_display_modes.append(_EOS_DISPLAY_MODE_PER_ATOM)
+        available_display_modes = _get_available_eos_display_modes(
+            natoms_in_fitted_cell=fitted_cell_atom_count,
+        )
         current_display_mode = _normalize_eos_display_mode(
             st.session_state.get(EOS_DISPLAY_MODE_WIDGET_KEY, _EOS_DISPLAY_MODE_CELL_TOTAL),
             natoms_in_fitted_cell=fitted_cell_atom_count,
@@ -1569,7 +1612,8 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
             )
             st.caption(
                 "Internal fit basis: the EOS fit is always performed on total energy (eV) and total volume (Å³) "
-                "of the simulated fitted cell. This selector changes display values only."
+                "of the simulated fitted cell. This selector changes display values only, and relative mode shows "
+                "energy relative to fitted E0."
             )
             if fitted_cell_atom_count is not None:
                 st.caption(f"Fitted-cell atom count: {fitted_cell_atom_count}")
@@ -1598,17 +1642,24 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
             bulk_modulus_value = fit_display.get("bulk_modulus_value")
             f1.metric(
                 str(fit_display["volume_label"]),
-                f"{float(volume_value):.2f} Å³" if volume_value is not None else "Unavailable",
+                f"{float(volume_value):.2f} {fit_display['volume_unit']}" if volume_value is not None else "Unavailable",
             )
-            f2.metric(
-                str(fit_display["energy_label"]),
-                f"{float(energy_value):.4f} {fit_display['energy_unit']}" if energy_value is not None else "Unavailable",
-            )
+            energy_display_text = fit_display.get("energy_display_text")
+            if energy_display_text is not None:
+                f2.metric(str(fit_display["energy_label"]), str(energy_display_text))
+            else:
+                f2.metric(
+                    str(fit_display["energy_label"]),
+                    f"{float(energy_value):.4f} {fit_display['energy_unit']}" if energy_value is not None else "Unavailable",
+                )
             f3.metric(
                 str(fit_display["bulk_modulus_label"]),
                 f"{float(bulk_modulus_value):.1f} GPa" if bulk_modulus_value is not None else "Unavailable",
             )
             f4.metric("Fit Model", fit.get("model", "birch_murnaghan").replace("_", " ").title())
+            energy_note = fit_display.get("energy_note")
+            if energy_note:
+                st.caption(str(energy_note))
 
             equilibrium_geometry = fit.get("equilibrium_geometry", {})
             conventional_geometry = equilibrium_geometry.get("conventional_cell", {})
@@ -1700,7 +1751,7 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
         # Render points table
         st.caption(
             "Fit basis note: the EOS fit is always performed on simulated fitted-cell totals. "
-            "Per-atom values in the table are display-derived only."
+            "Per-atom values and any relative-energy view are display-derived only, with relative mode referenced to fitted E0."
         )
         with st.expander("View Raw Data Points"):
             render_table(

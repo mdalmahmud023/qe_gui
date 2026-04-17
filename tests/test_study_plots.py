@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plotly.graph_objects as go
+import pytest
 from qe_studio.services.plotting.study_plots import (
     plot_cutoff_convergence,
     plot_eos_study,
@@ -184,22 +185,39 @@ def test_plot_eos_study_display_modes():
 
     fig_cell_total = plot_eos_study(summary_data, display_mode="cell_total")
     fig_per_atom = plot_eos_study(summary_data, display_mode="per_atom")
+    fig_relative = plot_eos_study(summary_data, display_mode="relative_per_atom")
 
     assert isinstance(fig_cell_total, go.Figure)
     assert isinstance(fig_per_atom, go.Figure)
+    assert isinstance(fig_relative, go.Figure)
     assert fig_cell_total.layout.xaxis.title.text == "Volume (Å³)"
     assert fig_cell_total.layout.yaxis.title.text == "Energy (eV)"
     assert fig_per_atom.layout.xaxis.title.text == "Volume/atom (Å³)"
     assert fig_per_atom.layout.yaxis.title.text == "Energy/atom (eV)"
+    assert fig_relative.layout.xaxis.title.text == "Volume/atom (Å³/atom)"
+    assert fig_relative.layout.yaxis.title.text == "ΔE (meV/atom)"
 
     cell_trace = fig_cell_total.data[0]
     per_atom_trace = fig_per_atom.data[0]
+    relative_trace = fig_relative.data[0]
     assert cell_trace.x == (98.0, 100.0, 102.0)
     assert cell_trace.y == (-19.8, -20.0, -19.7)
     assert per_atom_trace.x == (49.0, 50.0, 51.0)
     assert per_atom_trace.y == (-9.9, -10.0, -9.85)
+    assert relative_trace.x == (49.0, 50.0, 51.0)
+    assert relative_trace.y == pytest.approx((100.0, 0.0, 150.0))
 
     assert fig_cell_total.layout.shapes[0].x0 == 100.0
     assert fig_per_atom.layout.shapes[0].x0 == 50.0
+    assert fig_relative.layout.shapes[0].x0 == 50.0
     assert "Fitted-Cell Energy" in cell_trace.text[0]
     assert "Energy/atom" in per_atom_trace.text[0]
+    assert "ΔE relative to fitted E0" in relative_trace.text[0]
+    assert "Reference E0 (fitted cell)" in relative_trace.text[0]
+    assert fig_relative.data[0].name == "DFT ΔE"
+    assert fig_relative.data[1].name == "Birch-Murnaghan ΔE Fit"
+
+    cell_fit_trace = fig_cell_total.data[1]
+    relative_fit_trace = fig_relative.data[1]
+    assert list(relative_fit_trace.x) == pytest.approx([float(value) / 2.0 for value in cell_fit_trace.x])
+    assert list(relative_fit_trace.y) == pytest.approx([((float(value) + 20.0) * 1000.0) / 2.0 for value in cell_fit_trace.y])

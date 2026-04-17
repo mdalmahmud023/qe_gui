@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 
 _EOS_DISPLAY_MODE_CELL_TOTAL = "cell_total"
 _EOS_DISPLAY_MODE_PER_ATOM = "per_atom"
+_EOS_DISPLAY_MODE_RELATIVE_PER_ATOM = "relative_per_atom"
 
 
 def _add_categorical_reference_line(
@@ -53,33 +54,89 @@ def _resolve_eos_display_context(summary_data: dict[str, Any], display_mode: str
     """Return derived plotting metadata for one EOS display mode."""
     fit_data = summary_data.get("fit", {})
     natoms = _coerce_positive_int(fit_data.get("natoms_in_fitted_cell"))
-    resolved_mode = (
-        _EOS_DISPLAY_MODE_PER_ATOM
-        if display_mode == _EOS_DISPLAY_MODE_PER_ATOM and natoms is not None
-        else _EOS_DISPLAY_MODE_CELL_TOTAL
-    )
-    divisor = natoms if resolved_mode == _EOS_DISPLAY_MODE_PER_ATOM and natoms is not None else 1
+    if display_mode in {_EOS_DISPLAY_MODE_PER_ATOM, _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM} and natoms is not None:
+        resolved_mode = str(display_mode)
+    else:
+        resolved_mode = _EOS_DISPLAY_MODE_CELL_TOTAL
+    divisor = natoms if resolved_mode in {_EOS_DISPLAY_MODE_PER_ATOM, _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM} and natoms is not None else 1
+    reference_energy_total_ev = fit_data.get("E0")
+    if resolved_mode == _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM:
+        return {
+            "display_mode": resolved_mode,
+            "natoms": natoms,
+            "divisor": divisor,
+            "reference_energy_total_ev": float(reference_energy_total_ev) if reference_energy_total_ev is not None else None,
+            "xaxis_title": "Volume/atom (Å³/atom)",
+            "yaxis_title": "ΔE (meV/atom)",
+            "volume_label": "Volume/atom",
+            "volume_unit": "Å³/atom",
+            "energy_label": "ΔE relative to fitted E0",
+            "energy_unit": "meV/atom",
+            "annotation_label": "Equilibrium Volume/atom",
+            "annotation_unit": "Å³/atom",
+            "point_trace_name": "DFT ΔE",
+            "fit_trace_name": "Birch-Murnaghan ΔE Fit",
+        }
     if resolved_mode == _EOS_DISPLAY_MODE_PER_ATOM:
         return {
             "display_mode": resolved_mode,
             "natoms": natoms,
             "divisor": divisor,
+            "reference_energy_total_ev": None,
             "xaxis_title": "Volume/atom (Å³)",
             "yaxis_title": "Energy/atom (eV)",
             "volume_label": "Volume/atom",
+            "volume_unit": "Å³/atom",
             "energy_label": "Energy/atom",
+            "energy_unit": "eV/atom",
             "annotation_label": "Equilibrium Volume/atom",
+            "annotation_unit": "Å³/atom",
+            "point_trace_name": "DFT Data",
+            "fit_trace_name": "Birch-Murnaghan Fit",
         }
     return {
         "display_mode": _EOS_DISPLAY_MODE_CELL_TOTAL,
         "natoms": natoms,
         "divisor": 1,
+        "reference_energy_total_ev": None,
         "xaxis_title": "Volume (Å³)",
         "yaxis_title": "Energy (eV)",
         "volume_label": "Fitted-Cell Volume",
+        "volume_unit": "Å³",
         "energy_label": "Fitted-Cell Energy",
+        "energy_unit": "eV",
         "annotation_label": "Equilibrium Volume",
+        "annotation_unit": "Å³",
+        "point_trace_name": "DFT Data",
+        "fit_trace_name": "Birch-Murnaghan Fit",
     }
+
+
+def _transform_eos_total_values_for_display(
+    *,
+    volume: object,
+    total_energy_ev: object,
+    display_context: dict[str, Any],
+) -> tuple[float | None, float | None]:
+    """Project one fitted-cell total ``(V, E)`` point into one EOS display mode."""
+    try:
+        display_volume = float(volume) / float(display_context["divisor"])
+    except (TypeError, ValueError, ZeroDivisionError):
+        display_volume = None
+
+    try:
+        total_energy = float(total_energy_ev)
+    except (TypeError, ValueError):
+        return display_volume, None
+
+    if display_context["display_mode"] == _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM:
+        reference_energy_total_ev = display_context.get("reference_energy_total_ev")
+        if reference_energy_total_ev is None:
+            return display_volume, None
+        return display_volume, ((total_energy - float(reference_energy_total_ev)) * 1000.0) / float(display_context["divisor"])
+    if display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM:
+        return display_volume, total_energy / float(display_context["divisor"])
+    return display_volume, total_energy
 
 
 def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
@@ -268,7 +325,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
 
     Args:
         summary_data: The parsed EOS study summary JSON payload.
-        display_mode: Whether to display fitted-cell totals or derived per-atom values.
+        display_mode: Whether to display fitted-cell totals, per-atom values, or relative energy.
 
     Returns:
         A Plotly Figure object.
@@ -280,7 +337,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
 
     valid_v = []
     valid_e = []
-    hover_texts = []
+    valid_hover_texts = []
     
     for point in points:
         volume = point.get("volume")
@@ -289,32 +346,38 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
         scale = point.get("scale_factor")
         status = str(point.get("status", "unknown")).replace("_", " ")
         natoms = display_context["natoms"]
-        if display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM:
-            display_volume = None if volume is None else float(volume) / divisor
-            display_energy = (
-                float(total_energy_ev) / divisor
-                if total_energy_ev is not None
-                else energy_per_atom_ev
-            )
-        else:
-            display_volume = volume
-            display_energy = total_energy_ev
+        display_volume, display_energy = _transform_eos_total_values_for_display(
+            volume=volume,
+            total_energy_ev=total_energy_ev,
+            display_context=display_context,
+        )
+        if display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM and display_energy is None and energy_per_atom_ev is not None:
+            display_energy = float(energy_per_atom_ev)
         
         hover_parts = [
             f"<b>Scale:</b> {scale:.4f}",
-            f"<b>{display_context['volume_label']}:</b> {display_volume:.2f} Å³" if display_volume is not None else "",
+            (
+                f"<b>{display_context['volume_label']}:</b> "
+                f"{display_volume:.2f} {display_context['volume_unit']}"
+            ) if display_volume is not None else "",
             f"<b>Status:</b> {status}",
         ]
         if display_energy is not None:
-            hover_parts.append(f"<b>{display_context['energy_label']}:</b> {float(display_energy):.6f} {display_context['yaxis_title'].split('(')[1].rstrip(')')}")
+            hover_parts.append(
+                f"<b>{display_context['energy_label']}:</b> "
+                f"{float(display_energy):.6f} {display_context['energy_unit']}"
+            )
+        if display_context["display_mode"] == _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM:
+            reference_energy_total_ev = display_context.get("reference_energy_total_ev")
+            if reference_energy_total_ev is not None:
+                hover_parts.append(f"<b>Reference E0 (fitted cell):</b> {float(reference_energy_total_ev):.6f} eV")
         if natoms is not None:
             hover_parts.append(f"<b>Fitted-Cell Atoms:</b> {natoms}")
-            
-        hover_texts.append("<br>".join(part for part in hover_parts if part))
         
         if display_energy is not None and display_volume is not None:
             valid_v.append(display_volume)
             valid_e.append(float(display_energy))
+            valid_hover_texts.append("<br>".join(part for part in hover_parts if part))
 
     fig = go.Figure()
 
@@ -325,21 +388,10 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
                 x=valid_v,
                 y=valid_e,
                 mode="markers",
-                name="DFT Data",
+                name=str(display_context["point_trace_name"]),
                 marker=dict(size=10, color="#d62728", symbol="circle"),
                 hoverinfo="text",
-                text=[
-                    hover_texts[points.index(p)]
-                    for p in points
-                    if (
-                        (p.get("total_energy_ev") is not None and p.get("volume") is not None)
-                        or (
-                            display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM
-                            and p.get("energy_per_atom_ev") is not None
-                            and p.get("volume") is not None
-                        )
-                    )
-                ],
+                text=valid_hover_texts,
             )
         )
 
@@ -367,11 +419,19 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
             v_range = v_max - v_min
             
             # Extend curve slightly beyond data points
-            if display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM:
+            if display_context["display_mode"] in {_EOS_DISPLAY_MODE_PER_ATOM, _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM}:
                 v_plot_total = np.linspace(v_min * divisor - 0.1 * v_range * divisor, v_max * divisor + 0.1 * v_range * divisor, 200)
                 e_plot_total = birch_murnaghan(v_plot_total, E0, V0, B0_ev_ang3, B0_prime)
-                v_plot = v_plot_total / divisor
-                e_plot = e_plot_total / divisor
+                transformed_pairs = [
+                    _transform_eos_total_values_for_display(
+                        volume=volume_total,
+                        total_energy_ev=energy_total,
+                        display_context=display_context,
+                    )
+                    for volume_total, energy_total in zip(v_plot_total, e_plot_total, strict=False)
+                ]
+                v_plot = [pair[0] for pair in transformed_pairs if pair[0] is not None and pair[1] is not None]
+                e_plot = [pair[1] for pair in transformed_pairs if pair[0] is not None and pair[1] is not None]
             else:
                 v_plot = np.linspace(v_min - 0.1 * v_range, v_max + 0.1 * v_range, 200)
                 e_plot = birch_murnaghan(v_plot, E0, V0, B0_ev_ang3, B0_prime)
@@ -381,7 +441,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
                     x=v_plot,
                     y=e_plot,
                     mode="lines",
-                    name="Birch-Murnaghan Fit",
+                    name=str(display_context["fit_trace_name"]),
                     line=dict(color="#1f77b4", width=2),
                     hoverinfo="skip"
                 )
@@ -391,12 +451,14 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
     V0 = fit_data.get("V0")
     if fit_data.get("success") and V0 is not None:
         display_v0 = float(V0) / divisor if display_context["display_mode"] == _EOS_DISPLAY_MODE_PER_ATOM else float(V0)
+        if display_context["display_mode"] == _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM:
+            display_v0 = float(V0) / divisor
         fig.add_vline(
             x=display_v0,
             line_width=2,
             line_dash="dash",
             line_color="green",
-            annotation_text=f"{display_context['annotation_label']} ({display_v0:.2f} Å³)",
+            annotation_text=f"{display_context['annotation_label']} ({display_v0:.2f} {display_context['annotation_unit']})",
             annotation_position="top right",
         )
 
