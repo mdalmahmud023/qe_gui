@@ -15,7 +15,7 @@ class ElectronicPropertiesTests(unittest.TestCase):
             (run_dir / "pw.in").write_text("&CONTROL\n/\n")
             (run_dir / "pw.out").write_text("the Fermi energy is    1.2345 ev\n")
             save_dir = run_dir / "pwscf.save"
-            save_dir.mkdir()
+            save_dir.mkdir(parents=True)
             (save_dir / "data-file-schema.xml").write_text(
                 (FIXTURES_DIR / "qe_trimmed_al001_pbc.xml").read_text(encoding="utf-8"),
                 encoding="utf-8",
@@ -314,7 +314,7 @@ class ElectronicPropertiesTests(unittest.TestCase):
         with TemporaryDirectory() as tmp_dir:
             run_dir = Path(tmp_dir)
             save_dir = run_dir / "pwscf.save"
-            save_dir.mkdir()
+            save_dir.mkdir(parents=True)
             (save_dir / "data-file-schema.xml").write_text(
                 "<?xml version='1.0' encoding='UTF-8'?>\n"
                 "<qes:espresso xmlns:qes='http://www.quantum-espresso.org/ns/qes/qes-1.0'>\n"

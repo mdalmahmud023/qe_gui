@@ -7,10 +7,18 @@ import re
 import xml.etree.ElementTree as ET
 
 from .electronic_properties import parse_qe_band_structure, parse_qe_dos
+from .qe_control import (
+    DEFAULT_OUTDIR,
+    DEFAULT_PREFIX_FALLBACK,
+    LEGACY_DEFAULT_PREFIX,
+    normalize_qe_outdir,
+    parse_qe_control_from_input,
+    resolve_qe_outdir,
+)
 
 
-DEFAULT_PREFIX = "pwscf"
-DEFAULT_OUTDIR_VALUE = "."
+DEFAULT_PREFIX = DEFAULT_PREFIX_FALLBACK
+DEFAULT_OUTDIR_VALUE = DEFAULT_OUTDIR
 SOURCE_INPUT_CANDIDATES = ("pw.in", "espresso.pwi")
 CARD_HEADERS = (
     "ATOMIC_SPECIES",
@@ -66,13 +74,14 @@ def read_pw_input_metadata(pw_input_path: Path) -> dict:
     """Read lightweight QE metadata from a saved input file."""
     input_path = Path(pw_input_path)
     text = input_path.read_text(encoding="utf-8")
+    control = parse_qe_control_from_input(text)
 
     return {
         "path": input_path,
         "text": text,
         "calculation": _match_assignment(text, "calculation"),
-        "prefix": _match_assignment(text, "prefix"),
-        "outdir": _match_assignment(text, "outdir"),
+        "prefix": control["prefix"],
+        "outdir": control["outdir"],
         "pseudo_dir": _match_assignment(text, "pseudo_dir"),
         "k_points_mode": _match_k_points_mode(text),
     }
@@ -90,16 +99,17 @@ def resolve_qe_run_context(run_dir: Path) -> QERunContext:
             break
 
     if metadata is None:
-        resolved_outdir = run_directory
+        rendered_outdir = normalize_qe_outdir(None, default=DEFAULT_OUTDIR_VALUE)
+        resolved_outdir = resolve_qe_outdir(run_directory, rendered_outdir)
         return QERunContext(
             run_dir=run_directory,
             source_input_file=None,
             source_input_text=None,
             calculation=None,
             prefix=DEFAULT_PREFIX,
-            outdir=None,
+            outdir=rendered_outdir,
             resolved_outdir=resolved_outdir,
-            effective_outdir=DEFAULT_OUTDIR_VALUE,
+            effective_outdir=rendered_outdir,
             pseudo_dir=None,
             k_points_mode=None,
             save_dir=None,
@@ -110,7 +120,7 @@ def resolve_qe_run_context(run_dir: Path) -> QERunContext:
 
     prefix = metadata.get("prefix") or DEFAULT_PREFIX
     outdir = metadata.get("outdir")
-    resolved_outdir = _resolve_outdir_path(run_directory, outdir)
+    resolved_outdir = resolve_qe_outdir(run_directory, outdir)
     save_dir = find_qe_save_dir(run_directory, prefix, outdir)
     has_xml_metadata = False
     has_restart_wavefunctions = False
@@ -128,7 +138,7 @@ def resolve_qe_run_context(run_dir: Path) -> QERunContext:
         prefix=prefix,
         outdir=outdir,
         resolved_outdir=resolved_outdir,
-        effective_outdir=outdir if outdir else DEFAULT_OUTDIR_VALUE,
+        effective_outdir=normalize_qe_outdir(outdir, default=DEFAULT_OUTDIR_VALUE),
         pseudo_dir=metadata.get("pseudo_dir"),
         k_points_mode=metadata.get("k_points_mode"),
         save_dir=save_dir,
@@ -141,10 +151,14 @@ def resolve_qe_run_context(run_dir: Path) -> QERunContext:
 def find_qe_save_dir(run_dir: Path, prefix: str, outdir: str | None) -> Path | None:
     """Locate a QE prefix.save directory using the saved outdir when present."""
     run_directory = Path(run_dir)
-    candidate_directories = [_resolve_outdir_path(run_directory, outdir) / f"{prefix}.save"]
+    rendered_outdir = normalize_qe_outdir(outdir, default=DEFAULT_OUTDIR_VALUE)
+    candidate_directories = [resolve_qe_outdir(run_directory, rendered_outdir) / f"{prefix}.save"]
     fallback_directory = run_directory / f"{prefix}.save"
     if fallback_directory not in candidate_directories:
         candidate_directories.append(fallback_directory)
+    legacy_directory = run_directory / f"{LEGACY_DEFAULT_PREFIX}.save"
+    if legacy_directory not in candidate_directories:
+        candidate_directories.append(legacy_directory)
 
     for candidate in candidate_directories:
         if candidate.is_dir():
@@ -578,12 +592,7 @@ def _local_name(tag: str) -> str:
 
 
 def _resolve_outdir_path(run_dir: Path, outdir: str | None) -> Path:
-    if not outdir:
-        return Path(run_dir)
-    resolved = Path(outdir)
-    if not resolved.is_absolute():
-        resolved = Path(run_dir) / resolved
-    return resolved
+    return resolve_qe_outdir(run_dir, normalize_qe_outdir(outdir, default=DEFAULT_OUTDIR_VALUE))
 
 
 def _split_inline_comment(raw_line: str) -> tuple[str, str | None]:

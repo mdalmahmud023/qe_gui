@@ -16,6 +16,7 @@ from qe_studio.services.input_generator import (
     PhysicalOptions,
     VdwMethod,
     VdwSettings,
+    build_calculation_context_from_request,
     classify_structure,
     get_atomic_species_order,
     make_default_context,
@@ -102,7 +103,15 @@ class TestGenerationValidationIssues:
 
         issues = build_generation_validation_issues(atoms, ctx, requested_workflow="scf")
 
-        assert any(issue.code == "magnetic_nonspin" for issue in issues)
+        assert any(issue.code == "magnetic_species_nonspin" for issue in issues)
+
+    def test_warns_for_unknown_electronic_character_fallback(self):
+        atoms = _feo_atoms()
+        ctx = make_default_context(atoms, apply_policy=False)
+
+        issues = build_generation_validation_issues(atoms, ctx, requested_workflow="scf")
+
+        assert any(issue.code == "unknown_electronic_character" for issue in issues)
 
     def test_errors_for_soc_with_incompatible_pseudos(self, tmp_path: Path):
         atoms = bulk("Fe", "bcc", a=2.87)
@@ -122,32 +131,102 @@ class TestGenerationValidationIssues:
 
         assert any(issue.code == "soc_incompatible_pseudos" and issue.level == "error" for issue in issues)
 
+    def test_warns_for_dftu_enabled_without_positive_u(self):
+        atoms = _feo_atoms()
+        ctx = build_calculation_context_from_request(
+            atoms,
+            {
+                "calculation": "scf",
+                "prefix": "feo",
+                "outdir": "./tmp",
+                "ecutwfc": 60.0,
+                "ecutrho": 480.0,
+                "occupations": "smearing",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [4, 4, 4],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 1,
+                "starting_magnetization": {},
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": True,
+                "hubbard_u": {
+                    "Fe": {"species": "Fe", "u_ev": 0.0, "source": "user_defined"},
+                },
+                "vdw_method": VdwMethod.NONE.value,
+            },
+            resolved_entries=_resolved_entries(),
+        )
+
+        issues = build_generation_validation_issues(atoms, ctx, requested_workflow="scf")
+
+        assert any(issue.code == "dftu_missing_positive_u" and issue.level == "warning" for issue in issues)
+
+    def test_errors_for_conflicting_vdw_state(self):
+        atoms = _feo_atoms()
+        ctx = build_calculation_context_from_request(
+            atoms,
+            {
+                "calculation": "scf",
+                "prefix": "feo",
+                "outdir": "./tmp",
+                "ecutwfc": 60.0,
+                "ecutrho": 480.0,
+                "occupations": "smearing",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [4, 4, 4],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 1,
+                "starting_magnetization": {},
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": False,
+                "hubbard_u": {},
+                "vdw_method": VdwMethod.D3_ZERO.value,
+                "vdw_state": {"vdw_corr": "grimme-d3", "input_dft": "vdW-DF"},
+            },
+            resolved_entries=_resolved_entries(),
+        )
+
+        issues = build_generation_validation_issues(atoms, ctx, requested_workflow="scf")
+
+        assert any(issue.code == "vdw_conflicting_state" and issue.level == "error" for issue in issues)
+
 
 class TestInputReproducibilityMetadata:
     def test_metadata_contains_expected_sections_and_override_flags(self):
         atoms = _feo_atoms()
-        default_ctx = make_default_context(atoms, resolved_entries=_resolved_entries(), apply_policy=False)
-        custom_ctx = dataclasses.replace(
-            default_ctx,
-            numerical=NumericalSettings(
-                ecutwfc=55.0,
-                ecutrho=420.0,
-                conv_thr=default_ctx.numerical.conv_thr,
-                mixing_beta=default_ctx.numerical.mixing_beta,
-            ),
-            physical=PhysicalOptions(
-                occupations="fixed",
-                smearing="gaussian",
-                degauss=0.01,
-                k_points_grid=[2, 2, 2],
-                nspin=2,
-                starting_magnetization={"Fe": 0.5},
-            ),
-            hubbard_u=HubbardUSettings(
-                enabled=True,
-                species_parameters={"Fe": HubbardUSpeciesParameter(species="Fe", u_ev=4.0)},
-            ),
-            vdw=VdwSettings(method=VdwMethod.D3_ZERO),
+        custom_ctx = build_calculation_context_from_request(
+            atoms,
+            {
+                "calculation": "scf",
+                "prefix": "FeO Project",
+                "outdir": "./tmp",
+                "ecutwfc": 55.0,
+                "ecutrho": 420.0,
+                "occupations": "fixed",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [2, 2, 2],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 2,
+                "starting_magnetization": {
+                    "Fe": {"species": "Fe", "value": 0.5, "source": "user_defined"},
+                },
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": True,
+                "hubbard_u": {
+                    "Fe": {"species": "Fe", "u_ev": 4.0, "source": "user_defined"},
+                },
+                "vdw_method": VdwMethod.D3_ZERO.value,
+            },
+            resolved_entries=_resolved_entries(),
         )
         issues = [
             ValidationIssue(
@@ -177,6 +256,7 @@ class TestInputReproducibilityMetadata:
             structure_signature={"hash": "abc123", "elements": ["Fe", "O"]},
             structure_mode="source",
             validation_issues=issues,
+            run_dir=Path("/tmp/qe_runs"),
             generator_info={
                 "name": "QE Studio",
                 "version_source": "git_sha",
@@ -190,19 +270,35 @@ class TestInputReproducibilityMetadata:
         assert metadata["timestamps"]["generated_at"] == "2026-04-13T00:00:00+00:00"
         assert metadata["generator"]["version"] == "deadbeef"
         assert metadata["structure"]["source_label"] == "FeO.cif"
+        assert metadata["control"]["requested_prefix"] == "FeO Project"
+        assert metadata["control"]["rendered_prefix"] == "feo_project"
+        assert metadata["control"]["rendered_outdir"] == "./tmp"
         assert metadata["pseudopotentials"]["settings"]["version"] == "1.3.0"
         assert metadata["pseudopotentials"]["per_species"][0]["family_version"] == "1.3.0"
         assert metadata["workflow"]["requested_workflow"] == "scf"
         assert metadata["workflow"]["rendered_calculation_type"] == "scf"
+        assert metadata["workflow"]["requested"]["workflow"] == "scf"
+        assert metadata["workflow"]["status"] == "rendered"
         assert metadata["cutoffs"]["selection_rule"]["source"] == "sssp_metadata"
         assert metadata["cutoffs"]["user_overridden"] is True
+        assert metadata["k_points"]["rule"]["method"] == "workflow_aware_reciprocal_spacing"
+        assert metadata["k_points"]["explanation"]
         assert metadata["k_points"]["user_overridden"] is True
+        assert metadata["occupations"]["reasons"] == []
+        assert metadata["occupations"]["rule"]["method"] == "structure_classification_defaults"
         assert metadata["occupations"]["user_overridden"] is True
         assert metadata["spin"]["nspin"] == 2
-        assert metadata["dftu"] == custom_ctx.hubbard_u.to_metadata(species_order=custom_ctx.species_order)
-        assert metadata["vdw"] == custom_ctx.vdw.to_metadata()
+        assert metadata["spin"]["requested"]["nspin"] == 2
+        assert metadata["soc"]["status"] == "rendered"
+        assert metadata["dftu"]["enabled"] is True
+        assert metadata["dftu"]["requested"]["enabled"] is True
+        assert metadata["vdw"]["method"] == VdwMethod.D3_ZERO.value
+        assert metadata["vdw"]["requested"]["method"] == VdwMethod.D3_ZERO.value
+        assert metadata["feature_states"]["control"]["status"] == "adjusted"
         assert metadata["validation"]["warning_count"] == 1
         assert metadata["validation"]["error_count"] == 0
+        assert len(metadata["validation"]["warnings"]) == 1
+        assert metadata["validation"]["errors"] == []
 
     def test_write_input_reproducibility_metadata_writes_json_file(self, tmp_path: Path):
         payload = {

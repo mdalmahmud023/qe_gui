@@ -57,6 +57,7 @@ from qe_studio.services.input_generator import (
     FALLBACK_ECUTRHO_RY,
     FALLBACK_ECUTWFC_RY,
     CalculationContext,
+    ControlSettings,
     Dimensionality,
     ElectronicCharacter,
     HubbardUSettings,
@@ -69,6 +70,7 @@ from qe_studio.services.input_generator import (
     VdwSettings,
     WorkflowType,
     apply_default_policy,
+    build_calculation_context_from_request,
     build_qe_input_namelist,
     classify_structure,
     clean_qe_input_text,
@@ -807,6 +809,22 @@ class TestBuildQEInputNamelist:
         result = build_qe_input_namelist(self._ctx("relax"))
         assert result["control"]["calculation"] == "relax"
 
+    def test_control_contains_prefix_and_outdir(self):
+        ctx = CalculationContext(
+            calculation="scf",
+            numerical=NumericalSettings(),
+            physical=PhysicalOptions(),
+            control=ControlSettings(
+                requested_prefix="Si Project",
+                prefix="si_project",
+                requested_outdir="./tmp",
+                outdir="./tmp",
+            ),
+        )
+        control = build_qe_input_namelist(ctx)["control"]
+        assert control["prefix"] == "si_project"
+        assert control["outdir"] == "./tmp"
+
     def test_nscf_no_ions_or_cell(self):
         result = build_qe_input_namelist(self._ctx("nscf"))
         assert "ions" not in result
@@ -1063,6 +1081,8 @@ class TestMakeDefaultContext:
         assert ctx.classification is not None
         assert isinstance(ctx.classification, StructureClassification)
         assert ctx.vdw.enabled is False
+        assert ctx.control.prefix == "si2"
+        assert ctx.control.outdir == "./tmp"
 
     def test_species_order_tracks_first_occurrence(self):
         atoms = Atoms(
@@ -1393,9 +1413,64 @@ class TestSpinPolarization:
         
         assert "nspin            = 2" in steps[0][1]
         assert "starting_magnetization" in steps[0][1]
+        assert "starting_magnetization(1)" in steps[0][1]
 
 
 class TestSpinOrbitCoupling:
+    def test_build_context_blocks_soc_when_collinear_spin_is_requested(self, tmp_path):
+        fe = _make_bulk_iron()
+        relativistic_upf = tmp_path / "Fe_fr.UPF"
+        relativistic_upf.write_text(
+            "<UPF><PP_HEADER has_so=\"T\" relativistic=\"full\" /></UPF>",
+            encoding="utf-8",
+        )
+
+        ctx = build_calculation_context_from_request(
+            fe,
+            {
+                "calculation": "scf",
+                "prefix": "fe",
+                "outdir": "./tmp",
+                "ecutwfc": 50.0,
+                "ecutrho": 400.0,
+                "occupations": "smearing",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [8, 8, 8],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 2,
+                "starting_magnetization": {
+                    "Fe": {"species": "Fe", "value": 0.5, "source": "user_defined"},
+                },
+                "noncolin": True,
+                "lspinorb": True,
+                "dftu_enabled": False,
+                "hubbard_u": {},
+                "vdw_method": VdwMethod.NONE.value,
+            },
+            resolved_entries={
+                "Fe": {
+                    "filename": relativistic_upf.name,
+                    "local_path": str(relativistic_upf),
+                    "cutoff_wfc": 50.0,
+                    "cutoff_rho": 400.0,
+                }
+            },
+        )
+
+        assert ctx.feature_states["soc"].status == "blocked"
+        assert any(reason.code == "soc_spin_conflict" for reason in ctx.feature_states["soc"].reasons)
+        with pytest.raises(ValueError, match="Spin-orbit coupling settings prevent QE input generation"):
+            generate_workflow_inputs(
+                fe,
+                ctx,
+                {"Fe": "Fe_fr.UPF"},
+                tmp_path,
+                workflow="scf",
+                run_dir=tmp_path,
+            )
+
     def test_generate_workflow_inputs_rejects_incompatible_soc_pseudos(self, tmp_path):
         si = _make_bulk_silicon()
         scalar_upf = tmp_path / "Si_scalar.UPF"
@@ -1421,6 +1496,81 @@ class TestSpinOrbitCoupling:
                 si,
                 ctx,
                 {"Si": "Si_scalar.UPF"},
+                tmp_path,
+                workflow="scf",
+                run_dir=tmp_path,
+            )
+
+
+class TestAdvancedFeatureResolution:
+    def test_build_context_skips_dftu_without_positive_u_values(self):
+        atoms = _make_fe2o3_bulk()
+        ctx = build_calculation_context_from_request(
+            atoms,
+            {
+                "calculation": "scf",
+                "prefix": "fe2o3",
+                "outdir": "./tmp",
+                "ecutwfc": 60.0,
+                "ecutrho": 480.0,
+                "occupations": "smearing",
+                "smearing": "gaussian",
+                "degauss": 0.01,
+                "k_points_grid": [4, 4, 4],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 1,
+                "starting_magnetization": {},
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": True,
+                "hubbard_u": {
+                    "Fe": {"species": "Fe", "u_ev": 0.0, "source": "user_defined"},
+                },
+                "vdw_method": VdwMethod.NONE.value,
+            },
+            resolved_entries={"Fe": {"cutoff_wfc": 60.0, "cutoff_rho": 480.0}},
+        )
+
+        assert ctx.hubbard_u.enabled is False
+        assert ctx.feature_states["dftu"].status == "skipped"
+        assert any(reason.code == "dftu_missing_positive_u" for reason in ctx.feature_states["dftu"].reasons)
+        assert "lda_plus_u" not in build_qe_input_namelist(ctx)["system"]
+
+    def test_generate_workflow_inputs_rejects_conflicting_vdw_state(self, tmp_path):
+        si = _make_bulk_silicon()
+        ctx = build_calculation_context_from_request(
+            si,
+            {
+                "calculation": "scf",
+                "prefix": "si",
+                "outdir": "./tmp",
+                "ecutwfc": 40.0,
+                "ecutrho": 160.0,
+                "occupations": "fixed",
+                "smearing": "gaussian",
+                "degauss": 0.0,
+                "k_points_grid": [4, 4, 4],
+                "conv_thr": 1.0e-6,
+                "mixing_beta": 0.7,
+                "nspin": 1,
+                "starting_magnetization": {},
+                "noncolin": False,
+                "lspinorb": False,
+                "dftu_enabled": False,
+                "hubbard_u": {},
+                "vdw_method": VdwMethod.D3_ZERO.value,
+                "vdw_state": {"vdw_corr": "grimme-d3", "input_dft": "vdW-DF2"},
+            },
+        )
+
+        assert ctx.feature_states["vdw"].status == "blocked"
+        assert any(reason.code == "vdw_conflicting_state" for reason in ctx.feature_states["vdw"].reasons)
+        with pytest.raises(ValueError, match="conflicting vdW settings"):
+            generate_workflow_inputs(
+                si,
+                ctx,
+                {"Si": "Si.upf"},
                 tmp_path,
                 workflow="scf",
                 run_dir=tmp_path,

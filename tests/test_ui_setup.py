@@ -1,6 +1,7 @@
 import unittest
-from types import SimpleNamespace
-from unittest import mock
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from ase import Atoms
 import streamlit as st
@@ -33,15 +34,17 @@ class UISetupHelperTests(unittest.TestCase):
         self.assertEqual(st.session_state["pseudo_widget_version"], "1.3.0")
         self.assertTrue(st.session_state["pseudo_widget_fully_relativistic"])
 
-    def test_sanitize_saved_qe_parameters_disables_empty_dftu_selection(self) -> None:
+    def test_sanitize_saved_qe_parameters_keeps_requested_empty_dftu_selection(self) -> None:
+        atoms = Atoms("FeO", positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]], cell=[4.3, 4.3, 4.3], pbc=True)
         sanitized = ui_setup._sanitize_saved_qe_parameters(
             {
                 "dftu_enabled": True,
                 "hubbard_u": {},
-            }
+            },
+            atoms=atoms,
         )
 
-        self.assertFalse(sanitized["dftu_enabled"])
+        self.assertTrue(sanitized["dftu_enabled"])
         self.assertEqual(sanitized["hubbard_u"], {})
 
     def test_sanitize_saved_qe_parameters_normalizes_invalid_vdw_method(self) -> None:
@@ -49,7 +52,8 @@ class UISetupHelperTests(unittest.TestCase):
 
         self.assertEqual(sanitized["vdw_method"], VdwMethod.NONE.value)
 
-    def test_sanitize_saved_qe_parameters_drops_invalid_u_values(self) -> None:
+    def test_sanitize_saved_qe_parameters_preserves_zero_u_values_for_requested_state(self) -> None:
+        atoms = Atoms("AuO", positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]], cell=[4.3, 4.3, 4.3], pbc=True)
         sanitized = ui_setup._sanitize_saved_qe_parameters(
             {
                 "dftu_enabled": True,
@@ -57,58 +61,69 @@ class UISetupHelperTests(unittest.TestCase):
                     "Au": {"species": "Au", "u_ev": 0.0},
                     "O": {"species": "O", "u_ev": 4.5},
                 },
-            }
+            },
+            atoms=atoms,
         )
 
         self.assertTrue(sanitized["dftu_enabled"])
-        self.assertEqual(list(sanitized["hubbard_u"]), ["O"])
+        self.assertEqual(set(sanitized["hubbard_u"]), {"Au", "O"})
+        self.assertEqual(sanitized["hubbard_u"]["Au"]["u_ev"], 0.0)
         self.assertEqual(sanitized["hubbard_u"]["O"]["u_ev"], 4.5)
 
-    def test_sanitize_saved_qe_parameters_disables_incompatible_soc(self) -> None:
-        with mock.patch(
-            "qe_studio.pages.ui_setup.inspect_soc_compatibility",
-            return_value=SimpleNamespace(all_compatible=False),
-        ):
-            sanitized = ui_setup._sanitize_saved_qe_parameters(
-                {
-                    "noncolin": True,
-                    "lspinorb": True,
+    def test_sanitize_saved_qe_parameters_preserves_requested_soc(self) -> None:
+        sanitized = ui_setup._sanitize_saved_qe_parameters(
+            {
+                "noncolin": True,
+                "lspinorb": True,
+            },
+        )
+
+        self.assertTrue(sanitized["noncolin"])
+        self.assertTrue(sanitized["lspinorb"])
+
+    def test_sanitize_saved_qe_parameters_recomputes_auto_control_defaults(self) -> None:
+        atoms = Atoms("Fe2", positions=[[0.0, 0.0, 0.0], [1.4, 1.4, 1.4]], cell=[4.3, 4.3, 4.3], pbc=True)
+        sanitized = ui_setup._sanitize_saved_qe_parameters(
+            {
+                "prefix": "old_prefix",
+                "prefix_source": "auto",
+                "outdir": ".",
+                "outdir_source": "auto",
+            },
+            atoms=atoms,
+        )
+
+        self.assertEqual(sanitized["prefix"], "fe2")
+        self.assertEqual(sanitized["outdir"], "./tmp")
+
+    def test_sanitize_saved_qe_parameters_prunes_removed_species_settings(self) -> None:
+        atoms = Atoms("Fe", positions=[[0.0, 0.0, 0.0]], cell=[4.3, 4.3, 4.3], pbc=True)
+        sanitized = ui_setup._sanitize_saved_qe_parameters(
+            {
+                "spin_source": "user",
+                "starting_magnetization": {
+                    "Fe": {"species": "Fe", "value": 0.8, "source": "user_defined"},
+                    "O": {"species": "O", "value": 0.1, "source": "user_defined"},
                 },
-                resolved_entries={"Au": {"filename": "Au.upf"}},
-            )
+                "dftu_enabled": True,
+                "hubbard_u": {
+                    "Fe": {"species": "Fe", "u_ev": 4.0, "source": "user_defined"},
+                    "O": {"species": "O", "u_ev": 3.0, "source": "user_defined"},
+                },
+            },
+            atoms=atoms,
+        )
 
-        self.assertFalse(sanitized["noncolin"])
-        self.assertFalse(sanitized["lspinorb"])
+        self.assertEqual(set(sanitized["starting_magnetization"]), {"Fe"})
+        self.assertEqual(set(sanitized["hubbard_u"]), {"Fe"})
+        self.assertTrue(sanitized["spin_state_pruned"])
+        self.assertTrue(sanitized["hubbard_u_pruned"])
 
-    def test_validate_qe_submission_parameters_rejects_empty_dftu_selection(self) -> None:
+    def test_validate_qe_submission_parameters_accepts_empty_dftu_selection(self) -> None:
         message = ui_setup._validate_qe_submission_parameters(
             {
                 "dftu_enabled": True,
                 "hubbard_u": {},
-            }
-        )
-
-        self.assertIn("no Hubbard U species", message or "")
-
-    def test_validate_qe_submission_parameters_rejects_nonpositive_u(self) -> None:
-        message = ui_setup._validate_qe_submission_parameters(
-            {
-                "dftu_enabled": True,
-                "hubbard_u": {
-                    "Au": {"species": "Au", "u_ev": 0.0},
-                },
-            }
-        )
-
-        self.assertIn("greater than 0 eV", message or "")
-
-    def test_validate_qe_submission_parameters_accepts_positive_u(self) -> None:
-        message = ui_setup._validate_qe_submission_parameters(
-            {
-                "dftu_enabled": True,
-                "hubbard_u": {
-                    "Au": {"species": "Au", "u_ev": 3.2},
-                },
             }
         )
 
@@ -135,7 +150,7 @@ class UISetupHelperTests(unittest.TestCase):
 
         self.assertEqual(settings.normalized_method, VdwMethod.D3_ZERO)
 
-    def test_build_generation_context_from_parameters_attaches_reproducibility_fields(self) -> None:
+    def test_build_generation_context_from_parameters_attaches_control_and_feature_states(self) -> None:
         atoms = Atoms(
             "FeO",
             positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]],
@@ -146,6 +161,8 @@ class UISetupHelperTests(unittest.TestCase):
             atoms,
             {
                 "calculation": "scf",
+                "prefix": "FeO Project!",
+                "outdir": "./tmp",
                 "ecutwfc": 60.0,
                 "ecutrho": 480.0,
                 "occupations": "smearing",
@@ -155,7 +172,9 @@ class UISetupHelperTests(unittest.TestCase):
                 "conv_thr": 1.0e-6,
                 "mixing_beta": 0.7,
                 "nspin": 2,
-                "starting_magnetization": {"Fe": 0.5},
+                "starting_magnetization": {
+                    "Fe": {"species": "Fe", "value": 0.5, "source": "user_defined"},
+                },
                 "noncolin": False,
                 "lspinorb": False,
                 "dftu_enabled": True,
@@ -176,7 +195,180 @@ class UISetupHelperTests(unittest.TestCase):
         self.assertEqual(context.species_order, ("Fe", "O"))
         self.assertTrue(context.hubbard_u.enabled)
         self.assertEqual(context.vdw.normalized_method, VdwMethod.D3_ZERO)
-        self.assertIn("Fe", context.resolved_entries)
+        self.assertEqual(context.control.prefix, "feo_project")
+        self.assertEqual(context.control.outdir, "./tmp")
+        self.assertEqual(context.feature_states["control"].status, "adjusted")
+        self.assertIn("sanitized_prefix", [reason.code for reason in context.feature_states["control"].reasons])
+
+    def test_generate_and_persist_qe_input_blocked_attempt_does_not_overwrite_existing_files(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.4, 5.4, 5.4], pbc=True)
+
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            existing_pw = run_dir / "pw.in"
+            existing_internal = run_dir / "espresso.pwi"
+            existing_metadata = run_dir / "qe_input_metadata.json"
+            existing_pw.write_text("old pw input\n", encoding="utf-8")
+            existing_internal.write_text("old internal input\n", encoding="utf-8")
+            existing_metadata.write_text('{"old": true}\n', encoding="utf-8")
+
+            result = ui_setup._generate_and_persist_qe_input(
+                atoms,
+                {
+                    "calculation": "scf",
+                    "prefix": "si",
+                    "outdir": "./tmp",
+                    "ecutwfc": 40.0,
+                    "ecutrho": 160.0,
+                    "occupations": "fixed",
+                    "smearing": "gaussian",
+                    "degauss": 0.0,
+                    "k_points_grid": [4, 4, 4],
+                    "conv_thr": 1.0e-6,
+                    "mixing_beta": 0.7,
+                    "nspin": 1,
+                    "starting_magnetization": {},
+                    "noncolin": True,
+                    "lspinorb": True,
+                    "dftu_enabled": False,
+                    "hubbard_u": {},
+                    "vdw_method": VdwMethod.NONE.value,
+                },
+                {"Si": "Si.UPF"},
+                str(run_dir),
+                run_dir=run_dir,
+                current_pseudo_settings={
+                    "functional": "PBE",
+                    "mode": "efficiency",
+                    "version": "1.3.0",
+                    "fully_relativistic": False,
+                },
+                resolved_entries=None,
+                source_metadata={"source_kind": "manual"},
+                structure_signature={"hash": "abc"},
+            )
+
+            self.assertFalse(result.success)
+            self.assertTrue(any(issue.level == "error" for issue in result.validation_issues))
+            self.assertEqual(existing_pw.read_text(encoding="utf-8"), "old pw input\n")
+            self.assertEqual(existing_internal.read_text(encoding="utf-8"), "old internal input\n")
+            self.assertEqual(existing_metadata.read_text(encoding="utf-8"), '{"old": true}\n')
+
+    def test_generate_and_persist_qe_input_success_writes_sanitized_control_and_metadata(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.4, 5.4, 5.4], pbc=True)
+
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            pseudo_dir = run_dir / "pseudos"
+            pseudo_dir.mkdir()
+
+            result = ui_setup._generate_and_persist_qe_input(
+                atoms,
+                {
+                    "calculation": "scf",
+                    "prefix": "Si Project With Spaces",
+                    "outdir": "./tmp",
+                    "ecutwfc": 40.0,
+                    "ecutrho": 160.0,
+                    "occupations": "fixed",
+                    "smearing": "gaussian",
+                    "degauss": 0.0,
+                    "k_points_grid": [4, 4, 4],
+                    "conv_thr": 1.0e-6,
+                    "mixing_beta": 0.7,
+                    "nspin": 1,
+                    "starting_magnetization": {},
+                    "noncolin": False,
+                    "lspinorb": False,
+                    "dftu_enabled": False,
+                    "hubbard_u": {},
+                    "vdw_method": VdwMethod.NONE.value,
+                },
+                {"Si": "Si.UPF"},
+                str(pseudo_dir),
+                run_dir=run_dir,
+                current_pseudo_settings={
+                    "functional": "PBE",
+                    "mode": "efficiency",
+                    "version": "1.3.0",
+                    "fully_relativistic": False,
+                },
+                resolved_entries={"Si": {"filename": "Si.UPF", "cutoff_wfc": 40.0, "cutoff_rho": 160.0}},
+                source_metadata={"source_kind": "manual"},
+                structure_signature={"hash": "si-success"},
+            )
+
+            self.assertTrue(result.success)
+            self.assertIsNotNone(result.ui_path)
+            self.assertIsNotNone(result.metadata_path)
+            assert result.ui_path is not None
+            assert result.metadata_path is not None
+            rendered_text = result.ui_path.read_text(encoding="utf-8")
+            metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+
+            self.assertIn("prefix = 'si_project_with_spaces'", rendered_text)
+            self.assertIn("outdir = './tmp'", rendered_text)
+            self.assertEqual(metadata["control"]["requested_prefix"], "Si Project With Spaces")
+            self.assertEqual(metadata["control"]["rendered_prefix"], "si_project_with_spaces")
+            self.assertEqual(metadata["control"]["rendered_outdir"], "./tmp")
+            self.assertEqual(Path(metadata["control"]["resolved_outdir"]), run_dir / "tmp")
+
+    def test_generate_and_persist_qe_input_blocked_vdw_conflict_keeps_existing_preview_and_files(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.4, 5.4, 5.4], pbc=True)
+
+        with TemporaryDirectory() as tmp_dir:
+            run_dir = Path(tmp_dir)
+            existing_pw = run_dir / "pw.in"
+            existing_internal = run_dir / "espresso.pwi"
+            existing_metadata = run_dir / "qe_input_metadata.json"
+            existing_pw.write_text("old pw input\n", encoding="utf-8")
+            existing_internal.write_text("old internal input\n", encoding="utf-8")
+            existing_metadata.write_text('{"old": true}\n', encoding="utf-8")
+            st.session_state[ui_setup.QE_INPUT_TEXT_STATE_KEY] = "existing preview"
+
+            result = ui_setup._generate_and_persist_qe_input(
+                atoms,
+                {
+                    "calculation": "scf",
+                    "prefix": "si",
+                    "outdir": "./tmp",
+                    "ecutwfc": 40.0,
+                    "ecutrho": 160.0,
+                    "occupations": "fixed",
+                    "smearing": "gaussian",
+                    "degauss": 0.0,
+                    "k_points_grid": [4, 4, 4],
+                    "conv_thr": 1.0e-6,
+                    "mixing_beta": 0.7,
+                    "nspin": 1,
+                    "starting_magnetization": {},
+                    "noncolin": False,
+                    "lspinorb": False,
+                    "dftu_enabled": False,
+                    "hubbard_u": {},
+                    "vdw_method": VdwMethod.D3_ZERO.value,
+                    "vdw_state": {"vdw_corr": "grimme-d3", "input_dft": "vdW-DF2"},
+                },
+                {"Si": "Si.UPF"},
+                str(run_dir),
+                run_dir=run_dir,
+                current_pseudo_settings={
+                    "functional": "PBE",
+                    "mode": "efficiency",
+                    "version": "1.3.0",
+                    "fully_relativistic": False,
+                },
+                resolved_entries={"Si": {"filename": "Si.UPF", "cutoff_wfc": 40.0, "cutoff_rho": 160.0}},
+                source_metadata={"source_kind": "manual"},
+                structure_signature={"hash": "si-vdw-conflict"},
+            )
+
+            self.assertFalse(result.success)
+            self.assertTrue(any(issue.code == "vdw_conflicting_state" for issue in result.validation_issues))
+            self.assertEqual(existing_pw.read_text(encoding="utf-8"), "old pw input\n")
+            self.assertEqual(existing_internal.read_text(encoding="utf-8"), "old internal input\n")
+            self.assertEqual(existing_metadata.read_text(encoding="utf-8"), '{"old": true}\n')
+            self.assertEqual(st.session_state[ui_setup.QE_INPUT_TEXT_STATE_KEY], "existing preview")
 
 
 if __name__ == "__main__":

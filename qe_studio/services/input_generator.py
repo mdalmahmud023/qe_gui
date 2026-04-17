@@ -34,6 +34,9 @@ Data models:
     ElectronicCharacter      Enum  — metal / insulator / unknown
     MagneticCharacter        Enum  — magnetic / nonmagnetic / unknown
     VdwMethod                Enum  — curated van der Waals correction options
+    ControlSettings          dataclass — QE CONTROL prefix/outdir settings
+    FeatureReason            dataclass — stable code + human-readable explanation
+    FeatureState             dataclass — requested/rendered feature metadata
     StructureClassification  dataclass — output of classify_structure()
     NumericalSettings        dataclass — convergence / mixing knobs
     PhysicalOptions          dataclass — smearing, magnetism, etc.
@@ -86,7 +89,16 @@ from .cutoff_presets import (
     CutoffDecision,
     CutoffPreset,
 )
-from .pseudopotentials import ensure_soc_compatible_pseudopotentials
+from .pseudopotentials import ensure_soc_compatible_pseudopotentials, inspect_soc_compatibility
+from .qe_control import (
+    DEFAULT_OUTDIR,
+    DEFAULT_PREFIX_FALLBACK,
+    default_qe_prefix,
+    describe_qe_prefix_sanitization,
+    normalize_qe_outdir,
+    resolve_qe_outdir,
+    sanitize_qe_prefix,
+)
 
 # ASE types are used for type hints only; the actual import is deferred to the
 # caller so that tests without ASE can still import the data models.
@@ -162,6 +174,7 @@ DEFAULT_KPOINT_SPACING_SCF: float = 0.15
 DEFAULT_KPOINT_SPACING_DOS: float = 0.05
 
 ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS: frozenset[str] = frozenset({"crystal", "angstrom"})
+FEATURE_STATE_STATUSES: frozenset[str] = frozenset({"rendered", "adjusted", "skipped", "blocked"})
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +268,87 @@ class StructureClassification:
     periodic_directions: tuple[bool, bool, bool]
     vacuum_directions: tuple[int, ...]
     notes: list[str]
+
+
+@dataclass(frozen=True)
+class ControlSettings:
+    """QE CONTROL settings tracked separately from physics options."""
+
+    requested_prefix: str = DEFAULT_PREFIX_FALLBACK
+    prefix: str = DEFAULT_PREFIX_FALLBACK
+    requested_outdir: str = DEFAULT_OUTDIR
+    outdir: str = DEFAULT_OUTDIR
+
+    def validate(self) -> None:
+        if not self.prefix or not self.prefix.strip():
+            raise ValueError("Rendered QE prefix must be non-empty")
+        if self.prefix != sanitize_qe_prefix(self.prefix):
+            raise ValueError(f"Rendered QE prefix must already be sanitized, got {self.prefix!r}")
+        if not self.outdir or not self.outdir.strip():
+            raise ValueError("Rendered QE outdir must be non-empty")
+
+    def resolve_outdir(self, run_dir: Path | str) -> Path:
+        """Resolve the rendered outdir against one run directory."""
+        return resolve_qe_outdir(run_dir, self.outdir)
+
+    def to_metadata(self, *, run_dir: Path | str) -> dict[str, Any]:
+        """Return a stable metadata payload for CONTROL settings."""
+        return {
+            "requested_prefix": self.requested_prefix,
+            "rendered_prefix": self.prefix,
+            "requested_outdir": self.requested_outdir,
+            "rendered_outdir": self.outdir,
+            "resolved_outdir": str(self.resolve_outdir(run_dir)),
+        }
+
+
+@dataclass(frozen=True)
+class FeatureReason:
+    """Stable machine-readable reason metadata for rendered feature states."""
+
+    code: str
+    message: str
+
+    def validate(self) -> None:
+        if not self.code or not self.code.strip():
+            raise ValueError("FeatureReason.code must be non-empty")
+        if not self.message or not self.message.strip():
+            raise ValueError("FeatureReason.message must be non-empty")
+
+    def to_metadata(self) -> dict[str, str]:
+        """Return a stable JSON-friendly representation."""
+        return {
+            "code": self.code,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class FeatureState:
+    """Requested versus rendered state for one user-visible feature."""
+
+    requested: dict[str, Any]
+    rendered: dict[str, Any]
+    status: str = "rendered"
+    reasons: tuple[FeatureReason, ...] = ()
+
+    def validate(self) -> None:
+        if self.status not in FEATURE_STATE_STATUSES:
+            raise ValueError(
+                f"FeatureState.status must be one of {sorted(FEATURE_STATE_STATUSES)}, got {self.status!r}"
+            )
+        for reason in self.reasons:
+            reason.validate()
+
+    def to_metadata(self) -> dict[str, Any]:
+        """Return a stable JSON-friendly representation."""
+        self.validate()
+        return {
+            "requested": dict(self.requested),
+            "rendered": dict(self.rendered),
+            "status": self.status,
+            "reasons": [reason.to_metadata() for reason in self.reasons],
+        }
 
 
 @dataclass
@@ -619,6 +713,11 @@ class CalculationContext:
     vdw:
         van der Waals correction settings. Semiempirical methods render via
         ``vdw_corr`` while curated nonlocal presets render via ``input_dft``.
+    control:
+        QE CONTROL prefix / outdir settings used consistently across generation
+        and downstream metadata/discovery.
+    feature_states:
+        Prepared requested-versus-rendered metadata for user-visible features.
     atomic_positions_coordinate_mode:
         Coordinate system used when serializing the QE ``ATOMIC_POSITIONS``
         card. Supported values are ``"crystal"`` and ``"angstrom"``.
@@ -633,6 +732,8 @@ class CalculationContext:
     species_order: tuple[str, ...] | None = None
     hubbard_u: HubbardUSettings = field(default_factory=HubbardUSettings)
     vdw: VdwSettings = field(default_factory=VdwSettings)
+    control: ControlSettings = field(default_factory=ControlSettings)
+    feature_states: dict[str, FeatureState] = field(default_factory=dict)
     atomic_positions_coordinate_mode: str = "crystal"
 
     def validate(self) -> None:
@@ -645,10 +746,17 @@ class CalculationContext:
             )
         self.numerical.validate()
         self.physical.validate()
+        self.control.validate()
+        if self.physical.nspin == 2 and self.physical.starting_magnetization and not self.species_order:
+            raise ValueError(
+                "Spin-polarized starting_magnetization rendering requires species_order when values are present"
+            )
         if self.hubbard_u.enabled and not self.species_order:
             raise ValueError("DFT+U rendering requires species_order when Hubbard U is enabled")
         self.hubbard_u.validate(self.species_order)
         self.vdw.validate()
+        for feature_state in self.feature_states.values():
+            feature_state.validate()
         if self.atomic_positions_coordinate_mode not in ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS:
             raise ValueError(
                 "atomic_positions_coordinate_mode must be one of "
@@ -1165,6 +1273,372 @@ def apply_default_policy(
     return numerical, physical
 
 
+def build_control_settings(
+    atoms: "Atoms" | None,
+    *,
+    requested_prefix: object = None,
+    requested_outdir: object = None,
+) -> tuple[ControlSettings, tuple[FeatureReason, ...]]:
+    """Build rendered CONTROL settings plus stable reason metadata."""
+    reasons: list[FeatureReason] = []
+
+    if requested_prefix is None or not str(requested_prefix).strip():
+        requested_prefix_text = default_qe_prefix(atoms)
+        reasons.append(
+            FeatureReason(
+                code="auto_default_applied",
+                message="Applied the default structure-derived QE prefix.",
+            )
+        )
+    else:
+        requested_prefix_text = str(requested_prefix).strip()
+
+    prefix_info = describe_qe_prefix_sanitization(requested_prefix_text)
+    if prefix_info["sanitized"]:
+        reasons.append(
+            FeatureReason(
+                code="sanitized_prefix",
+                message="Sanitized the requested QE prefix to a lowercase ASCII-safe value.",
+            )
+        )
+    if prefix_info["truncated"]:
+        reasons.append(
+            FeatureReason(
+                code="prefix_truncated",
+                message="Truncated the sanitized QE prefix to the supported maximum length.",
+            )
+        )
+
+    if requested_outdir is None or not str(requested_outdir).strip():
+        requested_outdir_text = DEFAULT_OUTDIR
+        reasons.append(
+            FeatureReason(
+                code="auto_default_applied",
+                message="Applied the default QE scratch outdir.",
+            )
+        )
+    else:
+        requested_outdir_text = str(requested_outdir).strip()
+
+    return (
+        ControlSettings(
+            requested_prefix=requested_prefix_text,
+            prefix=str(prefix_info["rendered"]),
+            requested_outdir=requested_outdir_text,
+            outdir=normalize_qe_outdir(requested_outdir_text, default=DEFAULT_OUTDIR),
+        ),
+        tuple(reasons),
+    )
+
+
+def build_calculation_context_from_request(
+    atoms: "Atoms",
+    request: dict[str, Any],
+    *,
+    resolved_entries: dict[str, dict[str, Any]] | None = None,
+    atomic_positions_coordinate_mode: str = "crystal",
+) -> CalculationContext:
+    """Build a fully typed generation context from a flat request dictionary."""
+    classification = classify_structure(atoms)
+    cutoff_decision = select_cutoffs(resolved_entries or {})
+    species_order = get_atomic_species_order(atoms)
+    known_species = set(species_order)
+
+    numerical = NumericalSettings(
+        ecutwfc=float(request["ecutwfc"]),
+        ecutrho=float(request["ecutrho"]),
+        conv_thr=float(request.get("conv_thr", 1.0e-6)),
+        mixing_beta=float(request.get("mixing_beta", 0.7)),
+    )
+
+    requested_calc = str(request.get("calculation", "scf"))
+    rendered_calc = requested_calc
+    workflow_reasons: list[FeatureReason] = []
+    if requested_calc in {"dos", "bands"}:
+        rendered_calc = "scf"
+        workflow_reasons.append(
+            FeatureReason(
+                code="auto_default_applied",
+                message="Mapped the workflow request onto the base pw.x calculation used for input generation.",
+            )
+        )
+
+    control, control_reasons = build_control_settings(
+        atoms,
+        requested_prefix=request.get("prefix"),
+        requested_outdir=request.get("outdir"),
+    )
+
+    requested_magnetization_payload = _normalize_requested_starting_magnetization(
+        request.get("starting_magnetization") or {}
+    )
+    requested_magnetization = {
+        species: float(payload["value"])
+        for species, payload in requested_magnetization_payload.items()
+    }
+    rendered_magnetization: dict[str, float] = {}
+    spin_reasons: list[FeatureReason] = []
+    stale_magnetization_species = sorted(set(requested_magnetization_payload) - known_species)
+    if stale_magnetization_species:
+        spin_reasons.append(
+            FeatureReason(
+                code="stale_species_settings_pruned",
+                message=(
+                    "Pruned species-dependent magnetic settings for species that are no longer present: "
+                    f"{', '.join(stale_magnetization_species)}."
+                ),
+            )
+        )
+    for species in species_order:
+        if species in requested_magnetization:
+            rendered_magnetization[species] = requested_magnetization[species]
+
+    requested_nspin = 2 if int(request.get("nspin", 1)) == 2 else 1
+    requested_soc_enabled = bool(request.get("noncolin", False) or request.get("lspinorb", False))
+    soc_report = inspect_soc_compatibility(resolved_entries or {}) if requested_soc_enabled and resolved_entries else None
+    soc_reasons: list[FeatureReason] = []
+    rendered_noncolin = False
+    rendered_lspinorb = False
+    rendered_nspin = requested_nspin
+    if requested_soc_enabled:
+        if requested_nspin == 2 or bool(rendered_magnetization):
+            soc_reasons.append(
+                FeatureReason(
+                    code="soc_spin_conflict",
+                    message="Spin-orbit coupling cannot be rendered together with collinear spin polarization or starting magnetization in this phase.",
+                )
+            )
+        if not resolved_entries:
+            soc_reasons.append(
+                FeatureReason(
+                    code="soc_incompatible_pseudos",
+                    message="Spin-orbit coupling requires resolved pseudopotential metadata with local UPF paths.",
+                )
+            )
+        elif soc_report is not None and not soc_report.all_compatible:
+            soc_reasons.append(
+                FeatureReason(
+                    code="soc_incompatible_pseudos",
+                    message=soc_report.message,
+                )
+            )
+
+        if not soc_reasons:
+            rendered_noncolin = True
+            rendered_lspinorb = True
+            rendered_nspin = 1
+            rendered_magnetization = {}
+
+    if rendered_nspin != 2:
+        rendered_magnetization = {}
+
+    requested_hubbard_payload = _normalize_requested_hubbard_u(
+        request.get("hubbard_u") or {}
+    )
+    dftu_reasons: list[FeatureReason] = []
+    rendered_hubbard_parameters: dict[str, HubbardUSpeciesParameter] = {}
+    stale_hubbard_species = sorted(set(requested_hubbard_payload) - known_species)
+    if stale_hubbard_species:
+        dftu_reasons.append(
+            FeatureReason(
+                code="stale_species_settings_pruned",
+                message=(
+                    "Pruned species-dependent Hubbard U settings for species that are no longer present: "
+                    f"{', '.join(stale_hubbard_species)}."
+                ),
+            )
+        )
+    ignored_nonpositive_hubbard_species: list[str] = []
+    for species in species_order:
+        payload = requested_hubbard_payload.get(species)
+        if payload is None:
+            continue
+        u_ev = float(payload["u_ev"])
+        if u_ev > 0.0:
+            rendered_hubbard_parameters[species] = HubbardUSpeciesParameter(
+                species=species,
+                u_ev=u_ev,
+                source=str(payload["source"]),
+            )
+        else:
+            ignored_nonpositive_hubbard_species.append(species)
+    requested_dftu_enabled = bool(request.get("dftu_enabled", False))
+    if ignored_nonpositive_hubbard_species and requested_dftu_enabled:
+        dftu_reasons.append(
+            FeatureReason(
+                code="dftu_missing_positive_u",
+                message=(
+                    "Ignored non-positive Hubbard U values for: "
+                    f"{', '.join(ignored_nonpositive_hubbard_species)}."
+                ),
+            )
+        )
+    rendered_hubbard_u = HubbardUSettings(
+        enabled=requested_dftu_enabled and bool(rendered_hubbard_parameters),
+        species_parameters=rendered_hubbard_parameters if requested_dftu_enabled else {},
+    )
+    if requested_dftu_enabled and not rendered_hubbard_parameters:
+        dftu_reasons.append(
+            FeatureReason(
+                code="dftu_missing_positive_u",
+                message="DFT+U was requested, but no valid positive Hubbard U values remain after validation.",
+            )
+        )
+
+    requested_vdw_method = request.get("vdw_method", VdwMethod.NONE.value)
+    vdw_reasons: list[FeatureReason] = []
+    vdw_conflict = _has_conflicting_vdw_state(request)
+    if vdw_conflict:
+        rendered_vdw = VdwSettings(method=VdwMethod.NONE)
+        vdw_reasons.append(
+            FeatureReason(
+                code="vdw_conflicting_state",
+                message="Stale or conflicting vdW state was detected and prevented rendering a vdW correction.",
+            )
+        )
+    else:
+        try:
+            rendered_vdw = VdwSettings(
+                method=(
+                    requested_vdw_method
+                    if isinstance(requested_vdw_method, VdwMethod)
+                    else VdwMethod(str(requested_vdw_method))
+                )
+            )
+        except ValueError:
+            rendered_vdw = VdwSettings(method=VdwMethod.NONE)
+            vdw_reasons.append(
+                FeatureReason(
+                    code="vdw_conflicting_state",
+                    message="The saved vdW state is not supported by the current curated vdW selector.",
+                )
+            )
+
+    physical = PhysicalOptions(
+        occupations=str(request["occupations"]),
+        smearing=str(request["smearing"]),
+        degauss=float(request["degauss"]),
+        k_points_grid=[int(value) for value in request["k_points_grid"]],
+        nspin=rendered_nspin,
+        starting_magnetization=rendered_magnetization,
+        noncolin=rendered_noncolin,
+        lspinorb=rendered_lspinorb,
+    )
+
+    soc_requested_state = {
+        "enabled": requested_soc_enabled,
+        "noncolin": bool(request.get("noncolin", False)),
+        "lspinorb": bool(request.get("lspinorb", False)),
+    }
+    soc_rendered_state = {
+        "enabled": bool(rendered_noncolin or rendered_lspinorb),
+        "noncolin": rendered_noncolin,
+        "lspinorb": rendered_lspinorb,
+        "compatibility": {
+            "checked": bool(requested_soc_enabled),
+            "all_compatible": bool(soc_report.all_compatible) if soc_report is not None else False,
+            "records": [
+                {
+                    "element": record.element,
+                    "filename": record.filename,
+                    "compatible": record.compatible,
+                    "reason": record.reason,
+                }
+                for record in soc_report.records
+            ]
+            if soc_report is not None
+            else [],
+        },
+    }
+
+    feature_states = {
+        "control": FeatureState(
+            requested={
+                "prefix": control.requested_prefix,
+                "outdir": control.requested_outdir,
+            },
+            rendered={
+                "prefix": control.prefix,
+                "outdir": control.outdir,
+            },
+            status="adjusted" if control_reasons else "rendered",
+            reasons=control_reasons,
+        ),
+        "workflow": FeatureState(
+            requested={"workflow": requested_calc},
+            rendered={"workflow": rendered_calc},
+            status="adjusted" if workflow_reasons else "rendered",
+            reasons=tuple(workflow_reasons),
+        ),
+        "spin": FeatureState(
+            requested={
+                "nspin": requested_nspin,
+                "starting_magnetization": {
+                    species: dict(payload)
+                    for species, payload in requested_magnetization_payload.items()
+                },
+            },
+            rendered={
+                "nspin": rendered_nspin,
+                "starting_magnetization": dict(rendered_magnetization),
+            },
+            status="adjusted" if spin_reasons else "rendered",
+            reasons=tuple(spin_reasons),
+        ),
+        "soc": FeatureState(
+            requested=soc_requested_state,
+            rendered=soc_rendered_state,
+            status="blocked" if soc_reasons else "rendered",
+            reasons=tuple(soc_reasons),
+        ),
+        "dftu": FeatureState(
+            requested={
+                "enabled": requested_dftu_enabled,
+                "species_parameters": {
+                    species: dict(payload)
+                    for species, payload in requested_hubbard_payload.items()
+                },
+            },
+            rendered=rendered_hubbard_u.to_metadata(species_order=species_order),
+            status=(
+                "skipped"
+                if requested_dftu_enabled and not rendered_hubbard_u.enabled
+                else "adjusted" if dftu_reasons else "rendered"
+            ),
+            reasons=tuple(dftu_reasons),
+        ),
+        "vdw": FeatureState(
+            requested={
+                "method": str(requested_vdw_method),
+                "enabled": str(requested_vdw_method) != VdwMethod.NONE.value,
+            },
+            rendered={
+                "method": rendered_vdw.normalized_method.value,
+                "enabled": rendered_vdw.enabled,
+                "backend": rendered_vdw.backend,
+                "rendered_system_fields": render_vdw_system_fields(rendered_vdw),
+            },
+            status="blocked" if vdw_reasons else "rendered",
+            reasons=tuple(vdw_reasons),
+        ),
+    }
+
+    return CalculationContext(
+        calculation=rendered_calc,
+        numerical=numerical,
+        physical=physical,
+        classification=classification,
+        cutoff_decision=cutoff_decision,
+        resolved_entries=resolved_entries,
+        species_order=species_order,
+        hubbard_u=rendered_hubbard_u,
+        vdw=rendered_vdw,
+        control=control,
+        feature_states=feature_states,
+        atomic_positions_coordinate_mode=atomic_positions_coordinate_mode,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Input builder
 # ---------------------------------------------------------------------------
@@ -1202,6 +1676,8 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
     # &CONTROL
     control: dict[str, Any] = {
         "calculation": calc_type,
+        "prefix": ctx.control.prefix,
+        "outdir": ctx.control.outdir,
     }
 
     # &SYSTEM
@@ -1220,6 +1696,10 @@ def build_qe_input_namelist(ctx: CalculationContext) -> dict[str, dict[str, Any]
         system["lspinorb"] = True
     if phys.nspin == 2 and not phys.noncolin:
         system["nspin"] = 2
+        for index, species in enumerate(ctx.species_order or (), start=1):
+            if species not in phys.starting_magnetization:
+                continue
+            system[f"starting_magnetization({index})"] = float(phys.starting_magnetization[species])
     if ctx.hubbard_u.enabled:
         system["lda_plus_u"] = True
         for index, species in enumerate(ctx.species_order or (), start=1):
@@ -1498,6 +1978,30 @@ def _normalize_formatted_coordinate(value: float) -> float:
 def _validate_generation_context(ctx: CalculationContext) -> None:
     """Validate a generation context, including SOC/pseudopotential checks."""
     ctx.validate()
+    if ctx.species_order is not None:
+        known_species = set(ctx.species_order)
+        stale_magnetization_species = sorted(set(ctx.physical.starting_magnetization) - known_species)
+        if stale_magnetization_species:
+            raise ValueError(
+                "Stale species-dependent magnetic settings remain for unknown species: "
+                f"{', '.join(stale_magnetization_species)}."
+            )
+        stale_hubbard_species = sorted(set(ctx.hubbard_u.species_parameters) - known_species)
+        if stale_hubbard_species:
+            raise ValueError(
+                "Stale species-dependent Hubbard U settings remain for unknown species: "
+                f"{', '.join(stale_hubbard_species)}."
+            )
+    if ctx.feature_states:
+        soc_state = ctx.feature_states.get("soc")
+        if soc_state is not None and soc_state.status == "blocked":
+            raise ValueError(
+                "Spin-orbit coupling settings prevent QE input generation: "
+                + "; ".join(reason.message for reason in soc_state.reasons)
+            )
+        vdw_state = ctx.feature_states.get("vdw")
+        if vdw_state is not None and vdw_state.status == "blocked":
+            raise ValueError("Stale or conflicting vdW settings prevent QE input generation.")
     if not (ctx.physical.noncolin or ctx.physical.lspinorb):
         return
     if not ctx.resolved_entries:
@@ -1614,6 +2118,17 @@ def make_default_context(
     if calculation in ("dos", "bands"):
         calc_type = "scf"
 
+    control, control_reasons = build_control_settings(atoms)
+    workflow_status = "adjusted" if calc_type != calculation else "rendered"
+    workflow_reasons: tuple[FeatureReason, ...] = ()
+    if workflow_status == "adjusted":
+        workflow_reasons = (
+            FeatureReason(
+                code="auto_default_applied",
+                message="Mapped the workflow request onto the base pw.x calculation used for default generation.",
+            ),
+        )
+
     return CalculationContext(
         calculation=calc_type,
         numerical=numerical,
@@ -1622,12 +2137,124 @@ def make_default_context(
         cutoff_decision=cutoff_decision,
         resolved_entries=resolved_entries,
         species_order=species_order,
+        control=control,
+        feature_states={
+            "control": FeatureState(
+                requested={
+                    "prefix": control.requested_prefix,
+                    "outdir": control.requested_outdir,
+                },
+                rendered={
+                    "prefix": control.prefix,
+                    "outdir": control.outdir,
+                },
+                status="adjusted" if control_reasons else "rendered",
+                reasons=control_reasons,
+            ),
+            "workflow": FeatureState(
+                requested={"workflow": calculation},
+                rendered={"workflow": calc_type},
+                status=workflow_status,
+                reasons=workflow_reasons,
+            ),
+            "spin": FeatureState(
+                requested={
+                    "nspin": physical.nspin,
+                    "starting_magnetization": dict(physical.starting_magnetization),
+                },
+                rendered={
+                    "nspin": physical.nspin,
+                    "starting_magnetization": dict(physical.starting_magnetization),
+                },
+            ),
+            "soc": FeatureState(
+                requested={
+                    "noncolin": bool(physical.noncolin),
+                    "lspinorb": bool(physical.lspinorb),
+                    "enabled": bool(physical.noncolin or physical.lspinorb),
+                },
+                rendered={
+                    "noncolin": bool(physical.noncolin),
+                    "lspinorb": bool(physical.lspinorb),
+                    "enabled": bool(physical.noncolin or physical.lspinorb),
+                },
+            ),
+            "dftu": FeatureState(
+                requested={"enabled": False, "species_parameters": {}},
+                rendered={"enabled": False, "species_parameters": {}},
+            ),
+            "vdw": FeatureState(
+                requested={"method": VdwMethod.NONE.value, "enabled": False},
+                rendered={"method": VdwMethod.NONE.value, "enabled": False},
+            ),
+        },
     )
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_requested_starting_magnetization(raw_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Normalize saved/requested starting magnetization payloads."""
+    normalized: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw_state, dict):
+        return normalized
+
+    for fallback_species, payload in raw_state.items():
+        if isinstance(payload, dict):
+            species = str(payload.get("species") or fallback_species)
+            raw_value = payload.get("value", payload.get("magnetization", payload.get("u_ev", 0.0)))
+            source = str(payload.get("source") or "user_defined")
+        else:
+            species = str(fallback_species)
+            raw_value = payload
+            source = "user_defined"
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value):
+            continue
+        normalized[species] = {
+            "species": species,
+            "value": value,
+            "source": source,
+        }
+    return normalized
+
+
+def _normalize_requested_hubbard_u(raw_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Normalize saved/requested Hubbard U payloads without dropping zero values."""
+    normalized: dict[str, dict[str, Any]] = {}
+    if not isinstance(raw_state, dict):
+        return normalized
+
+    for fallback_species, payload in raw_state.items():
+        if not isinstance(payload, dict):
+            continue
+        species = str(payload.get("species") or fallback_species)
+        try:
+            u_ev = float(payload.get("u_ev", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(u_ev):
+            continue
+        normalized[species] = {
+            "species": species,
+            "u_ev": u_ev,
+            "source": str(payload.get("source") or "user_defined"),
+        }
+    return normalized
+
+
+def _has_conflicting_vdw_state(request: dict[str, Any]) -> bool:
+    """Return whether one request contains a stale/conflicting vdW representation."""
+    legacy_state = request.get("vdw_state")
+    if isinstance(legacy_state, dict):
+        return "vdw_corr" in legacy_state and "input_dft" in legacy_state
+    return bool("vdw_corr" in request and "input_dft" in request)
 
 
 def _round_to_nearest(value: float, step: float) -> float:

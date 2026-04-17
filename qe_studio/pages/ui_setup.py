@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 from pathlib import Path
 
@@ -50,26 +51,24 @@ from ..services.input_generator import (
     ElectronicCharacter,
     HubbardUSettings,
     HubbardUSpeciesParameter,
-    NumericalSettings,
-    PhysicalOptions,
     VdwMethod,
     VdwSettings,
+    build_calculation_context_from_request,
     classify_structure,
     get_atomic_species_order,
     generate_workflow_inputs,
     make_default_context,
     select_cutoffs,
-    suggest_kpoints_from_cell,
 )
 from ..services.pseudopotentials import (
     PseudopotentialResolutionError,
     clear_pseudopotential_family_cache,
     get_structure_signature,
     get_unique_elements,
-    inspect_soc_compatibility,
     resolve_fully_relativistic_pseudopotentials,
     resolve_sssp_pseudopotentials,
 )
+from ..services.qe_control import DEFAULT_OUTDIR, default_qe_prefix
 from ..services.qe_runner import RUN_ACTIVE_STATE_KEY, reset_run_state
 from ..services.reproducibility import (
     ValidationIssue,
@@ -97,6 +96,18 @@ _VDW_METHOD_LABELS: dict[VdwMethod, str] = {
     VdwMethod.VDW_DF2: "vdW-DF2",
     VdwMethod.RVV10: "rVV10",
 }
+
+
+@dataclass(frozen=True)
+class GenerationPersistResult:
+    success: bool
+    validation_issues: tuple[ValidationIssue, ...]
+    qe_input_text: str | None = None
+    internal_path: Path | None = None
+    ui_path: Path | None = None
+    metadata_path: Path | None = None
+    generation_context: CalculationContext | None = None
+    error_message: str | None = None
 
 
 def _normalize_pseudopotential_widget_settings(settings: dict | None) -> dict[str, object]:
@@ -427,6 +438,18 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             disabled=smearing_disabled,
         )
 
+        row_control_col1, row_control_col2 = st.columns(2)
+        prefix = row_control_col1.text_input(
+            "Prefix",
+            value=str(defaults.get("prefix", default_qe_prefix(ctx.atoms))),
+            help="Quantum ESPRESSO prefix used for save directories and downstream post-processing discovery.",
+        )
+        outdir = row_control_col2.text_input(
+            "Outdir",
+            value=str(defaults.get("outdir", DEFAULT_OUTDIR)),
+            help="QE scratch directory written into `&CONTROL`. Relative paths resolve from `qe_runs/`.",
+        )
+
         row_two_col1, row_two_col2 = st.columns(2)
         ecutwfc = row_two_col1.number_input(
             "Kinetic Energy Cutoff for Wavefunctions (ecutwfc, Ry)",
@@ -479,8 +502,9 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             value=(nspin_val == 2 and not soc_enabled),
             disabled=soc_enabled,
         )
-        
-        starting_magnetization = {}
+
+        default_starting_magnetization = defaults.get("starting_magnetization", {})
+        starting_magnetization: dict[str, dict[str, object]] = {}
         if soc_enabled:
             st.caption("Starting magnetization is unavailable while SOC mode is enabled.")
         elif nspin_toggle:
@@ -489,10 +513,22 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                 st.caption("Fractional initial magnetization (-1.0 to 1.0)")
                 mag_cols = st.columns(min(len(unique_elements), 4))
                 for i, elem in enumerate(unique_elements):
-                    default_mag = defaults.get("starting_magnetization", {}).get(elem, 0.0)
+                    default_mag = float(default_starting_magnetization.get(elem, {}).get("value", 0.0))
                     with mag_cols[i % 4]:
-                        mag_val = st.number_input(f"{elem}", min_value=-1.0, max_value=1.0, value=float(default_mag), step=0.1)
-                        starting_magnetization[elem] = mag_val
+                        mag_val = st.number_input(
+                            f"{elem}",
+                            min_value=-1.0,
+                            max_value=1.0,
+                            value=float(default_mag),
+                            step=0.1,
+                        )
+                        starting_magnetization[elem] = {
+                            "species": elem,
+                            "value": mag_val,
+                            "source": str(
+                                default_starting_magnetization.get(elem, {}).get("source", "user_defined")
+                            ),
+                        }
 
         st.markdown("**DFT+U Settings**")
         dftu_enabled = st.checkbox(
@@ -574,6 +610,8 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
 
         qe_parameters = {
             "calculation": calculation,
+            "prefix": prefix,
+            "outdir": outdir,
             "ecutwfc": ecutwfc,
             "ecutrho": ecutrho,
             "occupations": occupations,
@@ -590,6 +628,19 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             "hubbard_u": hubbard_u_parameters,
             "vdw_method": vdw_method.value,
         }
+        qe_parameters["prefix_source"] = (
+            "auto" if str(prefix).strip() == str(defaults.get("prefix", "")).strip() else "user"
+        )
+        qe_parameters["outdir_source"] = (
+            "auto" if str(outdir).strip() == str(defaults.get("outdir", "")).strip() else "user"
+        )
+        qe_parameters["spin_source"] = (
+            "auto"
+            if qe_parameters["nspin"] == defaults.get("nspin", 1)
+            and _flatten_starting_magnetization_state(qe_parameters["starting_magnetization"])
+            == _flatten_starting_magnetization_state(default_starting_magnetization)
+            else "user"
+        )
         validation_error = _validate_qe_submission_parameters(qe_parameters)
         preview_issues: list[ValidationIssue] = []
         preview_context: CalculationContext | None = None
@@ -609,23 +660,29 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
                     requested_workflow=qe_parameters["calculation"],
                 )
 
-        if preview_issues:
-            st.markdown("**Validation Summary**")
-            _render_validation_issues(preview_issues)
+        blocking_preview_issues = [issue for issue in preview_issues if issue.level == "error"]
+        warning_preview_issues = [issue for issue in preview_issues if issue.level == "warning"]
+        if warning_preview_issues:
+            st.markdown("**Warnings**")
+            _render_validation_issues(warning_preview_issues)
+        if blocking_preview_issues:
+            st.markdown("**Blocking Errors**")
+            _render_validation_issues(blocking_preview_issues)
 
         submitted = st.button(
             "Generate Input File",
             use_container_width=True,
-            disabled=False,
+            disabled=bool(submit_block_reason or blocking_preview_issues),
         )
         if submit_block_reason:
             st.caption(f"Generation is currently blocked: {submit_block_reason}")
+        elif blocking_preview_issues:
+            st.caption("Generation is currently blocked by the issues listed above.")
 
     if not submitted:
         return
 
     if submit_block_reason:
-        clear_generated_qe_input_state()
         if run_active:
             st.info(submit_block_reason)
         elif ctx.atoms is None:
@@ -635,7 +692,6 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         return
 
     if validation_error:
-        clear_generated_qe_input_state()
         st.error(f"Failed to generate the Quantum ESPRESSO input file: {validation_error}")
         return
 
@@ -643,67 +699,45 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     pseudo_dir = st.session_state.get(PSEUDO_DIR_STATE_KEY)
     atoms = st.session_state.get(ATOMS_STATE_KEY)
     if atoms is None or not pseudopotentials or not pseudo_dir:
-        clear_generated_qe_input_state()
         st.error("Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file.")
         return
 
-    validation_issues = list(preview_issues)
-    if preview_context is None:
-        try:
-            preview_context = _build_generation_context_from_parameters(
-                atoms,
-                qe_parameters,
-                resolved_entries=resolved_entries or None,
-            )
-        except Exception as exc:
-            clear_generated_qe_input_state()
-            st.error(f"Failed to prepare the Quantum ESPRESSO input context: {exc}")
-            return
-        validation_issues = build_generation_validation_issues(
-            atoms,
-            preview_context,
-            requested_workflow=qe_parameters["calculation"],
-        )
-    error_issues = [issue for issue in validation_issues if issue.level == "error"]
-    if error_issues:
-        clear_generated_qe_input_state()
-        _render_validation_issues(error_issues)
-        return
-
-    try:
-        qe_input_text, internal_path, ui_path, generation_context = _generate_qe_input_via_context(
-            atoms,
-            qe_parameters,
-            pseudopotentials,
-            pseudo_dir,
-            resolved_entries=resolved_entries or None,
-        )
-    except Exception as exc:
-        clear_generated_qe_input_state()
-        st.error(f"Failed to generate the Quantum ESPRESSO input file: {exc}")
-        return
-
-    reset_run_state(st.session_state)
-    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
-    st.session_state[QE_INPUT_TEXT_STATE_KEY] = qe_input_text
-    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(internal_path)
-    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(ui_path)
-    reproducibility_metadata = build_input_reproducibility_metadata(
+    result = _generate_and_persist_qe_input(
         atoms,
-        generation_context,
-        requested_workflow=qe_parameters["calculation"],
-        pseudo_settings=current_pseudo_settings,
+        qe_parameters,
+        pseudopotentials,
+        pseudo_dir,
+        run_dir=QE_RUNS_DIR,
+        current_pseudo_settings=current_pseudo_settings,
+        resolved_entries=resolved_entries or None,
         source_metadata=get_current_source_metadata(),
         structure_signature=get_current_active_structure_signature(),
         structure_mode=get_structure_mode(),
-        validation_issues=validation_issues,
     )
-    metadata_path = write_input_reproducibility_metadata(QE_RUNS_DIR, reproducibility_metadata)
+    if not result.success:
+        if result.validation_issues:
+            st.markdown("**Blocking Errors**")
+            _render_validation_issues([issue for issue in result.validation_issues if issue.level == "error"])
+        if result.error_message:
+            st.error(result.error_message)
+        return
+
+    assert result.qe_input_text is not None
+    assert result.internal_path is not None
+    assert result.ui_path is not None
+    assert result.metadata_path is not None
+    assert result.generation_context is not None
+
+    reset_run_state(st.session_state)
+    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
+    st.session_state[QE_INPUT_TEXT_STATE_KEY] = result.qe_input_text
+    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(result.internal_path)
+    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(result.ui_path)
     record_generated_input_provenance(
         QE_RUNS_DIR,
-        ui_path=str(ui_path),
-        internal_path=str(internal_path),
-        metadata_path=str(metadata_path),
+        ui_path=str(result.ui_path),
+        internal_path=str(result.internal_path),
+        metadata_path=str(result.metadata_path),
     )
     st.success("Generated updated QE input files under `qe_runs/`.")
 
@@ -739,6 +773,129 @@ def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
     return None
 
 
+def _default_starting_magnetization_state(starting_magnetization: dict[str, float]) -> dict[str, dict[str, object]]:
+    """Return the saved-form representation for species-wise starting magnetization."""
+    return {
+        species: {
+            "species": species,
+            "value": float(value),
+            "source": "heuristic_default",
+        }
+        for species, value in starting_magnetization.items()
+    }
+
+
+def _flatten_starting_magnetization_state(raw_state: dict | None) -> dict[str, float]:
+    """Return a simple species-to-float mapping from the saved-form spin payload."""
+    flattened: dict[str, float] = {}
+    if not isinstance(raw_state, dict):
+        return flattened
+    for fallback_species, payload in raw_state.items():
+        if isinstance(payload, dict):
+            species = str(payload.get("species") or fallback_species)
+            raw_value = payload.get("value", 0.0)
+        else:
+            species = str(fallback_species)
+            raw_value = payload
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            flattened[species] = value
+    return flattened
+
+
+def _normalize_starting_magnetization_state(
+    raw_state: dict | None,
+    *,
+    species_order: tuple[str, ...],
+    default_state: dict[str, dict[str, object]],
+    spin_source: str,
+) -> tuple[dict[str, dict[str, object]], bool]:
+    """Normalize saved spin state and report whether stale species were pruned."""
+    requested = dict(raw_state or {})
+    normalized: dict[str, dict[str, object]] = {}
+    pruned = False
+
+    if spin_source == "auto":
+        for species in species_order:
+            if species in default_state:
+                normalized[species] = dict(default_state[species])
+        return normalized, False
+
+    for species in species_order:
+        payload = requested.get(species)
+        if payload is None:
+            continue
+        if isinstance(payload, dict):
+            try:
+                value = float(payload.get("value", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            normalized[species] = {
+                "species": species,
+                "value": value,
+                "source": str(payload.get("source") or "user_defined"),
+            }
+        else:
+            try:
+                value = float(payload)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(value):
+                continue
+            normalized[species] = {
+                "species": species,
+                "value": value,
+                "source": "user_defined",
+            }
+
+    pruned = bool(set(requested) - set(species_order))
+    return normalized, pruned
+
+
+def _normalize_saved_hubbard_u_state(
+    raw_state: dict | None,
+    *,
+    species_order: tuple[str, ...],
+) -> tuple[dict[str, dict[str, object]], bool]:
+    """Normalize saved Hubbard U payloads while preserving zero values."""
+    requested = dict(raw_state or {})
+    normalized: dict[str, dict[str, object]] = {}
+    for species in species_order:
+        payload = requested.get(species)
+        if not isinstance(payload, dict):
+            continue
+        try:
+            u_ev = float(payload.get("u_ev", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(u_ev):
+            continue
+        normalized[species] = {
+            "species": species,
+            "u_ev": u_ev,
+            "source": str(payload.get("source") or "user_defined"),
+        }
+    return normalized, bool(set(requested) - set(species_order))
+
+
+def _infer_saved_setting_source(
+    explicit_source: object,
+    *,
+    current_value: object,
+    default_value: object,
+) -> str:
+    """Infer whether one saved setting should keep following auto defaults."""
+    normalized = str(explicit_source or "").strip().lower()
+    if normalized in {"auto", "user"}:
+        return normalized
+    return "auto" if current_value == default_value else "user"
+
+
 def default_qe_parameters(
     resolved_entries: dict | None = None,
     atoms=None,
@@ -752,13 +909,18 @@ def default_qe_parameters(
             ctx = make_default_context(atoms, resolved_entries=resolved_entries)
             return {
                 "calculation": "scf",
+                "prefix": ctx.control.requested_prefix,
+                "prefix_source": "auto",
+                "outdir": ctx.control.requested_outdir,
+                "outdir_source": "auto",
                 "ecutwfc": ctx.numerical.ecutwfc,
                 "ecutrho": ctx.numerical.ecutrho,
                 "occupations": ctx.physical.occupations,
                 "smearing": ctx.physical.smearing,
                 "degauss": ctx.physical.degauss,
                 "nspin": ctx.physical.nspin,
-                "starting_magnetization": ctx.physical.starting_magnetization,
+                "spin_source": "auto",
+                "starting_magnetization": _default_starting_magnetization_state(ctx.physical.starting_magnetization),
                 "noncolin": ctx.physical.noncolin,
                 "lspinorb": ctx.physical.lspinorb,
                 "dftu_enabled": ctx.hubbard_u.enabled,
@@ -785,12 +947,17 @@ def default_qe_parameters(
 
     return {
         "calculation": "scf",
+        "prefix": default_qe_prefix(atoms),
+        "prefix_source": "auto",
+        "outdir": DEFAULT_OUTDIR,
+        "outdir_source": "auto",
         "ecutwfc": ecutwfc,
         "ecutrho": ecutrho,
         "occupations": "smearing",
         "smearing": "gaussian",
         "degauss": 0.01,
         "nspin": 1,
+        "spin_source": "auto",
         "starting_magnetization": {},
         "noncolin": False,
         "lspinorb": False,
@@ -812,7 +979,7 @@ def get_qe_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:
     """
     saved = st.session_state.get(QE_PARAMS_STATE_KEY)
     if saved is not None:
-        sanitized = _sanitize_saved_qe_parameters(saved, resolved_entries=resolved_entries)
+        sanitized = _sanitize_saved_qe_parameters(saved, resolved_entries=resolved_entries, atoms=atoms)
         if sanitized != saved:
             st.session_state[QE_PARAMS_STATE_KEY] = sanitized
         return sanitized
@@ -836,72 +1003,75 @@ def _sanitize_saved_qe_parameters(
     qe_parameters: dict,
     *,
     resolved_entries: dict | None = None,
+    atoms=None,
 ) -> dict:
     """Drop stale saved form states that cannot produce a valid QE input."""
     sanitized = dict(qe_parameters or {})
 
-    raw_hubbard = sanitized.get("hubbard_u") or {}
-    normalized_hubbard: dict[str, dict[str, object]] = {}
-    if isinstance(raw_hubbard, dict):
-        for fallback_species, payload in raw_hubbard.items():
-            if not isinstance(payload, dict):
-                continue
-            species = str(payload.get("species") or fallback_species)
-            try:
-                u_ev = float(payload.get("u_ev", 0.0))
-            except (TypeError, ValueError):
-                continue
-            if not math.isfinite(u_ev) or u_ev <= 0.0:
-                continue
-            normalized_hubbard[species] = {
-                "species": species,
-                "u_ev": u_ev,
-                "source": str(payload.get("source") or "user_defined"),
-            }
+    defaults = default_qe_parameters(resolved_entries=resolved_entries, atoms=atoms)
+    species_order = get_atomic_species_order(atoms) if atoms is not None else ()
 
-    dftu_enabled = bool(sanitized.get("dftu_enabled", False))
-    sanitized["dftu_enabled"] = dftu_enabled and bool(normalized_hubbard)
-    sanitized["hubbard_u"] = normalized_hubbard if sanitized["dftu_enabled"] else {}
+    sanitized["prefix"] = str(sanitized.get("prefix") or defaults["prefix"])
+    sanitized["outdir"] = str(sanitized.get("outdir") or defaults["outdir"])
+    sanitized["prefix_source"] = _infer_saved_setting_source(
+        sanitized.get("prefix_source"),
+        current_value=sanitized["prefix"],
+        default_value=defaults["prefix"],
+    )
+    sanitized["outdir_source"] = _infer_saved_setting_source(
+        sanitized.get("outdir_source"),
+        current_value=sanitized["outdir"],
+        default_value=defaults["outdir"],
+    )
+    if sanitized["prefix_source"] == "auto":
+        sanitized["prefix"] = defaults["prefix"]
+    if sanitized["outdir_source"] == "auto":
+        sanitized["outdir"] = defaults["outdir"]
+
+    sanitized["nspin"] = 2 if int(sanitized.get("nspin", defaults["nspin"])) == 2 else 1
+    sanitized["noncolin"] = bool(sanitized.get("noncolin", defaults["noncolin"]))
+    sanitized["lspinorb"] = bool(sanitized.get("lspinorb", defaults["lspinorb"]))
+    sanitized["spin_source"] = _infer_saved_setting_source(
+        sanitized.get("spin_source"),
+        current_value={
+            "nspin": sanitized["nspin"],
+            "starting_magnetization": _flatten_starting_magnetization_state(
+                sanitized.get("starting_magnetization") or {}
+            ),
+        },
+        default_value={
+            "nspin": defaults["nspin"],
+            "starting_magnetization": _flatten_starting_magnetization_state(
+                defaults.get("starting_magnetization") or {}
+            ),
+        },
+    )
+
+    normalized_magnetization, magnetization_pruned = _normalize_starting_magnetization_state(
+        sanitized.get("starting_magnetization"),
+        species_order=species_order,
+        default_state=defaults.get("starting_magnetization") or {},
+        spin_source=sanitized["spin_source"],
+    )
+    sanitized["starting_magnetization"] = normalized_magnetization
+    sanitized["spin_state_pruned"] = bool(sanitized.get("spin_state_pruned", False) or magnetization_pruned)
+
+    normalized_hubbard, hubbard_pruned = _normalize_saved_hubbard_u_state(
+        sanitized.get("hubbard_u"),
+        species_order=species_order,
+    )
+    sanitized["dftu_enabled"] = bool(sanitized.get("dftu_enabled", defaults["dftu_enabled"]))
+    sanitized["hubbard_u"] = normalized_hubbard
+    sanitized["hubbard_u_pruned"] = bool(sanitized.get("hubbard_u_pruned", False) or hubbard_pruned)
     sanitized["vdw_method"] = _normalize_vdw_method_value(
-        sanitized.get("vdw_method", VdwMethod.NONE.value)
+        sanitized.get("vdw_method", defaults["vdw_method"])
     ).value
-
-    soc_enabled = bool(sanitized.get("noncolin") or sanitized.get("lspinorb"))
-    if sanitized.get("lspinorb") and not sanitized.get("noncolin"):
-        soc_enabled = False
-        sanitized["lspinorb"] = False
-    if soc_enabled and resolved_entries:
-        try:
-            soc_report = inspect_soc_compatibility(resolved_entries)
-        except Exception:
-            soc_report = None
-        if soc_report is not None and not soc_report.all_compatible:
-            sanitized["noncolin"] = False
-            sanitized["lspinorb"] = False
 
     return sanitized
 
 
 def _validate_qe_submission_parameters(qe_parameters: dict) -> str | None:
     """Return a user-facing validation error for invalid UI-only combinations."""
-    if not bool(qe_parameters.get("dftu_enabled", False)):
-        return None
-
-    raw_parameters = qe_parameters.get("hubbard_u") or {}
-    if not raw_parameters:
-        return "DFT+U is enabled but no Hubbard U species are configured."
-
-    for fallback_species, payload in raw_parameters.items():
-        if not isinstance(payload, dict):
-            continue
-        species = str(payload.get("species") or fallback_species)
-        try:
-            u_ev = float(payload.get("u_ev", 0.0))
-        except (TypeError, ValueError):
-            return f"Hubbard U for {species} must be a positive number."
-        if not math.isfinite(u_ev) or u_ev <= 0.0:
-            return f"Hubbard U for {species} must be greater than 0 eV."
-
     return None
 
 
@@ -924,37 +1094,10 @@ def _build_generation_context_from_parameters(
     resolved_entries: dict[str, dict] | None = None,
 ) -> CalculationContext:
     """Build the typed generation context from the flat UI parameter dictionary."""
-    classification = classify_structure(atoms)
-    cutoff_decision = select_cutoffs(resolved_entries or {})
-    numerical = NumericalSettings(
-        ecutwfc=float(qe_parameters["ecutwfc"]),
-        ecutrho=float(qe_parameters["ecutrho"]),
-        conv_thr=float(qe_parameters.get("conv_thr", _DEFAULT_CONV_THR)),
-        mixing_beta=float(qe_parameters.get("mixing_beta", _DEFAULT_MIXING_BETA)),
-    )
-    physical = PhysicalOptions(
-        occupations=qe_parameters["occupations"],
-        smearing=qe_parameters["smearing"],
-        degauss=qe_parameters["degauss"],
-        k_points_grid=qe_parameters["k_points_grid"],
-        nspin=qe_parameters.get("nspin", 1),
-        starting_magnetization=qe_parameters.get("starting_magnetization", {}),
-        noncolin=bool(qe_parameters.get("noncolin", False)),
-        lspinorb=bool(qe_parameters.get("lspinorb", False)),
-    )
-    species_order = get_atomic_species_order(atoms)
-    hubbard_u = _build_hubbard_u_settings_from_parameters(qe_parameters)
-    vdw = _build_vdw_settings_from_parameters(qe_parameters)
-    return CalculationContext(
-        calculation=qe_parameters["calculation"],
-        numerical=numerical,
-        physical=physical,
-        classification=classification,
-        cutoff_decision=cutoff_decision,
+    return build_calculation_context_from_request(
+        atoms,
+        qe_parameters,
         resolved_entries=resolved_entries,
-        species_order=species_order,
-        hubbard_u=hubbard_u,
-        vdw=vdw,
         atomic_positions_coordinate_mode=get_atomic_positions_coordinate_mode(),
     )
 
@@ -965,6 +1108,7 @@ def _generate_qe_input_via_context(
     pseudopotentials: dict[str, str],
     pseudo_dir: str,
     *,
+    run_dir: Path = QE_RUNS_DIR,
     resolved_entries: dict[str, dict] | None = None,
 ) -> tuple[str, Path, Path, CalculationContext]:
     """Delegate pw.in generation to the modular input_generator service.
@@ -985,7 +1129,7 @@ def _generate_qe_input_via_context(
         pseudopotentials,
         pseudo_dir,
         workflow=qe_parameters["calculation"],
-        run_dir=QE_RUNS_DIR,
+        run_dir=run_dir,
     )
     # The current UI preview system displays the primary file (index 0).
     return (
@@ -993,6 +1137,87 @@ def _generate_qe_input_via_context(
         steps[0][2],
         steps[0][3],
         ctx,
+    )
+
+
+def _generate_and_persist_qe_input(
+    atoms,
+    qe_parameters: dict,
+    pseudopotentials: dict[str, str],
+    pseudo_dir: str,
+    *,
+    run_dir: Path,
+    current_pseudo_settings: dict[str, object],
+    resolved_entries: dict[str, dict] | None = None,
+    source_metadata: dict[str, object] | None = None,
+    structure_signature: dict[str, object] | None = None,
+    structure_mode: str = "source",
+) -> GenerationPersistResult:
+    """Generate QE inputs and metadata, or return blocking issues without overwriting files."""
+    try:
+        generation_context = _build_generation_context_from_parameters(
+            atoms,
+            qe_parameters,
+            resolved_entries=resolved_entries,
+        )
+    except Exception as exc:
+        return GenerationPersistResult(
+            success=False,
+            validation_issues=(),
+            error_message=f"Failed to prepare the Quantum ESPRESSO input context: {exc}",
+        )
+
+    validation_issues = tuple(
+        build_generation_validation_issues(
+            atoms,
+            generation_context,
+            requested_workflow=qe_parameters["calculation"],
+        )
+    )
+    if any(issue.level == "error" for issue in validation_issues):
+        return GenerationPersistResult(
+            success=False,
+            validation_issues=validation_issues,
+            generation_context=generation_context,
+        )
+
+    try:
+        qe_input_text, internal_path, ui_path, generation_context = _generate_qe_input_via_context(
+            atoms,
+            qe_parameters,
+            pseudopotentials,
+            pseudo_dir,
+            run_dir=run_dir,
+            resolved_entries=resolved_entries,
+        )
+    except Exception as exc:
+        return GenerationPersistResult(
+            success=False,
+            validation_issues=validation_issues,
+            generation_context=generation_context,
+            error_message=f"Failed to generate the Quantum ESPRESSO input file: {exc}",
+        )
+
+    reproducibility_metadata = build_input_reproducibility_metadata(
+        atoms,
+        generation_context,
+        requested_workflow=qe_parameters["calculation"],
+        pseudo_settings=current_pseudo_settings,
+        source_metadata=dict(source_metadata or {}),
+        structure_signature=structure_signature,
+        structure_mode=structure_mode,
+        validation_issues=validation_issues,
+        run_dir=run_dir,
+    )
+    metadata_path = write_input_reproducibility_metadata(run_dir, reproducibility_metadata)
+    return GenerationPersistResult(
+        success=True,
+        validation_issues=validation_issues,
+        qe_input_text=qe_input_text,
+        internal_path=internal_path,
+        ui_path=ui_path,
+        metadata_path=metadata_path,
+        generation_context=generation_context,
     )
 
 

@@ -10,9 +10,17 @@ import xml.etree.ElementTree as ET
 
 import plotly.graph_objects as go
 
+from .qe_control import (
+    DEFAULT_OUTDIR,
+    DEFAULT_PREFIX_FALLBACK,
+    LEGACY_DEFAULT_PREFIX,
+    parse_qe_control_from_input,
+    resolve_qe_outdir,
+)
+
 
 HARTREE_TO_EV = 27.211386245988
-DEFAULT_PREFIX = "pwscf"
+DEFAULT_PREFIX = DEFAULT_PREFIX_FALLBACK
 DEFAULT_QE_OUTPUT = "pw.out"
 PUBLICATION_BLUE = "#124E8C"
 PUBLICATION_TEXT = "#111827"
@@ -578,21 +586,14 @@ def _find_qe_input_file(run_dir: Path) -> Path | None:
 
 def _parse_qe_prefix_and_outdir(qe_input_file: Path | None, run_dir: Path) -> tuple[str, Path]:
     prefix = DEFAULT_PREFIX
-    outdir = run_dir
+    outdir = resolve_qe_outdir(run_dir, DEFAULT_OUTDIR)
     if qe_input_file is None or not qe_input_file.is_file():
         return prefix, outdir
 
     text = qe_input_file.read_text(encoding="utf-8")
-    prefix_match = re.search(r"^\s*prefix\s*=\s*['\"]([^'\"]+)['\"]", text, re.IGNORECASE | re.MULTILINE)
-    if prefix_match:
-        prefix = prefix_match.group(1).strip() or DEFAULT_PREFIX
-
-    outdir_match = re.search(r"^\s*outdir\s*=\s*['\"]([^'\"]+)['\"]", text, re.IGNORECASE | re.MULTILINE)
-    if outdir_match:
-        raw_outdir = outdir_match.group(1).strip()
-        outdir = Path(raw_outdir)
-        if not outdir.is_absolute():
-            outdir = run_dir / outdir
+    control = parse_qe_control_from_input(text)
+    prefix = control["prefix"] or DEFAULT_PREFIX
+    outdir = resolve_qe_outdir(run_dir, control["outdir"])
 
     return prefix, outdir
 
@@ -605,6 +606,9 @@ def _find_xml_metadata_file(run_dir: Path, prefix: str, outdir: Path) -> Path | 
     fallback_save_dir = run_dir / f"{prefix}.save"
     if fallback_save_dir not in save_directories:
         save_directories.append(fallback_save_dir)
+    legacy_save_dir = run_dir / f"{LEGACY_DEFAULT_PREFIX}.save"
+    if legacy_save_dir not in save_directories:
+        save_directories.append(legacy_save_dir)
 
     for candidate_save_dir in save_directories:
         schema_file = candidate_save_dir / "data-file-schema.xml"

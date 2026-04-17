@@ -137,6 +137,7 @@ def build_generation_validation_issues(
     """Build warning/error issues for one generation attempt."""
     classification = ctx.classification or classify_structure(atoms)
     issues: list[ValidationIssue] = []
+    feature_states = ctx.feature_states or {}
 
     cutoff_decision = ctx.cutoff_decision
     if cutoff_decision is not None:
@@ -207,6 +208,21 @@ def build_generation_validation_issues(
             )
         )
 
+    if classification.electronic_character == ElectronicCharacter.UNKNOWN:
+        issues.append(
+            ValidationIssue(
+                code="unknown_electronic_character",
+                level="warning",
+                message=(
+                    "The structure's electronic character is unknown from composition alone, so occupations "
+                    "and smearing use a heuristic fallback."
+                ),
+                details={
+                    "classification_notes": list(classification.notes),
+                },
+            )
+        )
+
     if classification.dimensionality == Dimensionality.D2:
         low_vacuum_axes: dict[str, float] = {}
         for axis in classification.vacuum_directions:
@@ -240,7 +256,7 @@ def build_generation_validation_issues(
     ):
         issues.append(
             ValidationIssue(
-                code="magnetic_nonspin",
+                code="magnetic_species_nonspin",
                 level="warning",
                 message=(
                     "Potentially magnetic species are present, but the calculation is configured "
@@ -255,7 +271,18 @@ def build_generation_validation_issues(
             )
         )
 
-    if ctx.physical.noncolin or ctx.physical.lspinorb:
+    soc_state = feature_states.get("soc")
+    if soc_state is not None and soc_state.status == "blocked":
+        for reason in soc_state.reasons:
+            issues.append(
+                ValidationIssue(
+                    code=reason.code,
+                    level="error",
+                    message=reason.message,
+                    details=dict(soc_state.to_metadata()),
+                )
+            )
+    elif ctx.physical.noncolin or ctx.physical.lspinorb:
         if not ctx.resolved_entries:
             issues.append(
                 ValidationIssue(
@@ -289,7 +316,141 @@ def build_generation_validation_issues(
                     )
                 )
 
+    dftu_state = feature_states.get("dftu")
+    if dftu_state is not None and dftu_state.status == "skipped":
+        for reason in dftu_state.reasons:
+            if reason.code == "dftu_missing_positive_u":
+                issues.append(
+                    ValidationIssue(
+                        code=reason.code,
+                        level="warning",
+                        message=reason.message,
+                        details=dict(dftu_state.to_metadata()),
+                    )
+                )
+    if dftu_state is not None:
+        for reason in dftu_state.reasons:
+            if reason.code == "stale_species_settings_pruned":
+                issues.append(
+                    ValidationIssue(
+                        code=reason.code,
+                        level="warning",
+                        message=reason.message,
+                        details=dict(dftu_state.to_metadata()),
+                    )
+                )
+
+    spin_state = feature_states.get("spin")
+    if spin_state is not None:
+        for reason in spin_state.reasons:
+            if reason.code == "stale_species_settings_pruned":
+                issues.append(
+                    ValidationIssue(
+                        code=reason.code,
+                        level="warning",
+                        message=reason.message,
+                        details=dict(spin_state.to_metadata()),
+                    )
+                )
+
+    vdw_state = feature_states.get("vdw")
+    if vdw_state is not None and vdw_state.status == "blocked":
+        for reason in vdw_state.reasons:
+            issues.append(
+                ValidationIssue(
+                    code=reason.code,
+                    level="error",
+                    message=reason.message,
+                    details=dict(vdw_state.to_metadata()),
+                )
+            )
+
     return issues
+
+
+def _build_occupations_metadata(
+    *,
+    classification: StructureClassification,
+    ctx: CalculationContext,
+    recommended_defaults: CalculationContext,
+) -> dict[str, Any]:
+    """Build human-readable and machine-readable occupation metadata."""
+    reasons: list[dict[str, str]] = []
+    if classification.electronic_character == ElectronicCharacter.UNKNOWN:
+        explanation = (
+            "Electronic character is unknown from composition alone, so QE Studio kept a heuristic smearing fallback."
+        )
+        reasons.append(
+            {
+                "code": "unknown_electronic_character",
+                "message": explanation,
+            }
+        )
+    elif classification.electronic_character == ElectronicCharacter.METAL:
+        explanation = (
+            "Composition looks metallic, so QE Studio uses a smearing-based occupation heuristic."
+        )
+    else:
+        explanation = (
+            "Composition looks insulating or semiconducting, so QE Studio recommends fixed occupations."
+        )
+
+    rule = {
+        "method": "structure_classification_defaults",
+        "heuristic": True,
+        "electronic_character": classification.electronic_character.value,
+        "classification_notes": list(classification.notes),
+        "recommended": {
+            "occupations": recommended_defaults.physical.occupations,
+            "smearing": recommended_defaults.physical.smearing,
+            "degauss": recommended_defaults.physical.degauss,
+        },
+    }
+    return {
+        "selected": {
+            "occupations": ctx.physical.occupations,
+            "smearing": ctx.physical.smearing,
+            "degauss": ctx.physical.degauss,
+        },
+        "explanation": explanation,
+        "rule": rule,
+        "selection_rule": rule,
+        "reasons": reasons,
+    }
+
+
+def _build_k_points_metadata(
+    *,
+    classification: StructureClassification,
+    ctx: CalculationContext,
+    recommended_kgrid: Sequence[int],
+    recommended_spacing: float,
+) -> dict[str, Any]:
+    """Build human-readable and machine-readable k-point metadata."""
+    explanation = (
+        "QE Studio uses a workflow-aware reciprocal-space spacing heuristic and collapses vacuum directions to Gamma-only sampling."
+    )
+    rule = {
+        "method": "workflow_aware_reciprocal_spacing",
+        "heuristic": True,
+        "target_spacing_angstrom_inv": recommended_spacing,
+        "recommended_grid": list(recommended_kgrid),
+        "dimensionality": classification.dimensionality.value,
+        "vacuum_directions": list(classification.vacuum_directions),
+    }
+    return {
+        "selected_grid": list(ctx.physical.k_points_grid),
+        "selected_shift": list(ctx.physical.k_points_shift),
+        "explanation": explanation,
+        "rule": rule,
+        "selection_rule": rule,
+        "reasons": [
+            {
+                "code": "auto_default_applied",
+                "message": explanation,
+            }
+        ],
+    }
 
 
 def build_input_reproducibility_metadata(
@@ -304,6 +465,7 @@ def build_input_reproducibility_metadata(
     validation_issues: Sequence[ValidationIssue],
     generator_info: dict[str, Any] | None = None,
     generated_at: str | None = None,
+    run_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Build the dedicated reproducibility metadata payload for generated QE inputs."""
     classification = ctx.classification or classify_structure(atoms)
@@ -360,6 +522,25 @@ def build_input_reproducibility_metadata(
     validation_issue_dicts = [issue.as_dict() for issue in validation_issues]
     warning_count = sum(1 for issue in validation_issues if issue.level == "warning")
     error_count = sum(1 for issue in validation_issues if issue.level == "error")
+    run_directory = Path(run_dir) if run_dir is not None else Path("qe_runs")
+    warning_issue_dicts = [issue.as_dict() for issue in validation_issues if issue.level == "warning"]
+    error_issue_dicts = [issue.as_dict() for issue in validation_issues if issue.level == "error"]
+    feature_states = {
+        key: state.to_metadata()
+        for key, state in (ctx.feature_states or {}).items()
+    }
+    occupations_metadata = _build_occupations_metadata(
+        classification=classification,
+        ctx=ctx,
+        recommended_defaults=recommended_defaults,
+    )
+    k_points_metadata = _build_k_points_metadata(
+        classification=classification,
+        ctx=ctx,
+        recommended_kgrid=recommended_kgrid,
+        recommended_spacing=recommended_spacing,
+    )
+    soc_feature_state = feature_states.get("soc", {})
 
     return {
         "schema_version": REPRODUCIBILITY_SCHEMA_VERSION,
@@ -378,6 +559,7 @@ def build_input_reproducibility_metadata(
             "structure_mode": structure_mode,
             "atomic_positions_coordinate_mode": ctx.atomic_positions_coordinate_mode,
         },
+        "control": ctx.control.to_metadata(run_dir=run_directory),
         "pseudopotentials": {
             "settings": {
                 "functional": pseudo_settings.get("functional"),
@@ -387,10 +569,15 @@ def build_input_reproducibility_metadata(
                 "source": resolved_source,
             },
             "per_species": per_species,
+            "soc_compatibility": soc_feature_state.get("rendered", {}).get("compatibility"),
         },
         "workflow": {
             "requested_workflow": requested_workflow,
             "rendered_calculation_type": ctx.calculation,
+            "requested": feature_states.get("workflow", {}).get("requested"),
+            "rendered": feature_states.get("workflow", {}).get("rendered"),
+            "status": feature_states.get("workflow", {}).get("status"),
+            "reasons": feature_states.get("workflow", {}).get("reasons", []),
         },
         "cutoffs": {
             "selected_ecutwfc_ry": ctx.numerical.ecutwfc,
@@ -398,36 +585,8 @@ def build_input_reproducibility_metadata(
             "selection_rule": cutoff_selection_rule,
             "user_overridden": cutoffs_user_overridden,
         },
-        "k_points": {
-            "selected_grid": list(ctx.physical.k_points_grid),
-            "selected_shift": list(ctx.physical.k_points_shift),
-            "selection_rule": {
-                "method": "workflow_aware_reciprocal_spacing",
-                "target_spacing_angstrom_inv": recommended_spacing,
-                "recommended_grid": list(recommended_kgrid),
-                "dimensionality": classification.dimensionality.value,
-                "vacuum_directions": list(classification.vacuum_directions),
-            },
-            "user_overridden": kpoints_user_overridden,
-        },
-        "occupations": {
-            "selected": {
-                "occupations": ctx.physical.occupations,
-                "smearing": ctx.physical.smearing,
-                "degauss": ctx.physical.degauss,
-            },
-            "selection_rule": {
-                "method": "structure_classification_defaults",
-                "electronic_character": classification.electronic_character.value,
-                "classification_notes": list(classification.notes),
-                "recommended": {
-                    "occupations": recommended_defaults.physical.occupations,
-                    "smearing": recommended_defaults.physical.smearing,
-                    "degauss": recommended_defaults.physical.degauss,
-                },
-            },
-            "user_overridden": occupations_user_overridden,
-        },
+        "k_points": dict(k_points_metadata, user_overridden=kpoints_user_overridden),
+        "occupations": dict(occupations_metadata, user_overridden=occupations_user_overridden),
         "spin": {
             "nspin": ctx.physical.nspin,
             "starting_magnetization": dict(ctx.physical.starting_magnetization),
@@ -435,10 +594,35 @@ def build_input_reproducibility_metadata(
             "magnetic_elements": list(classification.magnetic_elements),
             "noncolin": bool(ctx.physical.noncolin),
             "lspinorb": bool(ctx.physical.lspinorb),
+            "requested": feature_states.get("spin", {}).get("requested"),
+            "rendered": feature_states.get("spin", {}).get("rendered"),
+            "status": feature_states.get("spin", {}).get("status"),
+            "reasons": feature_states.get("spin", {}).get("reasons", []),
         },
-        "dftu": ctx.hubbard_u.to_metadata(species_order=ctx.species_order),
-        "vdw": ctx.vdw.to_metadata(),
+        "soc": {
+            "requested": feature_states.get("soc", {}).get("requested"),
+            "rendered": feature_states.get("soc", {}).get("rendered"),
+            "status": feature_states.get("soc", {}).get("status"),
+            "reasons": feature_states.get("soc", {}).get("reasons", []),
+        },
+        "dftu": {
+            **ctx.hubbard_u.to_metadata(species_order=ctx.species_order),
+            "requested": feature_states.get("dftu", {}).get("requested"),
+            "rendered": feature_states.get("dftu", {}).get("rendered"),
+            "status": feature_states.get("dftu", {}).get("status"),
+            "reasons": feature_states.get("dftu", {}).get("reasons", []),
+        },
+        "vdw": {
+            **ctx.vdw.to_metadata(),
+            "requested": feature_states.get("vdw", {}).get("requested"),
+            "rendered": feature_states.get("vdw", {}).get("rendered"),
+            "status": feature_states.get("vdw", {}).get("status"),
+            "reasons": feature_states.get("vdw", {}).get("reasons", []),
+        },
+        "feature_states": feature_states,
         "validation": {
+            "warnings": warning_issue_dicts,
+            "errors": error_issue_dicts,
             "issues": validation_issue_dicts,
             "warning_count": warning_count,
             "error_count": error_count,
