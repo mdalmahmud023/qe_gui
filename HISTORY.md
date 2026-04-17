@@ -8,71 +8,64 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Project name: QE Studio
 - Goal: build a web-based GUI for Quantum ESPRESSO using Python, Streamlit, and ASE
-- Current stage: multipage QE workflow with structure setup, runnable QE input generation, live execution, post-processing runners, and electronic-properties analysis
+- Current stage: 5-page workflow covering structure import, QE input generation, multi-run convergence studies (Cutoff, K-Point, EOS), live execution, post-processing, and electronic-properties analysis
 
 ## Current State
 
-- Streamlit app entrypoint exists at `app.py` and now acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
-- The app uses a wide layout and a 4-page workflow:
+- Streamlit app entrypoint exists at `app.py` and acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
+- The app uses a wide layout and a **5-page workflow**:
   - `Structure`
   - `Setup`
+  - `Studies`
   - `Run`
   - `Analysis`
-- The sidebar is now a persistent project summary visible on every page.
-- The `Structure` page now provides a shared `Import / Build Structure` workflow with:
-  - ASE-backed file import for CIF, VASP `POSCAR` / `CONTCAR`, XSF, and periodic XYZ / extXYZ
-  - a manual crystal builder for lattice parameters plus atomic positions
-  - a curated prototype builder with:
-    - ordered cubic double perovskites `A2BB'X6`
-    - cubic perovskites `ABX3`
-    - rocksalt `AB`
-- The `Structure` page now separates draft vs active work more clearly through:
-  - a compact active-structure banner
-  - a centered draft import/build panel
-  - a full-width active inspection panel with a larger viewer and a smaller settings column
-- Prototype family registry and shared prototype UI/build definitions now live in `prototype_catalog.py`.
-- Structure parsing, builder validation, and prototype generation now live in `structure_sources.py`.
-- Structure commit logic, deterministic structure signatures, provenance tracking, and invalidation rules now live in `structure_state.py`.
-- Viewer-only rendering helpers now live in `structure_viewer.py`.
-- Source and active ASE `Atoms` objects are stored in `st.session_state`.
-- The active structure can be switched between the source cell and a symmetry-reduced primitive cell.
-- The `Structure` page renders the active structure with `py3Dmol` and exposes viewer-only controls for labels, style mode, heuristic bonds, unit-cell visibility, species filtering, and small supercell repeats.
-- The `Setup` page handles:
-  - SSSP pseudopotential resolution
-  - QE input parameter collection
-  - generated `pw.in` preview
-- The app resolves and caches SSSP pseudopotentials from versioned Materials Cloud manifests and archives.
-- The setup flow generates runnable Quantum ESPRESSO input files through ASE once pseudopotentials are resolved.
-- The `Run` page handles:
-  - base `pw.x` execution
-  - DOS post-processing
-  - band-structure workflow execution
-  - live logs and artifact summaries
-- The app can launch `pw.x`, `dos.x`, and `bands.x` locally, stream live terminal output, and save logs under `qe_runs/`.
-- The app records deterministic structure provenance under `qe_runs/qe_studio_provenance.json` and surfaces stale / out-of-sync warnings on `Setup`, `Run`, and `Analysis`.
-- The `Analysis` page detects QE analysis artifacts in `qe_runs/` and renders DOS and band-structure charts from real QE post-processing files.
-- `project_context.py` now centralizes lightweight session-plus-disk summaries for the shared shell and page prerequisites.
-- Heavy DOS and band parsing remains inside `ui_analysis.py`; the shared context stays summary-only.
+- The sidebar is a persistent project summary visible on every page.
+- The `Structure` page handles ASE-backed file import (CIF, VASP, XSF, periodic XYZ), a manual crystal builder, and curated prototype families (double perovskite, perovskite, rocksalt). Interactive 3D viewer with `py3Dmol`.
+- The `Setup` page handles SSSP and SG15 ONCV FR pseudopotential resolution, QE parameter configuration (cutoffs, k-points, occupations, spin, SOC, DFT+U), and `pw.in` generation. All parameters are captured in a `CalculationContext` dataclass through `services/input_generator.py`.
+- The `Studies` page provides three independent convergence workflows, each consuming the active Setup baseline snapshot:
+  - **Cutoff Convergence**: sweeps `ecutwfc`/`ecutrho`, recommends the converged pair, and can apply it back to Setup.
+  - **K-Point Convergence**: sweeps k-grid density (isotropic 3D, 2D in-plane, 1D wire), recommends the converged grid, and can apply it back to Setup.
+  - **Equation of State (EOS)**: isotropically scales the active structure, fits a Birch-Murnaghan EOS via `scipy`, reports V₀/B₀/a₀, and can apply the equilibrium cell back to the active structure.
+  - All study types have a **▶ Run Study** button that launches all point inputs sequentially as chained `pw.x` jobs with live console streaming and a **⏹ Stop** button.
+  - Baseline-drift detection warns when the active Setup has changed since a study was generated.
+  - Interactive Plotly result charts and data tables for all three study types.
+- The `Run` page handles base `pw.x` execution, DOS post-processing (`dos.x`), band-structure workflow (`pw.x` + `bands.x`), live logs, and artifact summaries.
+- The `Analysis` page renders interactive total DOS and non-projected band-structure charts from real QE output files.
+- All generated inputs, study manifests/summaries, logs, and provenance metadata are disk-first under `qe_runs/`.
+- `services/input_generator.py` contains `CalculationContext`, `NumericalSettings`, `PhysicalOptions`, and `ControlSettings` dataclasses plus `generate_qe_input_text`.
+- `convergence/` package contains models, study generators, result parsers, EOS fitting, recommendation logic, and `study_runner.py` which converts manifests into `JobStep` lists for `run_chained_jobs`.
 - Dependencies are listed in `requirements.txt`.
 
 ## File Map
 
 - `app.py`: shared Streamlit shell, navigation, workflow indicator, and persistent sidebar summary
-- `project_context.py`: lightweight cross-page state and disk summary helpers
-- `prototype_catalog.py`: curated prototype-family registry and shared prototype UI/build definitions
-- `structure_sources.py`: structure import adapters, manual-builder validation, and prototype generation
-- `structure_state.py`: structure state, signatures, provenance, cell-mode switching, and invalidation helpers
-- `structure_viewer.py`: viewer-only filtering, repeat expansion, and `py3Dmol` rendering helpers
-- `ui_structure.py`: Structure page UI
-- `ui_setup.py`: Setup page UI
-- `ui_run.py`: Run page UI
-- `ui_analysis.py`: Analysis page UI
-- `electronic_properties.py`: QE analysis discovery, parsing, and Plotly helpers
-- `postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
-- `qe_runner.py`: registry-backed QE subprocess execution and live output streaming
-- `pseudopotentials.py`: SSSP pseudopotential resolution and cache helpers
-- `structure_tools.py`: primitive-cell reduction and automatic band-path helpers
-- `tests/test_project_context.py`: coverage for lightweight shared context summaries
+- `qe_studio/core/project_context.py`: lightweight cross-page state and disk summary helpers
+- `qe_studio/core/state_keys.py`: all session-state key constants
+- `qe_studio/core/structure_state.py`: structure state, signatures, provenance, cell-mode switching, and invalidation helpers
+- `qe_studio/core/workspace.py`: directory and filename constants
+- `qe_studio/pages/ui_structure.py`: Structure page UI
+- `qe_studio/pages/ui_setup.py`: Setup page UI
+- `qe_studio/pages/ui_studies.py`: Studies page UI (Cutoff, K-Point, EOS tabs + Run Study controls)
+- `qe_studio/pages/ui_run.py`: Run page UI
+- `qe_studio/pages/ui_analysis.py`: Analysis page UI
+- `qe_studio/pages/shared.py`: shared page helpers (tables, captions, status messages)
+- `qe_studio/convergence/models.py`: data models — sweep specs, study points, PointResult, EosFitResult
+- `qe_studio/convergence/cutoff_study.py`: cutoff sweep generation, manifest, and refresh
+- `qe_studio/convergence/kpoint_study.py`: k-point sweep generation, manifest, and refresh
+- `qe_studio/convergence/eos_study.py`: EOS isotropic scaling, manifest, and refresh
+- `qe_studio/convergence/eos_fit.py`: Birch-Murnaghan equation of state fitting via scipy
+- `qe_studio/convergence/result_parser.py`: pw.out total-energy parser (shared by all study types)
+- `qe_studio/convergence/recommendation.py`: convergence recommendation logic
+- `qe_studio/convergence/study_runner.py`: converts study manifests into JobStep lists for pw.x
+- `qe_studio/convergence/shared.py`: shared utilities (unique study dir, successive delta calculation)
+- `qe_studio/services/input_generator.py`: CalculationContext and generate_qe_input_text
+- `qe_studio/services/qe_runner.py`: registry-backed QE subprocess execution and live output streaming
+- `qe_studio/services/pseudopotentials.py`: SSSP and SG15 ONCV FR pseudopotential resolution and cache helpers
+- `qe_studio/services/postprocessing.py`: disk-first QE run inspection, DOS/bands input generation, and output validation helpers
+- `qe_studio/services/electronic_properties.py`: QE analysis discovery, parsing, and Plotly figure helpers
+- `qe_studio/services/plotting/study_plots.py`: Plotly charts for Cutoff, K-Point, and EOS studies
+- `qe_studio/services/studies/study_summary_view.py`: baseline-drift detection for all study types
+- `tests/`: pytest test suite covering convergence models, EOS fitting, k-point recommendations, and more
 - `requirements.txt`: direct Python dependencies
 - `README.md`: setup, run, and test instructions
 - `HISTORY.md`: persistent project context for humans and AI
@@ -346,46 +339,63 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Tightened the shared sidebar top spacing so the project panel aligns more cleanly with the top navigation and main app frame.
 - Shifted the full sidebar content block upward so the `QE Studio` heading aligns more closely with the built-in sidebar collapse arrow.
 
+### 2026-04-17
+
+- Added a dedicated **Studies** page between Setup and Run, giving convergence workflows a first-class home in the app navigation.
+- Moved cutoff convergence out of the Setup page into the new Studies page.
+- Added **K-Point Convergence** study: sweeps k-grid density (isotropic 3D, 2D in-plane, 1D wire) with fixed cutoffs; recommends the converged grid; apply-to-Setup button.
+- Added **Equation of State (EOS)** study: isotropically scales the active structure over a configurable volume range; fits a Birch-Murnaghan EOS via `scipy.optimize.curve_fit`; reports V₀, B₀, a₀; apply-equilibrium-volume button.
+- Added `convergence/` package with dedicated modules for each study type: `cutoff_study.py`, `kpoint_study.py`, `eos_study.py`, `eos_fit.py`, `result_parser.py`, `recommendation.py`, `shared.py`, and `models.py`.
+- Added `convergence/study_runner.py`: converts any study manifest into a list of `JobStep` objects for `run_chained_jobs`, enabling sequential `pw.x` execution for each study point.
+- Added **▶ Run Study** button to each study type's results panel: launches all point inputs sequentially, streams live `pw.x` console output per point, and shows a **⏹ Stop** button to terminate the active run.
+- Added `_study_live_console_fragment` (`@st.fragment(run_every=1)`) for non-blocking study run output streaming independent of the main Run page.
+- Added baseline-drift detection (`services/studies/study_summary_view.py`) that warns when the active Setup baseline has changed since a study was generated, covering structure, pseudopotentials, k-points, and cutoffs.
+- Refactored QE input generation into a structured service layer (`services/input_generator.py`) with `CalculationContext`, `NumericalSettings`, `PhysicalOptions`, and `ControlSettings` dataclasses.
+- Fixed `parse_cutoff_point_output` calls in `eos_study.py` to pass the required `atom_count` keyword argument; stored `atom_count` in EOS manifests at generation time.
+- Added interactive Plotly charts for all three study types via `services/plotting/study_plots.py`.
+- Added `pytest` test coverage for EOS models, sweep spec validation, Birch-Murnaghan fitting edge cases, and study generation.
+- Fixed Studies page to read k-points, cutoffs, and all physics settings from the active Setup baseline snapshot rather than defaults.
+- Updated the app navigation from 4 pages to 5 pages.
+
 ## Known Limitations
 
 - Only the first structure in a supported multi-structure file is loaded.
-- The prototype builder is intentionally curated and currently supports only:
-  - ordered cubic double perovskites `A2BB'X6`
-  - cubic perovskites `ABX3`
-  - rocksalt `AB`
-- Database-backed import, pasted structure text, and QE-input import are not implemented yet.
-- No persistent storage exists for the active structure or builder drafts beyond the active Streamlit session.
-- Viewer controls are session-only and do not persist beyond the active Streamlit session.
-- A hard browser refresh resets Streamlit session state.
+- The prototype builder is intentionally curated and currently supports only double perovskites, cubic perovskites, and rocksalt.
+- No persistent storage beyond the active Streamlit session; a hard browser refresh resets session state.
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
 - Live UI streaming depends on QE executables flushing stdout/stderr as they run.
+- Only one QE job (studies or main Run page) can run at a time; global run lock is shared.
+- EOS workflow currently only supports isotropic scaling; anisotropic or axis-specific volume scans are not implemented.
+- Study `Run Study` feature requires `pw.x` on PATH; no MPI or job-scheduler integration exists.
 - V1 analysis does not support PDOS, fat bands, or projected band weights.
-- Advanced structure-inspection overlays such as coordination polyhedra and local-environment highlighting are not implemented yet.
+- SOC calculations do not yet support noncollinear magnetic vector setup (`angle1/angle2`).
+- Advanced structure-inspection overlays such as coordination polyhedra are not implemented yet.
 - The shared sidebar intentionally shows only lightweight summaries; full DOS/band parsing happens only on the `Analysis` page.
 
 ## Next Likely Steps
 
-- Add database-backed structure import through Materials Project, COD, or OPTIMADE.
-- Add pasted-structure-text and QE-input import adapters under the same source-selector workflow.
-- Add the next curated prototype families only if they stay low-risk, especially fluorite `AX2` and carefully scoped anti-perovskite support.
-- Add support for selecting among multiple structures in supported multi-structure files if needed.
-- Add advanced structure-inspection overlays such as coordination polyhedra, local environment highlighting, and perovskite-octahedra views.
-- Add explicit cancel/terminate controls for active Quantum ESPRESSO runs.
-- Continue polishing the shared shell styling and card layouts for a more dashboard-like presentation.
+- End-to-end validation: run a full Cutoff → K-Point → EOS workflow on a real structure and verify parsed energies, recommendations, and EOS fitting.
+- Add MPI support option for study runs (e.g., `mpirun -n N pw.x -in pw.in`).
+- Add anisotropic EOS scaling modes (e.g., uniaxial or biaxial strain).
+- Add PDOS support via `projwfc.x` post-processing.
+- Add projected / fat-band visualization.
+- Add database-backed structure import (Materials Project, COD, OPTIMADE).
+- Add pasted-structure-text and QE-input import adapters.
+- Add the next curated prototype families (e.g., fluorite `AX2`).
 - Add manual pseudopotential override controls.
 - Add offline mode and explicit cache cleanup tools.
 - Add structure export or conversion features.
-- Extend electronic-properties analysis to PDOS from `projwfc.x`.
-- Add projected or fat-band visualization.
 - Add run history or recent-artifact navigation inside the shared project frame.
 
 ## AI Context Notes
 
-- The repo is no longer centered on a single large `app.py`; the UI is split across dedicated page modules plus `project_context.py`.
-- `project_context.py` should remain summary-focused; structure ingestion, validation, signatures, provenance, and invalidation now live in `structure_sources.py` and `structure_state.py`.
+- The app is organized as a proper Python package under `qe_studio/` with sub-packages `core/`, `pages/`, `services/`, and `convergence/`.
+- `pages/ui_studies.py` owns all convergence study UI; `convergence/` owns all study service logic.
+- `services/input_generator.py` owns the `CalculationContext` dataclass and `generate_qe_input_text`. Always use these when generating study inputs — never build raw QE namelist dicts directly in UI code.
+- `services/qe_runner.py` is the single subprocess execution backend; both the Run page and the Studies Run Study feature share it.
+- `core/project_context.py` should remain summary-only; no heavy parsing or figure generation.
+- `core/state_keys.py` holds all session-state key string constants; add new ones there rather than scattering them across pages.
 - The local virtual environment directory `venv/` exists and has already been used to install dependencies.
-- There is no git repository initialized at the moment.
-- The current architecture should preserve the lightweight shared context rule:
-  - summary-only work in `project_context.py`
-  - heavy DOS/band parsing only in `ui_analysis.py`
+- Use `PYTHONPATH=. venv/bin/pytest tests/` to run the test suite.
+- There is a `.git` repository initialized in the project root.
