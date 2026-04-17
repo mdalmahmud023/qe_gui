@@ -63,7 +63,9 @@ def test_kpoint_recommendation():
     ]
     
     rec = recommend_kpoints(points, results, tolerance_mev_per_atom=1.0)
-    assert rec.status == "unconverged"
+    assert rec.status == "complete"
+    assert rec.recommended_k_grid == (6, 6, 6)
+    assert rec.grid_label == "6x6x6"
 
 def test_kpoint_recommendation_converged():
     points = [
@@ -88,7 +90,7 @@ def test_kpoint_recommendation_converged():
     assert rec.grid_label == "6x6x6"
 
 
-def test_kpoint_recommendation_unconverged():
+def test_kpoint_recommendation_falls_back_to_highest_tested_grid():
     points = [
         KPointStudyPoint(1, (2, 2, 2), "2x2x2", Path("")),
         KPointStudyPoint(2, (4, 4, 4), "4x4x4", Path("")),
@@ -102,4 +104,6 @@ def test_kpoint_recommendation_unconverged():
     ]
     
     rec = recommend_kpoints(points, results, tolerance_mev_per_atom=1.0)
-    assert rec.status == "unconverged"
+    assert rec.status == "complete"
+    assert rec.recommended_k_grid == (6, 6, 6)
+    assert rec.grid_label == "6x6x6"

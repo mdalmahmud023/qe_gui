@@ -40,7 +40,7 @@ def recommend_cutoffs(
     *,
     tolerance_mev_per_atom: float,
 ) -> CutoffRecommendation:
-    """Apply the conservative tail-stability rule to a completed cutoff sweep."""
+    """Pick the first cutoff whose energy is within tolerance of the highest tested point."""
     if len(study_points) != len(point_results):
         raise ValueError("Study points and parsed point results must have the same length.")
     if tolerance_mev_per_atom <= 0:
@@ -69,16 +69,11 @@ def recommend_cutoffs(
         )
 
     energies_per_atom = [float(result.energy_per_atom_ev) for result in point_results if result.energy_per_atom_ev is not None]
-    deltas_mev_per_atom = [
-        abs(energies_per_atom[index] - energies_per_atom[index - 1]) * 1000.0
-        for index in range(1, len(energies_per_atom))
-    ]
+    reference_energy = energies_per_atom[-1]
 
-    for candidate_index, candidate_point in enumerate(study_points[:-2]):
-        tail_deltas = deltas_mev_per_atom[candidate_index:]
-        if len(tail_deltas) < 2:
-            continue
-        if all(delta <= tolerance_mev_per_atom + _FLOAT_TOLERANCE for delta in tail_deltas):
+    for candidate_point, candidate_energy in zip(study_points, energies_per_atom, strict=False):
+        delta_mev_per_atom = abs(candidate_energy - reference_energy) * 1000.0
+        if delta_mev_per_atom <= tolerance_mev_per_atom + _FLOAT_TOLERANCE:
             return CutoffRecommendation(
                 status="complete",
                 recommended_ecutwfc_ry=candidate_point.ecutwfc_ry,
@@ -91,12 +86,7 @@ def recommend_cutoffs(
                 warnings=tuple(warnings),
             )
 
-    warnings.append("The highest tested cutoff still does not satisfy the convergence tolerance.")
-    return CutoffRecommendation(
-        status="unconverged",
-        message="Cutoff study is unconverged: extend the sweep to higher cutoffs.",
-        warnings=tuple(warnings),
-    )
+    raise AssertionError("The highest tested cutoff should always satisfy the reference-point tolerance rule.")
 
 
 def recommend_kpoints(
@@ -105,7 +95,7 @@ def recommend_kpoints(
     *,
     tolerance_mev_per_atom: float,
 ) -> KPointRecommendation:
-    """Apply the conservative tail-stability rule to a completed k-point sweep."""
+    """Pick the first k-point grid whose energy is within tolerance of the highest tested point."""
     if len(study_points) != len(point_results):
         raise ValueError("Study points and parsed point results must have the same length.")
     if tolerance_mev_per_atom <= 0:
@@ -134,16 +124,11 @@ def recommend_kpoints(
         )
 
     energies_per_atom = [float(result.energy_per_atom_ev) for result in point_results if result.energy_per_atom_ev is not None]
-    deltas_mev_per_atom = [
-        abs(energies_per_atom[index] - energies_per_atom[index - 1]) * 1000.0
-        for index in range(1, len(energies_per_atom))
-    ]
+    reference_energy = energies_per_atom[-1]
 
-    for candidate_index, candidate_point in enumerate(study_points[:-2]):
-        tail_deltas = deltas_mev_per_atom[candidate_index:]
-        if len(tail_deltas) < 2:
-            continue
-        if all(delta <= tolerance_mev_per_atom + _FLOAT_TOLERANCE for delta in tail_deltas):
+    for candidate_point, candidate_energy in zip(study_points, energies_per_atom, strict=False):
+        delta_mev_per_atom = abs(candidate_energy - reference_energy) * 1000.0
+        if delta_mev_per_atom <= tolerance_mev_per_atom + _FLOAT_TOLERANCE:
             return KPointRecommendation(
                 status="complete",
                 recommended_k_grid=candidate_point.k_points_grid,
@@ -155,9 +140,4 @@ def recommend_kpoints(
                 warnings=tuple(warnings),
             )
 
-    warnings.append("The highest tested k-point grid still does not satisfy the convergence tolerance.")
-    return KPointRecommendation(
-        status="unconverged",
-        message="K-point study is unconverged: extend the sweep to denser grids.",
-        warnings=tuple(warnings),
-    )
+    raise AssertionError("The highest tested k-point grid should always satisfy the reference-point tolerance rule.")

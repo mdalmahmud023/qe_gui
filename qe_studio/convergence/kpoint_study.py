@@ -331,9 +331,9 @@ def build_kpoint_study_manifest(
         "recommendation_rule": {
             "metric": "total_energy_per_atom_ev",
             "tolerance_mev_per_atom": sweep_spec.tolerance_mev_per_atom,
-            "method": "all_higher_points_with_two_confirmation_points",
-            "requires_complete_tail": True,
-            "minimum_confirmation_points": 2,
+            "method": "first_within_tolerance_of_highest_tested_point",
+            "reference_point": "highest_tested",
+            "requires_complete_tail": False,
         },
         "points": [point.as_dict() for point in points],
         "warnings": list(study_warnings),

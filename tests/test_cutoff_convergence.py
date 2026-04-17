@@ -199,7 +199,7 @@ class CutoffPointParserTests(unittest.TestCase):
 
 
 class CutoffRecommendationTests(unittest.TestCase):
-    def test_recommendation_chooses_smallest_stable_tail(self) -> None:
+    def test_recommendation_chooses_first_point_within_tolerance_of_highest_tested_cutoff(self) -> None:
         study_points = [
             CutoffStudyPoint(index=1, ecutwfc_ry=40.0, ecutrho_ry=320.0, run_dir=Path("p1")),
             CutoffStudyPoint(index=2, ecutwfc_ry=50.0, ecutrho_ry=400.0, run_dir=Path("p2")),
@@ -220,7 +220,7 @@ class CutoffRecommendationTests(unittest.TestCase):
         self.assertEqual(recommendation.recommended_ecutrho_ry, 400.0)
         self.assertIn("Recommended production cutoff", recommendation.message)
 
-    def test_recommendation_refuses_one_point_accidental_agreement(self) -> None:
+    def test_recommendation_accepts_first_earlier_point_that_matches_highest_tested_cutoff(self) -> None:
         study_points = [
             CutoffStudyPoint(index=1, ecutwfc_ry=40.0, ecutrho_ry=320.0, run_dir=Path("p1")),
             CutoffStudyPoint(index=2, ecutwfc_ry=50.0, ecutrho_ry=400.0, run_dir=Path("p2")),
@@ -234,7 +234,31 @@ class CutoffRecommendationTests(unittest.TestCase):
 
         recommendation = recommend_cutoffs(study_points, point_results, tolerance_mev_per_atom=1.0)
 
-        self.assertEqual(recommendation.status, "unconverged")
+        self.assertEqual(recommendation.status, "complete")
+        self.assertEqual(recommendation.recommended_ecutwfc_ry, 60.0)
+        self.assertEqual(recommendation.recommended_ecutrho_ry, 480.0)
+
+    def test_recommendation_matches_highest_tested_cutoff_reference_rule(self) -> None:
+        study_points = [
+            CutoffStudyPoint(index=1, ecutwfc_ry=40.0, ecutrho_ry=320.0, run_dir=Path("p1")),
+            CutoffStudyPoint(index=2, ecutwfc_ry=50.0, ecutrho_ry=400.0, run_dir=Path("p2")),
+            CutoffStudyPoint(index=3, ecutwfc_ry=60.0, ecutrho_ry=480.0, run_dir=Path("p3")),
+            CutoffStudyPoint(index=4, ecutwfc_ry=70.0, ecutrho_ry=560.0, run_dir=Path("p4")),
+            CutoffStudyPoint(index=5, ecutwfc_ry=80.0, ecutrho_ry=640.0, run_dir=Path("p5")),
+        ]
+        point_results = [
+            parse_cutoff_point_output_result("success", total_energy_ry=-393.69833652, energy_per_atom_ev=-535.65387497),
+            parse_cutoff_point_output_result("success", total_energy_ry=-393.70539628, energy_per_atom_ev=-535.66348027),
+            parse_cutoff_point_output_result("success", total_energy_ry=-393.70788457, energy_per_atom_ev=-535.66686576),
+            parse_cutoff_point_output_result("success", total_energy_ry=-393.70823082, energy_per_atom_ev=-535.66733685),
+            parse_cutoff_point_output_result("success", total_energy_ry=-393.70878931, energy_per_atom_ev=-535.66809672),
+        ]
+
+        recommendation = recommend_cutoffs(study_points, point_results, tolerance_mev_per_atom=1.0)
+
+        self.assertEqual(recommendation.status, "complete")
+        self.assertEqual(recommendation.recommended_ecutwfc_ry, 70.0)
+        self.assertEqual(recommendation.recommended_ecutrho_ry, 560.0)
 
     def test_recommendation_marks_missing_point_as_incomplete(self) -> None:
         study_points = [
@@ -252,7 +276,7 @@ class CutoffRecommendationTests(unittest.TestCase):
 
         self.assertEqual(recommendation.status, "incomplete")
 
-    def test_recommendation_marks_nonconverged_complete_data_as_unconverged(self) -> None:
+    def test_recommendation_falls_back_to_highest_tested_cutoff_when_needed(self) -> None:
         study_points = [
             CutoffStudyPoint(index=1, ecutwfc_ry=40.0, ecutrho_ry=320.0, run_dir=Path("p1")),
             CutoffStudyPoint(index=2, ecutwfc_ry=50.0, ecutrho_ry=400.0, run_dir=Path("p2")),
@@ -268,7 +292,9 @@ class CutoffRecommendationTests(unittest.TestCase):
 
         recommendation = recommend_cutoffs(study_points, point_results, tolerance_mev_per_atom=1.0)
 
-        self.assertEqual(recommendation.status, "unconverged")
+        self.assertEqual(recommendation.status, "complete")
+        self.assertEqual(recommendation.recommended_ecutwfc_ry, 70.0)
+        self.assertEqual(recommendation.recommended_ecutrho_ry, 560.0)
 
 
 class CutoffStudyIntegrationTests(unittest.TestCase):
