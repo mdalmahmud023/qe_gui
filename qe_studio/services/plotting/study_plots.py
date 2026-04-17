@@ -5,6 +5,37 @@ from typing import Any
 import plotly.graph_objects as go
 
 
+def _add_categorical_reference_line(
+    fig: go.Figure,
+    *,
+    x_value: str,
+    annotation_text: str,
+    line_color: str = "green",
+) -> None:
+    """Add a vertical reference line for a categorical x-axis."""
+    fig.add_shape(
+        type="line",
+        x0=x_value,
+        x1=x_value,
+        y0=0,
+        y1=1,
+        xref="x",
+        yref="paper",
+        line=dict(width=2, dash="dash", color=line_color),
+    )
+    fig.add_annotation(
+        x=x_value,
+        y=1,
+        xref="x",
+        yref="paper",
+        text=annotation_text,
+        showarrow=False,
+        yshift=10,
+        font=dict(color=line_color),
+        bgcolor="rgba(255,255,255,0.85)",
+    )
+
+
 def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
     """Create a Plotly figure for a cutoff convergence study.
 
@@ -115,6 +146,7 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
     valid_x = []
     valid_y = []
     hover_texts = []
+    valid_hover_texts = []
     
     for point in points:
         grid_label = point.get("grid_label")
@@ -139,6 +171,7 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
         if energy_ev is not None:
             valid_x.append(grid_label)
             valid_y.append(energy_ev)
+            valid_hover_texts.append(hover_texts[-1])
 
     fig = go.Figure()
 
@@ -152,21 +185,22 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
                 line=dict(color="#2ca02c", width=2),
                 marker=dict(size=8, color="#2ca02c", symbol="circle"),
                 hoverinfo="text",
-                text=[hover_texts[points.index(p)] for p in points if p.get("energy_per_atom_ev") is not None],
+                text=valid_hover_texts,
             )
         )
 
     recommended_grid_label = recommendation.get("grid_label")
+    if not recommended_grid_label:
+        recommended_k_grid = recommendation.get("recommended_k_grid")
+        if recommended_k_grid:
+            recommended_grid_label = "x".join(str(value) for value in recommended_k_grid)
     rec_status = recommendation.get("status")
 
     if rec_status == "complete" and recommended_grid_label:
-        fig.add_vline(
-            x=recommended_grid_label,
-            line_width=2,
-            line_dash="dash",
-            line_color="green",
+        _add_categorical_reference_line(
+            fig,
+            x_value=str(recommended_grid_label),
             annotation_text=f"Suggested Minimum Grid ({recommended_grid_label})",
-            annotation_position="top right",
         )
 
     fig.update_layout(
