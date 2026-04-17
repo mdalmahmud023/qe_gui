@@ -55,6 +55,7 @@ from ..core.structure_state import (
 )
 from ..core.workspace import QE_CONVERGENCE_DIR
 from ..services.input_generator import CalculationContext
+from ..services.structure_tools import make_conventional_atoms
 from ..convergence.models import (
     EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
     EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3,
@@ -277,6 +278,66 @@ def _get_eos_fit_display_values(
         "bulk_modulus_label": "Bulk Modulus (B0)",
         "bulk_modulus_value": fit.get("B0"),
     }
+
+
+def _resolve_standardized_conventional_lattice_a(atoms) -> tuple[float | None, str | None]:
+    """Return the standardized conventional-cell ``a`` lattice parameter for one structure."""
+    if atoms is None:
+        return None, "The active structure is unavailable, so QE Studio could not determine the current conventional-cell lattice parameter."
+    try:
+        conventional_result = make_conventional_atoms(atoms)
+    except ValueError as exc:
+        return None, f"QE Studio could not determine a standardized conventional cell for the current structure: {exc}"
+
+    try:
+        lattice_a = float(conventional_result.atoms.cell.cellpar()[0])
+    except (TypeError, ValueError, IndexError):
+        return None, "QE Studio could not read the standardized conventional-cell lattice parameter from the current structure."
+    if not math.isfinite(lattice_a) or lattice_a <= 0:
+        return None, "QE Studio found an invalid standardized conventional-cell lattice parameter for the current structure."
+    return lattice_a, None
+
+
+def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) -> bool:
+    """Apply one isotropically scaled raw structure back into the active session."""
+    if not math.isfinite(scale_factor) or scale_factor <= 0:
+        st.error("QE Studio could not apply the requested EOS scaling because the derived scale factor is invalid.")
+        return False
+
+    from ..core.structure_state import get_structure_mode, resolve_atoms_for_structure_mode, _store_active_structure
+    from ..core.state_keys import (
+        RAW_ATOMS_STATE_KEY,
+        SOURCE_DETAILS_STATE_KEY,
+        SOURCE_FORMAT_STATE_KEY,
+        SOURCE_KIND_STATE_KEY,
+        SOURCE_LABEL_STATE_KEY,
+        STRUCTURE_FILE_BYTES_STATE_KEY,
+    )
+
+    raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+    if raw_atoms is None:
+        st.error("QE Studio could not update the active structure because the raw source cell is unavailable in session state.")
+        return False
+
+    new_raw_atoms = raw_atoms.copy()
+    new_raw_atoms.set_cell(new_raw_atoms.cell * scale_factor, scale_atoms=True)
+
+    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(new_raw_atoms, get_structure_mode())
+
+    _store_active_structure(
+        new_raw_atoms,
+        active_atoms,
+        source_kind=st.session_state.get(SOURCE_KIND_STATE_KEY, "file"),
+        source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
+        source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
+        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
+        structure_mode=resolved_mode,
+        structure_mode_message=status_message,
+        payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
+    )
+    st.success(success_message)
+    st.rerun()
+    return True
 
 
 def _default_ratio_rule_fields(ratio: float) -> tuple[str, float | None]:
@@ -1709,44 +1770,63 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
             st.markdown("### Apply Equilibrium")
             st.info(
                 "Applying the equilibrium volume uses the simulated fitted-cell equilibrium volume from the internal EOS fit. "
-                "This is independent of the current display mode and will update your active structure. "
+                "Applying the lattice parameter uses the standardized conventional-cell lattice a derived from the fitted equilibrium structure. "
+                "Both actions are independent of the current display mode and will update your active structure by isotropic scaling. "
                 "It may require re-resolving pseudopotentials or invalidating other studies."
             )
-            
-            if st.button("Apply Equilibrium Volume to Active Structure", type="primary"):
-                from ..core.structure_state import get_structure_mode, resolve_atoms_for_structure_mode, _store_active_structure
-                from ..core.state_keys import RAW_ATOMS_STATE_KEY, SOURCE_KIND_STATE_KEY, SOURCE_LABEL_STATE_KEY, SOURCE_FORMAT_STATE_KEY, SOURCE_DETAILS_STATE_KEY, STRUCTURE_FILE_BYTES_STATE_KEY
-                
-                # We apply the isotropic scaling to the active atoms object
-                raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
-                if raw_atoms is not None:
-                    # Determine the required scale factor compared to current atoms
-                    active_atoms = ctx.atoms
-                    current_volume = active_atoms.get_volume()
+            conventional_geometry = fit.get("equilibrium_geometry", {}).get("conventional_cell", {})
+            target_lattice_a = (
+                float(conventional_geometry["a"])
+                if isinstance(conventional_geometry, dict)
+                and conventional_geometry.get("available")
+                and conventional_geometry.get("a") is not None
+                else None
+            )
+
+            apply_col1, apply_col2 = st.columns(2)
+            with apply_col1:
+                if st.button("Apply Equilibrium Volume to Active Structure", type="primary", use_container_width=True):
+                    current_volume = ctx.atoms.get_volume() if ctx.atoms is not None else None
                     target_volume = fit.get("V0")
-                    volume_ratio = target_volume / current_volume
-                    # Volume is L^3, so linear scale factor is volume_ratio^(1/3)
-                    scale_factor = volume_ratio ** (1.0 / 3.0)
-                    
-                    # We must scale the raw atoms so that the full state remains consistent
-                    new_raw_atoms = raw_atoms.copy()
-                    new_raw_atoms.set_cell(new_raw_atoms.cell * scale_factor, scale_atoms=True)
-                    
-                    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(new_raw_atoms, get_structure_mode())
-                    
-                    _store_active_structure(
-                        new_raw_atoms,
-                        active_atoms,
-                        source_kind=st.session_state.get(SOURCE_KIND_STATE_KEY, "file"),
-                        source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
-                        source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
-                        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
-                        structure_mode=resolved_mode,
-                        structure_mode_message=status_message,
-                        payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
+                    if current_volume is None or not math.isfinite(float(current_volume)) or float(current_volume) <= 0:
+                        st.error("QE Studio could not apply the EOS equilibrium volume because the current active-cell volume is unavailable or invalid.")
+                    elif target_volume is None or not math.isfinite(float(target_volume)) or float(target_volume) <= 0:
+                        st.error("QE Studio could not apply the EOS equilibrium volume because the fitted V0 value is unavailable or invalid.")
+                    else:
+                        volume_ratio = float(target_volume) / float(current_volume)
+                        scale_factor = volume_ratio ** (1.0 / 3.0)
+                        _apply_scaled_raw_structure(
+                            scale_factor=scale_factor,
+                            success_message=f"Successfully applied equilibrium volume {float(target_volume):.2f} Å³. Active structure updated.",
+                        )
+            with apply_col2:
+                apply_lattice_button_disabled = target_lattice_a is None
+                if st.button(
+                    "Apply Lattice Parameter to Active Structure",
+                    use_container_width=True,
+                    disabled=apply_lattice_button_disabled,
+                ):
+                    current_lattice_a, lattice_warning = _resolve_standardized_conventional_lattice_a(ctx.raw_atoms)
+                    if lattice_warning:
+                        st.error(lattice_warning)
+                    elif target_lattice_a is None:
+                        st.error("QE Studio could not apply the EOS lattice parameter because the fitted standardized conventional-cell lattice a is unavailable.")
+                    else:
+                        scale_factor = float(target_lattice_a) / float(current_lattice_a)
+                        _apply_scaled_raw_structure(
+                            scale_factor=scale_factor,
+                            success_message=(
+                                "Successfully applied standardized conventional-cell lattice "
+                                f"a = {float(target_lattice_a):.4f} Å. Active structure updated."
+                            ),
+                        )
+                if apply_lattice_button_disabled:
+                    st.caption("The lattice-parameter action is unavailable because this EOS study does not include a standardized conventional-cell lattice a.")
+                elif target_lattice_a is not None:
+                    st.caption(
+                        "This action isotropically rescales the active structure so its standardized conventional-cell "
+                        f"lattice a matches the fitted equilibrium value of {float(target_lattice_a):.4f} Å."
                     )
-                    st.success(f"Successfully applied equilibrium volume {target_volume:.2f} Å³. Active structure updated.")
-                    st.rerun()
 
         # Render points table
         st.caption(

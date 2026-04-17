@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ase.build import bulk
+import pytest
 from qe_studio.pages import ui_studies
 from qe_studio.services import qe_runner
 
@@ -208,6 +210,23 @@ def test_resolve_eos_fitted_cell_atom_count_rejects_inconsistent_metadata() -> N
     natoms, warning = ui_studies._resolve_eos_fitted_cell_atom_count(manifest, summary)
 
     assert natoms is None
+    assert warning is not None
+
+
+def test_resolve_standardized_conventional_lattice_a_from_primitive_structure() -> None:
+    atoms = bulk("Si", "diamond", a=5.43)
+
+    lattice_a, warning = ui_studies._resolve_standardized_conventional_lattice_a(atoms)
+
+    assert warning is None
+    assert lattice_a is not None
+    assert lattice_a == pytest.approx(5.43, rel=1e-6)
+
+
+def test_resolve_standardized_conventional_lattice_a_rejects_missing_structure() -> None:
+    lattice_a, warning = ui_studies._resolve_standardized_conventional_lattice_a(None)
+
+    assert lattice_a is None
     assert warning is not None
 
 
