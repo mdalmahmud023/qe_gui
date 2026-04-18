@@ -298,6 +298,56 @@ def _resolve_standardized_conventional_lattice_a(atoms) -> tuple[float | None, s
     return lattice_a, None
 
 
+def _scale_structure_source_details_for_eos_apply(
+    *,
+    source_kind: str | None,
+    source_details: dict[str, object] | None,
+    scale_factor: float,
+) -> dict[str, object]:
+    """Scale persisted source metadata so displayed lattice values stay in sync with EOS updates."""
+    scaled_details = dict(source_details or {})
+    if not math.isfinite(scale_factor) or scale_factor <= 0:
+        return scaled_details
+
+    if source_kind == "prototype":
+        lattice_parameter = scaled_details.get("lattice_parameter")
+        try:
+            parsed_lattice_parameter = float(lattice_parameter)
+        except (TypeError, ValueError):
+            return scaled_details
+        if math.isfinite(parsed_lattice_parameter) and parsed_lattice_parameter > 0:
+            scaled_details["lattice_parameter"] = parsed_lattice_parameter * scale_factor
+    return scaled_details
+
+
+def _sync_scaled_structure_source_draft(
+    *,
+    source_kind: str | None,
+    source_details: dict[str, object],
+) -> None:
+    """Mirror explicit EOS structure updates into the matching source-page draft widgets."""
+    if source_kind != "prototype":
+        return
+
+    family_key = source_details.get("_prototype_family_key")
+    lattice_parameter = source_details.get("lattice_parameter")
+    if not isinstance(family_key, str):
+        return
+    try:
+        lattice_parameter_value = float(lattice_parameter)
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(lattice_parameter_value) or lattice_parameter_value <= 0:
+        return
+
+    from . import ui_structure
+
+    st.session_state[ui_structure.PROTOTYPE_FAMILY_WIDGET_KEY] = family_key
+    st.session_state[
+        ui_structure._prototype_family_field_widget_key(family_key, "lattice_parameter")
+    ] = lattice_parameter_value
+
+
 def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) -> bool:
     """Apply one isotropically scaled raw structure back into the active session."""
     if not math.isfinite(scale_factor) or scale_factor <= 0:
@@ -323,18 +373,25 @@ def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) ->
     new_raw_atoms.set_cell(new_raw_atoms.cell * scale_factor, scale_atoms=True)
 
     active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(new_raw_atoms, get_structure_mode())
+    source_kind = st.session_state.get(SOURCE_KIND_STATE_KEY, "file")
+    source_details = _scale_structure_source_details_for_eos_apply(
+        source_kind=source_kind,
+        source_details=st.session_state.get(SOURCE_DETAILS_STATE_KEY),
+        scale_factor=scale_factor,
+    )
 
     _store_active_structure(
         new_raw_atoms,
         active_atoms,
-        source_kind=st.session_state.get(SOURCE_KIND_STATE_KEY, "file"),
+        source_kind=source_kind,
         source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
         source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
-        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
+        source_details=source_details,
         structure_mode=resolved_mode,
         structure_mode_message=status_message,
         payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
     )
+    _sync_scaled_structure_source_draft(source_kind=source_kind, source_details=source_details)
     st.success(success_message)
     st.rerun()
     return True
@@ -1772,7 +1829,7 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
                 "Applying the equilibrium volume uses the simulated fitted-cell equilibrium volume from the internal EOS fit. "
                 "Applying the lattice parameter uses the standardized conventional-cell lattice a derived from the fitted equilibrium structure. "
                 "Both actions are independent of the current display mode and will update your active structure by isotropic scaling. "
-                "It may require re-resolving pseudopotentials or invalidating other studies."
+                "Other studies may become stale after the structure update, but resolved pseudopotentials remain usable as long as the element set is unchanged."
             )
             conventional_geometry = fit.get("equilibrium_geometry", {}).get("conventional_cell", {})
             target_lattice_a = (

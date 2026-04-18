@@ -4,8 +4,17 @@ from pathlib import Path
 
 from ase.build import bulk
 import pytest
+import streamlit as st
 from qe_studio.pages import ui_studies
 from qe_studio.services import qe_runner
+
+
+@pytest.fixture(autouse=True)
+def _clear_session_state():
+    st.session_state.clear()
+    yield
+    st.session_state.clear()
+
 
 def test_ui_studies_importable():
     assert ui_studies is not None
@@ -228,6 +237,32 @@ def test_resolve_standardized_conventional_lattice_a_rejects_missing_structure()
 
     assert lattice_a is None
     assert warning is not None
+
+
+def test_scale_structure_source_details_for_eos_apply_updates_prototype_lattice_parameter() -> None:
+    scaled = ui_studies._scale_structure_source_details_for_eos_apply(
+        source_kind="prototype",
+        source_details={
+            "_prototype_family_key": "ordered_double_perovskite_a2bbx6",
+            "lattice_parameter": 8.0,
+        },
+        scale_factor=1.25,
+    )
+
+    assert scaled["lattice_parameter"] == pytest.approx(10.0)
+
+
+def test_sync_scaled_structure_source_draft_updates_prototype_widget_value() -> None:
+    ui_studies._sync_scaled_structure_source_draft(
+        source_kind="prototype",
+        source_details={
+            "_prototype_family_key": "ordered_double_perovskite_a2bbx6",
+            "lattice_parameter": 8.75,
+        },
+    )
+
+    assert st.session_state["structure_prototype_family"] == "ordered_double_perovskite_a2bbx6"
+    assert st.session_state["structure_prototype_field_ordered_double_perovskite_a2bbx6_lattice_parameter_0"] == pytest.approx(8.75)
 
 
 def test_get_available_eos_display_modes_disables_normalized_modes_without_atom_count() -> None:

@@ -51,7 +51,7 @@ class StructureStateTests(unittest.TestCase):
     def test_atomic_positions_coordinate_mode_defaults_to_crystal(self) -> None:
         self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
 
-    def test_commit_structure_source_marks_pseudopotentials_stale_for_same_elements(self) -> None:
+    def test_commit_structure_source_keeps_pseudopotentials_resolved_for_same_elements(self) -> None:
         first = Atoms(
             "Si2",
             positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]],
@@ -79,7 +79,15 @@ class StructureStateTests(unittest.TestCase):
 
         ss.commit_structure_source(second, source_kind="manual", source_label="Manual Builder")
 
-        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "stale")
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "resolved")
+        self.assertEqual(
+            st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY]["hash"],
+            ss.get_structure_signature(second)["hash"],
+        )
+        self.assertIn(
+            "same element set",
+            st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["message"].lower(),
+        )
         self.assertEqual(st.session_state[ss.SOURCE_KIND_STATE_KEY], "manual")
         self.assertIsNotNone(st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY])
 
@@ -100,7 +108,7 @@ class StructureStateTests(unittest.TestCase):
 
         self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
 
-    def test_apply_structure_mode_selection_marks_pseudopotentials_stale_when_cell_changes(self) -> None:
+    def test_apply_structure_mode_selection_keeps_pseudopotentials_resolved_when_cell_changes(self) -> None:
         conventional = bulk("Si", "diamond", a=5.43, cubic=True)
         ss.commit_structure_source(conventional, source_kind="file", source_label="Si.cif", source_format="cif")
         source_signature = st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY]
@@ -119,7 +127,95 @@ class StructureStateTests(unittest.TestCase):
         ss.apply_structure_mode_selection("primitive")
 
         self.assertEqual(st.session_state[ss.STRUCTURE_MODE_STATE_KEY], "primitive")
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "resolved")
+        self.assertEqual(
+            st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY]["hash"],
+            st.session_state[ss.ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY]["hash"],
+        )
+
+    def test_commit_structure_source_preserves_stale_settings_mismatch_for_same_elements(self) -> None:
+        first = Atoms(
+            "Si2",
+            positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]],
+            cell=[5.43, 5.43, 5.43],
+            pbc=True,
+        )
+        second = Atoms(
+            "Si2",
+            positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]],
+            cell=[5.43, 5.43, 5.43],
+            pbc=True,
+        )
+
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(first)
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "stale",
+            "message": "Pseudopotential settings changed. Re-resolve before continuing.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0", "fully_relativistic": False},
+            "resolved_structure_signature": ss.get_structure_signature(first),
+        }
+        st.session_state[ss.PSEUDO_FUNCTIONAL_WIDGET_KEY] = "PBEsol"
+        st.session_state[ss.PSEUDO_MODE_WIDGET_KEY] = "efficiency"
+        st.session_state[ss.PSEUDO_VERSION_WIDGET_KEY] = "1.3.0"
+        st.session_state[ss.PSEUDO_FULLY_RELATIVISTIC_WIDGET_KEY] = False
+
+        ss.commit_structure_source(second, source_kind="manual", source_label="Manual Builder")
+
         self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "stale")
+        self.assertEqual(
+            st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY]["hash"],
+            ss.get_structure_signature(first)["hash"],
+        )
+
+    def test_commit_structure_source_clears_pseudopotentials_when_element_set_changes(self) -> None:
+        first = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.43, 5.43, 5.43], pbc=True)
+        second = Atoms("Ge", positions=[[0.0, 0.0, 0.0]], cell=[5.66, 5.66, 5.66], pbc=True)
+
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(first)
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "resolved",
+            "message": "Resolved pseudopotentials.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0"},
+            "resolved_structure_signature": ss.get_structure_signature(first),
+        }
+
+        ss.commit_structure_source(second, source_kind="manual", source_label="Manual Builder")
+
+        self.assertNotIn(ss.PSEUDO_DIR_STATE_KEY, st.session_state)
+        self.assertNotIn(ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY, st.session_state)
+
+    def test_get_qe_generation_blocker_message_auto_heals_same_element_structure_stale_state(self) -> None:
+        first = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)
+        second = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]], cell=[5.43, 5.43, 5.43], pbc=True)
+
+        st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
+        st.session_state[ss.PSEUDO_RESOLVED_MAP_STATE_KEY] = {"Si": "Si.UPF"}
+        st.session_state[ss.PSEUDO_RESOLVED_ROWS_STATE_KEY] = [{"element": "Si"}]
+        st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = ss.get_structure_signature(first)
+        st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY] = {
+            "state": "stale",
+            "message": "The active structure changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input.",
+            "warnings": [],
+            "resolved_settings": {"functional": "PBE", "mode": "efficiency", "version": "1.3.0"},
+            "resolved_structure_signature": ss.get_structure_signature(first),
+        }
+
+        blocker_message = ss.get_qe_generation_blocker_message(second)
+
+        self.assertIsNone(blocker_message)
+        self.assertEqual(st.session_state[ss.PSEUDO_RESOLUTION_STATUS_STATE_KEY]["state"], "resolved")
+        self.assertEqual(
+            st.session_state[ss.PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY]["hash"],
+            ss.get_structure_signature(second)["hash"],
+        )
 
     def test_sync_pseudopotential_settings_state_marks_detailed_stale_message_on_mismatch(self) -> None:
         atoms = Atoms("Si2", positions=[[0.0, 0.0, 0.0], [1.35, 1.35, 1.35]], cell=[5.43, 5.43, 5.43], pbc=True)

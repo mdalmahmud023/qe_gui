@@ -287,6 +287,9 @@ def get_qe_generation_blocker_message(atoms) -> str | None:
 
     status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
     if status.get("state") == "stale":
+        _resolve_pseudopotential_state_for_active_structure(get_structure_signature(atoms))
+        status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
+    if status.get("state") == "stale":
         return status.get(
             "message",
             "Pseudopotentials are stale. Re-resolve them before generating a runnable Quantum ESPRESSO input file.",
@@ -335,6 +338,35 @@ def mark_pseudopotentials_stale(message: str) -> None:
     )
 
 
+def _get_mismatched_pseudopotential_setting_keys(
+    *,
+    current_settings: dict[str, Any] | None,
+    resolved_settings: dict[str, Any] | None,
+) -> list[str]:
+    """Return selector fields whose current values differ from the resolved pseudo settings."""
+    if not resolved_settings:
+        return []
+
+    resolved_settings = dict(resolved_settings)
+    current_settings = dict(current_settings or {})
+    fully_relativistic_current = bool(current_settings.get("fully_relativistic", False))
+    fully_relativistic_resolved = bool(resolved_settings.get("fully_relativistic", False))
+    keys_to_compare = ["functional", "fully_relativistic"]
+    if not fully_relativistic_current and not fully_relativistic_resolved:
+        keys_to_compare.extend(["mode", "version"])
+
+    def _resolved_value_for_comparison(key: str):
+        if key == "fully_relativistic":
+            return bool(resolved_settings.get(key, False))
+        return resolved_settings.get(key)
+
+    return [
+        key
+        for key in keys_to_compare
+        if current_settings.get(key) != _resolved_value_for_comparison(key)
+    ]
+
+
 def get_current_pseudo_settings() -> dict:
     """Return the active pseudopotential selector values."""
     return {
@@ -360,25 +392,16 @@ def sync_pseudopotential_settings_state() -> None:
         return
 
     resolved_settings = status.get("resolved_settings") or {}
-    fully_relativistic_current = bool(current_settings.get("fully_relativistic", False))
-    fully_relativistic_resolved = bool(resolved_settings.get("fully_relativistic", False))
-    keys_to_compare = ["functional", "fully_relativistic"]
-    if not fully_relativistic_current and not fully_relativistic_resolved:
-        keys_to_compare.extend(["mode", "version"])
-
-    def _resolved_value_for_comparison(key: str):
-        if key == "fully_relativistic":
-            return bool(resolved_settings.get(key, False))
-        return resolved_settings.get(key)
-
-    mismatched_keys = [
-        key
-        for key in keys_to_compare
-        if current_settings[key] != _resolved_value_for_comparison(key)
-    ]
+    mismatched_keys = _get_mismatched_pseudopotential_setting_keys(
+        current_settings=current_settings,
+        resolved_settings=resolved_settings,
+    )
     if mismatched_keys:
         mismatch_summary = ", ".join(
-            f"{key}={current_settings[key]!r} (resolved {_resolved_value_for_comparison(key)!r})"
+            f"{key}={current_settings[key]!r} "
+            f"(resolved {bool(resolved_settings.get(key, False))!r})"
+            if key == "fully_relativistic"
+            else f"{key}={current_settings[key]!r} (resolved {resolved_settings.get(key)!r})"
             for key in mismatched_keys
         )
         mark_pseudopotentials_stale(
@@ -407,20 +430,73 @@ def _resolve_pseudopotential_state_for_active_structure(active_signature: dict[s
     resolved_pseudo_signature = st.session_state.get(PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY)
     status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
     had_resolved_data = has_resolved_pseudopotential_data()
+    resolved_settings = status.get("resolved_settings")
+    mismatched_settings = _get_mismatched_pseudopotential_setting_keys(
+        current_settings=get_current_pseudo_settings(),
+        resolved_settings=resolved_settings,
+    )
 
     if had_resolved_data and resolved_pseudo_signature:
         if structure_signatures_match(resolved_pseudo_signature, active_signature):
-            set_resolution_status(
-                state="resolved",
-                message=status.get("message", "Resolved pseudopotentials are available."),
-                warnings=list(status.get("warnings", [])),
-                resolved_settings=status.get("resolved_settings"),
-                resolved_structure_signature=resolved_pseudo_signature,
-            )
+            if status.get("state") == "error":
+                set_resolution_status(
+                    state="error",
+                    message=status.get("message", "Resolved pseudopotentials are not ready."),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=resolved_pseudo_signature,
+                )
+            elif status.get("state") == "stale" and mismatched_settings:
+                set_resolution_status(
+                    state="stale",
+                    message=status.get(
+                        "message",
+                        "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input.",
+                    ),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=resolved_pseudo_signature,
+                )
+            else:
+                st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = active_signature
+                set_resolution_status(
+                    state="resolved",
+                    message=status.get("message", "Resolved pseudopotentials are available."),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=active_signature,
+                )
         elif has_same_element_set(resolved_pseudo_signature, active_signature):
-            mark_pseudopotentials_stale(
-                "The active structure changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input."
-            )
+            if status.get("state") == "error":
+                set_resolution_status(
+                    state="error",
+                    message=status.get("message", "Resolved pseudopotentials are not ready."),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=resolved_pseudo_signature,
+                )
+            elif status.get("state") == "stale" and mismatched_settings:
+                set_resolution_status(
+                    state="stale",
+                    message=status.get(
+                        "message",
+                        "Pseudopotential settings changed. Re-resolve pseudopotentials before generating a runnable Quantum ESPRESSO input.",
+                    ),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=resolved_pseudo_signature,
+                )
+            else:
+                st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = active_signature
+                set_resolution_status(
+                    state="resolved",
+                    message=(
+                        "Resolved pseudopotentials remain valid because the active structure keeps the same element set."
+                    ),
+                    warnings=list(status.get("warnings", [])),
+                    resolved_settings=resolved_settings,
+                    resolved_structure_signature=active_signature,
+                )
         else:
             clear_pseudopotential_state(clear_structure_signature=True)
     elif st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY):
