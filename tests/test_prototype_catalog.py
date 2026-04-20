@@ -15,6 +15,16 @@ class PrototypeCatalogTests(unittest.TestCase):
             ),
         )
 
+    def test_ordered_double_perovskite_defaults_match_expected_prototype(self) -> None:
+        family = catalog.get_prototype_family("ordered_double_perovskite_a2bbx6")
+        defaults = {field.key: field.default for field in family.core_fields}
+
+        self.assertEqual(defaults["a_site"], "Na")
+        self.assertEqual(defaults["b_site"], "Ca")
+        self.assertEqual(defaults["b_prime_site"], "Cd")
+        self.assertEqual(defaults["x_site"], "F")
+        self.assertEqual(defaults["lattice_parameter"], 9.5)
+
     def test_build_prototype_family_dispatches_ordered_double_perovskite(self) -> None:
         result = catalog.build_prototype_family(
             "ordered_double_perovskite_a2bbx6",
@@ -22,8 +32,8 @@ class PrototypeCatalogTests(unittest.TestCase):
                 "a_site": "Na",
                 "b_site": "Ca",
                 "b_prime_site": "Cd",
-                "x_site": "H",
-                "lattice_parameter": 8.0,
+                "x_site": "F",
+                "lattice_parameter": 9.5,
                 "x_parameter": 0.25,
             },
         )
@@ -31,7 +41,7 @@ class PrototypeCatalogTests(unittest.TestCase):
         counts = Counter(result.atoms.get_chemical_symbols())
         reduced_formula_units = counts["Na"] // 2
         self.assertEqual(result.source_label, "Ordered Double Perovskite (A2BB'X6)")
-        self.assertEqual(counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "H": 6 * reduced_formula_units}))
+        self.assertEqual(counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "F": 6 * reduced_formula_units}))
 
     def test_build_prototype_family_uses_defaults_for_missing_optional_advanced_fields(self) -> None:
         result = catalog.build_prototype_family(
@@ -40,8 +50,8 @@ class PrototypeCatalogTests(unittest.TestCase):
                 "a_site": "Na",
                 "b_site": "Ca",
                 "b_prime_site": "Cd",
-                "x_site": "H",
-                "lattice_parameter": 8.0,
+                "x_site": "F",
+                "lattice_parameter": 9.5,
             },
         )
 

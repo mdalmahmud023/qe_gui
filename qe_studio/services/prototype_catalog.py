@@ -51,14 +51,14 @@ ORDERED_DOUBLE_PEROVSKITE_FAMILY = PrototypeFamilyDefinition(
     short_description="Build an ordered cubic double perovskite / elpasolite source cell for `A2BB'X6`.",
     core_fields=(
         PrototypeFieldDefinition("a_site", "A site", FIELD_KIND_TEXT, "Na"),
-        PrototypeFieldDefinition("x_site", "X site", FIELD_KIND_TEXT, "H"),
+        PrototypeFieldDefinition("x_site", "X site", FIELD_KIND_TEXT, "F"),
         PrototypeFieldDefinition("b_site", "B site", FIELD_KIND_TEXT, "Ca"),
         PrototypeFieldDefinition("b_prime_site", "B' site", FIELD_KIND_TEXT, "Cd"),
         PrototypeFieldDefinition(
             "lattice_parameter",
             "Cubic lattice parameter a (A)",
             FIELD_KIND_FLOAT,
-            8.0,
+            9.5,
             min_value=0.0,
             step=0.1,
         ),

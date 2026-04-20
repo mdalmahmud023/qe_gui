@@ -113,8 +113,8 @@ class StructureSourcesTests(unittest.TestCase):
             a_site="Na",
             b_site="Ca",
             b_prime_site="Cd",
-            x_site="H",
-            lattice_parameter=8.0,
+            x_site="F",
+            lattice_parameter=9.5,
         )
 
         self.assertEqual(result.source_kind, "prototype")
@@ -123,7 +123,7 @@ class StructureSourcesTests(unittest.TestCase):
         reduced_formula_units = atom_counts["Na"] // 2
         self.assertIn(len(result.atoms), {10, 40})
         self.assertGreaterEqual(reduced_formula_units, 1)
-        self.assertEqual(atom_counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "H": 6 * reduced_formula_units}))
+        self.assertEqual(atom_counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "F": 6 * reduced_formula_units}))
         self.assertEqual(result.source_details["prototype_family"], "Ordered Double Perovskite")
         self.assertEqual(result.source_details["formula_template"], "A2BB'X6")
 
