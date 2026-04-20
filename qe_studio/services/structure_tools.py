@@ -59,6 +59,7 @@ def make_primitive_atoms(
         cell=lattice,
         scaled_positions=scaled_positions,
         pbc=atoms.pbc,
+        info=dict(atoms.info),
     )
     changed = len(primitive_atoms) != len(atoms) or not primitive_atoms.cell.array.round(8).tolist() == atoms.cell.array.round(8).tolist()
     message = (
@@ -98,6 +99,7 @@ def make_conventional_atoms(
         cell=lattice,
         scaled_positions=scaled_positions,
         pbc=atoms.pbc,
+        info=dict(atoms.info),
     )
     changed = len(conventional_atoms) != len(atoms) or not conventional_atoms.cell.array.round(8).tolist() == atoms.cell.array.round(8).tolist()
     message = (

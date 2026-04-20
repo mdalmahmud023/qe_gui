@@ -56,6 +56,7 @@ from .workspace import (
     QE_STUDIO_PROVENANCE_VERSION,
 )
 from ..services.qe_runner import reset_run_state
+from ..services.structure_formula import attach_preferred_formula, get_preferred_formula
 from ..services.structure_tools import make_primitive_atoms
 
 STRUCTURE_SIGNATURE_VERSION = 1
@@ -163,7 +164,7 @@ def get_structure_signature(atoms) -> dict[str, Any]:
         "version": STRUCTURE_SIGNATURE_VERSION,
         "hash": hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest(),
         "elements": get_unique_elements(atoms),
-        "formula": atoms.get_chemical_formula(),
+        "formula": get_preferred_formula(atoms),
         "atom_count": len(atoms),
     }
 
@@ -515,6 +516,9 @@ def _store_active_structure(
     structure_mode_message: str,
     payload_bytes: bytes | None = None,
 ) -> None:
+    preferred_formula = get_preferred_formula(raw_atoms, source_details=source_details)
+    attach_preferred_formula(raw_atoms, preferred_formula)
+    attach_preferred_formula(active_atoms, preferred_formula)
     raw_signature = get_structure_signature(raw_atoms)
     active_signature = get_structure_signature(active_atoms)
 

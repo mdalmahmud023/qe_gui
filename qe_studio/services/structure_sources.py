@@ -13,6 +13,8 @@ from ase.io import read
 from ase.spacegroup import crystal
 import numpy as np
 
+from .structure_formula import PREFERRED_FORMULA_SOURCE_DETAIL_KEY, format_formula_sequence
+
 
 FILE_FORMAT_AUTO = "auto"
 FILE_FORMAT_CIF = "cif"
@@ -288,6 +290,7 @@ def build_manual_structure(
         source_details={
             "coordinate_mode": coordinate_mode,
             "formula_text": formula_text.strip() or None,
+            PREFERRED_FORMULA_SOURCE_DETAIL_KEY: formula_text.strip() or None,
         },
         warnings=tuple(warnings),
     )
@@ -340,6 +343,14 @@ def build_ordered_double_perovskite(
             "x_site": x_symbol,
             "lattice_parameter": float(lattice_parameter),
             "x_parameter": float(x_parameter),
+            PREFERRED_FORMULA_SOURCE_DETAIL_KEY: format_formula_sequence(
+                (
+                    (a_symbol, 2),
+                    (b_symbol, 1),
+                    (b_prime_symbol, 1),
+                    (x_symbol, 6),
+                )
+            ),
         },
     )
 
@@ -381,6 +392,13 @@ def build_cubic_perovskite(
             "b_site": b_symbol,
             "x_site": x_symbol,
             "lattice_parameter": float(lattice_parameter),
+            PREFERRED_FORMULA_SOURCE_DETAIL_KEY: format_formula_sequence(
+                (
+                    (a_symbol, 1),
+                    (b_symbol, 1),
+                    (x_symbol, 3),
+                )
+            ),
         },
     )
 
@@ -418,6 +436,12 @@ def build_rocksalt(
             "a_site": a_symbol,
             "b_site": b_symbol,
             "lattice_parameter": float(lattice_parameter),
+            PREFERRED_FORMULA_SOURCE_DETAIL_KEY: format_formula_sequence(
+                (
+                    (a_symbol, 1),
+                    (b_symbol, 1),
+                )
+            ),
         },
     )
 

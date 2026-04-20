@@ -27,6 +27,7 @@ from ..services.reproducibility import (
     resolve_generator_version_info,
     write_input_reproducibility_metadata,
 )
+from ..services.structure_formula import get_preferred_formula
 from .shared import attach_successive_energy_deltas, deduplicate_messages, make_unique_study_dir
 
 
@@ -301,7 +302,7 @@ def build_kpoint_study_manifest(
             "source_format": source_metadata.get("source_format"),
             "source_details": dict(source_metadata.get("source_details") or {}),
             "structure_signature": structure_signature,
-            "formula": atoms.get_chemical_formula(),
+            "formula": get_preferred_formula(atoms),
             "atom_count": len(atoms),
             "structure_mode": structure_mode,
             "atomic_positions_coordinate_mode": base_ctx.atomic_positions_coordinate_mode,

@@ -4,6 +4,7 @@ from pathlib import Path
 from ase import Atoms
 
 from qe_studio.services import qe_control
+from qe_studio.services.structure_formula import attach_preferred_formula
 
 
 class QEControlTests(unittest.TestCase):
@@ -11,6 +12,12 @@ class QEControlTests(unittest.TestCase):
         atoms = Atoms("Fe2O3", positions=[[0, 0, 0]] * 5, cell=[5, 5, 5], pbc=True)
 
         self.assertEqual(qe_control.default_qe_prefix(atoms), "fe2o3")
+
+    def test_default_qe_prefix_prefers_attached_display_formula(self) -> None:
+        atoms = Atoms("CaCdF6Na2", positions=[[0, 0, 0]] * 10, cell=[5, 5, 5], pbc=True)
+        attach_preferred_formula(atoms, "Na2CaCdF6")
+
+        self.assertEqual(qe_control.default_qe_prefix(atoms), "na2cacdf6")
 
     def test_sanitize_qe_prefix_truncates_to_max_length(self) -> None:
         raw = "Project " + ("FeO_" * 40)

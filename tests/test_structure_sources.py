@@ -126,6 +126,7 @@ class StructureSourcesTests(unittest.TestCase):
         self.assertEqual(atom_counts, Counter({"Na": 2 * reduced_formula_units, "Ca": reduced_formula_units, "Cd": reduced_formula_units, "F": 6 * reduced_formula_units}))
         self.assertEqual(result.source_details["prototype_family"], "Ordered Double Perovskite")
         self.assertEqual(result.source_details["formula_template"], "A2BB'X6")
+        self.assertEqual(result.source_details["_preferred_formula"], "Na2CaCdF6")
 
     def test_build_cubic_perovskite_returns_expected_counts(self) -> None:
         result = sources.build_cubic_perovskite(

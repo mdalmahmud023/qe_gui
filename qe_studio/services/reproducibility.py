@@ -39,6 +39,7 @@ from .input_generator import (
     suggest_kpoints_from_cell,
 )
 from .pseudopotentials import inspect_soc_compatibility
+from .structure_formula import get_preferred_formula
 
 REPRODUCIBILITY_SCHEMA_VERSION = 1
 LOW_VACUUM_THRESHOLD_ANGSTROM = 10.0
@@ -554,7 +555,7 @@ def build_input_reproducibility_metadata(
             "source_format": source_metadata.get("source_format"),
             "source_details": dict(source_metadata.get("source_details") or {}),
             "structure_signature": structure_signature,
-            "formula": atoms.get_chemical_formula(),
+            "formula": get_preferred_formula(atoms),
             "atom_count": len(atoms),
             "structure_mode": structure_mode,
             "atomic_positions_coordinate_mode": ctx.atomic_positions_coordinate_mode,

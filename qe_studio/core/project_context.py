@@ -56,6 +56,7 @@ from ..services.qe_runner import (
     initialize_run_state,
     reconcile_run_state,
 )
+from ..services.structure_formula import get_preferred_formula
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ def _build_structure_summary(atoms) -> StructureSummary:
         "prototype": "Prototype Builder",
     }.get(source_kind)
     cell_mode = get_structure_mode()
+    source_details = dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {})
     return StructureSummary(
         loaded=atoms is not None,
         filename=st.session_state.get(FILENAME_STATE_KEY),
@@ -272,8 +274,8 @@ def _build_structure_summary(atoms) -> StructureSummary:
         source_kind_label=source_kind_label,
         source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
         source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
-        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
-        formula=atoms.get_chemical_formula() if atoms is not None else None,
+        source_details=source_details,
+        formula=get_preferred_formula(atoms, source_details=source_details) if atoms is not None else None,
         atom_count=len(atoms) if atoms is not None else 0,
         cell_mode=cell_mode,
         cell_mode_label="Primitive Cell" if cell_mode == "primitive" else "Source Cell",

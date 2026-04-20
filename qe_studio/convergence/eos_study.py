@@ -10,6 +10,7 @@ from ase import Atoms
 from ase.io import read as read_atoms
 
 from ..services.input_generator import generate_qe_input_text, CalculationContext
+from ..services.structure_formula import get_preferred_formula
 from ..services.structure_tools import make_conventional_atoms
 from .models import (
     CONVERGENCE_SCHEMA_VERSION,
@@ -283,7 +284,7 @@ def build_eos_study(
         ],
         "atom_count": len(atoms),
         "structure": {
-            "formula": atoms.get_chemical_formula(),
+            "formula": get_preferred_formula(atoms),
             "atom_count": len(atoms),
             "fitted_cell_snapshot": _serialize_atoms_snapshot(atoms),
         },

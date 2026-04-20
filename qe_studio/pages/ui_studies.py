@@ -1566,7 +1566,7 @@ def render_eos_study_config(ctx: ProjectContext, baseline: dict, pseudopotential
     # Render Baseline Summary
     st.markdown("**Baseline Context**")
     cols = st.columns(4)
-    cols[0].metric("Structure", atoms.get_chemical_formula())
+    cols[0].metric("Structure", ctx.structure.formula or "Unknown")
     cols[1].metric("K-Point Grid", "x".join(map(str, baseline.get("k_points_grid", [1, 1, 1]))))
     cols[2].metric("Wavefunction Cutoff", f"{baseline.get('ecutwfc', 0)} Ry")
     cols[3].metric("Charge Cutoff", f"{baseline.get('ecutrho', 0)} Ry")

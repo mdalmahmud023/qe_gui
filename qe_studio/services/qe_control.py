@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 import unicodedata
 
+from .structure_formula import get_preferred_formula
+
 DEFAULT_PREFIX_FALLBACK = "qe_studio"
 LEGACY_DEFAULT_PREFIX = "pwscf"
 DEFAULT_OUTDIR = "./tmp"
@@ -16,10 +18,7 @@ def default_qe_prefix(atoms) -> str:
     """Return a safe default QE prefix derived from the structure formula."""
     if atoms is None:
         return DEFAULT_PREFIX_FALLBACK
-    try:
-        formula = atoms.get_chemical_formula()
-    except Exception:
-        formula = None
+    formula = get_preferred_formula(atoms)
     return sanitize_qe_prefix(formula, fallback=DEFAULT_PREFIX_FALLBACK)
 
 

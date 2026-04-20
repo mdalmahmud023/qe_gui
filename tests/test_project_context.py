@@ -12,6 +12,7 @@ import streamlit as st
 from qe_studio.core import project_context as pc
 from qe_studio.core import structure_state as ss
 from qe_studio.services import qe_runner as runner
+from qe_studio.services import structure_sources as sources
 
 
 class ProjectContextTests(unittest.TestCase):
@@ -53,6 +54,28 @@ class ProjectContextTests(unittest.TestCase):
         self.assertEqual(ctx.structure.cell_mode_label, "Primitive Cell")
         self.assertEqual(ctx.structure.atom_count, 2)
         self.assertIn("a =", ctx.structure.cell_parameters or "")
+
+    def test_build_project_context_prefers_prototype_formula_order_for_display(self) -> None:
+        result = sources.build_ordered_double_perovskite(
+            a_site="Na",
+            b_site="Ca",
+            b_prime_site="Cd",
+            x_site="F",
+            lattice_parameter=9.5,
+        )
+        ss.commit_structure_source(
+            result.atoms,
+            source_kind=result.source_kind,
+            source_label=result.source_label,
+            source_format=result.source_format,
+            source_details=result.source_details,
+            requested_mode="source",
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            ctx = pc.build_project_context(Path(tmp_dir))
+
+        self.assertEqual(ctx.structure.formula, "Na2CaCdF6")
 
     def test_build_project_context_reports_resolved_and_stale_pseudopotential_states(self) -> None:
         st.session_state[ss.PSEUDO_DIR_STATE_KEY] = "qe_runs/pseudopotentials"
