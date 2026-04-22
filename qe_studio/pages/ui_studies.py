@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, MutableMapping
 
@@ -116,6 +118,7 @@ _ECUTRHO_MODE_LABELS = {
     EcutrhoMode.MANUAL_ABSOLUTE.value: "Manual absolute ecutrho",
     EcutrhoMode.MANUAL_RATIO.value: "Manual ecutrho ratio",
 }
+_STUDY_TIMESTAMP_SUFFIX_RE = re.compile(r"_[0-9]{8}T[0-9]{6}Z(?:_[0-9]+)?$")
 
 
 def _coerce_positive_int(value: object) -> int | None:
@@ -136,6 +139,125 @@ def _coerce_positive_float(value: object, default: float) -> float:
     if not math.isfinite(candidate) or candidate <= 0:
         return float(default)
     return candidate
+
+
+def _coerce_mapping(value: object) -> dict:
+    """Return a dict view of one manifest subsection."""
+    return value if isinstance(value, dict) else {}
+
+
+def _strip_generated_timestamp_suffix(name: str) -> str:
+    """Remove one generated-study timestamp suffix from a directory name."""
+    stripped = _STUDY_TIMESTAMP_SUFFIX_RE.sub("", name)
+    return stripped or name
+
+
+def _read_study_manifest_for_selector(
+    study_dir: Path,
+    load_manifest: Callable[[Path], dict | None],
+) -> dict:
+    """Load one study manifest for selector grouping, tolerating parse failures."""
+    try:
+        manifest = load_manifest(study_dir)
+    except Exception:
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def _format_selector_timestamp(value: object) -> str | None:
+    """Format one stored manifest timestamp for compact selector labels."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized).astimezone(timezone.utc)
+    except ValueError:
+        return None
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _get_study_generated_at_label(study_dir: Path, manifest: dict) -> str | None:
+    """Return the best available generated-at label for one study selector entry."""
+    timestamps = _coerce_mapping(manifest.get("timestamps"))
+    label = _format_selector_timestamp(
+        timestamps.get("generated_at")
+        or manifest.get("created_at")
+        or manifest.get("updated_at")
+    )
+    if label is not None:
+        return label
+    try:
+        fallback = datetime.fromtimestamp(study_dir.stat().st_mtime, tz=timezone.utc)
+    except OSError:
+        return None
+    return fallback.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _derive_study_material_identity(study_dir: Path, manifest: dict) -> tuple[str, str]:
+    """Return one stable grouping key plus a user-facing material label."""
+    structure = _coerce_mapping(manifest.get("structure"))
+    signature = _coerce_mapping(structure.get("structure_signature"))
+    workflow_type = str(manifest.get("workflow_type") or manifest.get("study_type") or "study")
+    fallback_label = _strip_generated_timestamp_suffix(study_dir.name)
+    material_label = str(structure.get("formula") or structure.get("source_label") or fallback_label)
+    signature_hash = str(signature.get("hash") or "").strip()
+    source_label = str(structure.get("source_label") or "").strip()
+    if signature_hash:
+        return f"{workflow_type}:{signature_hash}", material_label
+    if source_label:
+        return f"{workflow_type}:{source_label}:{material_label}", material_label
+    return f"{workflow_type}:{material_label.lower()}", material_label
+
+
+def _build_study_selector_options(
+    studies: list[Path],
+    load_manifest: Callable[[Path], dict | None],
+    *,
+    latest_per_material: bool,
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """Return selector options, labels, and canonical-path mapping for one study list."""
+    labels: dict[str, str] = {}
+    canonical_paths: dict[str, str] = {}
+    if not latest_per_material:
+        options = [str(path) for path in studies]
+        for path in studies:
+            canonical_paths[str(path)] = str(path)
+            labels[str(path)] = path.name
+        return options, labels, canonical_paths
+
+    grouped_entries: dict[str, dict[str, object]] = {}
+    for path in studies:
+        manifest = _read_study_manifest_for_selector(path, load_manifest)
+        material_key, material_label = _derive_study_material_identity(path, manifest)
+        grouped_entry = grouped_entries.get(material_key)
+        if grouped_entry is None:
+            grouped_entry = {
+                "path": str(path),
+                "material_label": material_label,
+                "latest_label": _get_study_generated_at_label(path, manifest),
+                "revision_count": 0,
+            }
+            grouped_entries[material_key] = grouped_entry
+        grouped_entry["revision_count"] = int(grouped_entry["revision_count"]) + 1
+        canonical_paths[str(path)] = str(grouped_entry["path"])
+
+    options = [str(entry["path"]) for entry in grouped_entries.values()]
+    for entry in grouped_entries.values():
+        option_path = str(entry["path"])
+        material_label = str(entry["material_label"] or "Unnamed study")
+        revision_count = int(entry["revision_count"])
+        latest_label = str(entry["latest_label"] or "").strip()
+        label_parts = [material_label]
+        if revision_count > 1:
+            label_parts.append(f"{revision_count} revisions")
+        if latest_label:
+            label_parts.append(f"latest {latest_label}")
+        labels[option_path] = " (" + ", ".join(label_parts[1:]) + ")" if len(label_parts) > 1 else ""
+        labels[option_path] = material_label + labels[option_path]
+
+    return options, labels, canonical_paths
 
 
 def _eos_summary_has_current_fit_basis(summary: dict | None) -> bool:
@@ -909,9 +1031,22 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
         st.info("Generate a cutoff convergence study from this page to review its manifest and parsed results.")
         return
 
-    st.session_state[CUTOFF_STUDY_LATEST_PATH_STATE_KEY] = str(studies[0])
+    show_all_revisions = st.toggle(
+        "Show older revisions",
+        value=False,
+        key="cutoff_study_show_all_revisions",
+    )
+    valid_paths, selector_labels, canonical_paths = _build_study_selector_options(
+        studies,
+        load_cutoff_study_manifest,
+        latest_per_material=not show_all_revisions,
+    )
+    if not show_all_revisions and len(valid_paths) < len(studies):
+        st.caption("Showing the latest study per material. Enable older revisions to inspect earlier snapshots.")
+
+    st.session_state[CUTOFF_STUDY_LATEST_PATH_STATE_KEY] = valid_paths[0]
     selected_path = str(st.session_state.get(CUTOFF_STUDY_SELECTED_PATH_STATE_KEY) or "")
-    valid_paths = [str(path) for path in studies]
+    selected_path = canonical_paths.get(selected_path, selected_path)
     if selected_path not in valid_paths:
         selected_path = valid_paths[0]
         st.session_state[CUTOFF_STUDY_SELECTED_PATH_STATE_KEY] = selected_path
@@ -920,7 +1055,7 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
         "Available cutoff studies",
         options=valid_paths,
         index=valid_paths.index(selected_path),
-        format_func=lambda path: Path(path).name,
+        format_func=lambda path: selector_labels.get(path, Path(path).name),
         key=CUTOFF_STUDY_SELECTED_PATH_STATE_KEY,
     )
     study_dir = Path(selected_path)
@@ -1336,9 +1471,22 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
         st.info("Generate a k-point convergence study from this page to review its manifest and parsed results.")
         return
 
-    st.session_state[KPOINT_STUDY_LATEST_PATH_STATE_KEY] = str(studies[0])
+    show_all_revisions = st.toggle(
+        "Show older revisions",
+        value=False,
+        key="kpoint_study_show_all_revisions",
+    )
+    valid_paths, selector_labels, canonical_paths = _build_study_selector_options(
+        studies,
+        load_kpoint_study_manifest,
+        latest_per_material=not show_all_revisions,
+    )
+    if not show_all_revisions and len(valid_paths) < len(studies):
+        st.caption("Showing the latest study per material. Enable older revisions to inspect earlier snapshots.")
+
+    st.session_state[KPOINT_STUDY_LATEST_PATH_STATE_KEY] = valid_paths[0]
     selected_path = str(st.session_state.get(KPOINT_STUDY_SELECTED_PATH_STATE_KEY) or "")
-    valid_paths = [str(path) for path in studies]
+    selected_path = canonical_paths.get(selected_path, selected_path)
     if selected_path not in valid_paths:
         selected_path = valid_paths[0]
         st.session_state[KPOINT_STUDY_SELECTED_PATH_STATE_KEY] = selected_path
@@ -1347,7 +1495,7 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
         "Available k-point studies",
         options=valid_paths,
         index=valid_paths.index(selected_path),
-        format_func=lambda path: Path(path).name,
+        format_func=lambda path: selector_labels.get(path, Path(path).name),
         key=KPOINT_STUDY_SELECTED_PATH_STATE_KEY,
     )
     study_dir = Path(selected_path)
@@ -1637,6 +1785,9 @@ def render_eos_study_config(ctx: ProjectContext, baseline: dict, pseudopotential
                     QE_CONVERGENCE_DIR,
                     pseudopotentials,
                     pseudo_dir,
+                    source_metadata=get_current_source_metadata(),
+                    structure_signature=get_current_active_structure_signature(),
+                    structure_mode=get_structure_mode(),
                 )
             st.session_state[EOS_STUDY_LATEST_PATH_STATE_KEY] = str(study_dir)
             st.session_state[EOS_STUDY_SELECTED_PATH_STATE_KEY] = str(study_dir)
@@ -1650,27 +1801,38 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
         st.info("No EOS studies found.")
         return
 
-    latest_path = st.session_state.get(EOS_STUDY_LATEST_PATH_STATE_KEY)
-    selected_path = st.session_state.get(EOS_STUDY_SELECTED_PATH_STATE_KEY)
-    
-    if selected_path and Path(selected_path) in studies:
-        default_index = studies.index(Path(selected_path))
-    elif latest_path and Path(latest_path) in studies:
-        default_index = studies.index(Path(latest_path))
-    else:
-        default_index = 0
-
-    study_dir = st.selectbox(
-        "Select EOS Study",
-        studies,
-        index=default_index,
-        format_func=lambda p: p.name,
-        key="eos_study_selector",
+    show_all_revisions = st.toggle(
+        "Show older revisions",
+        value=False,
+        key="eos_study_show_all_revisions",
     )
-    if not study_dir:
+    valid_paths, selector_labels, canonical_paths = _build_study_selector_options(
+        studies,
+        load_eos_study_manifest,
+        latest_per_material=not show_all_revisions,
+    )
+    if not show_all_revisions and len(valid_paths) < len(studies):
+        st.caption("Showing the latest study per material. Enable older revisions to inspect earlier snapshots.")
+
+    st.session_state[EOS_STUDY_LATEST_PATH_STATE_KEY] = valid_paths[0]
+    latest_path_str = canonical_paths.get(valid_paths[0], valid_paths[0])
+    selected_path = str(st.session_state.get(EOS_STUDY_SELECTED_PATH_STATE_KEY) or "")
+    selected_path = canonical_paths.get(selected_path, selected_path)
+    if selected_path not in valid_paths:
+        selected_path = latest_path_str if latest_path_str in valid_paths else valid_paths[0]
+        st.session_state[EOS_STUDY_SELECTED_PATH_STATE_KEY] = selected_path
+
+    selected_path = st.selectbox(
+        "Select EOS Study",
+        valid_paths,
+        index=valid_paths.index(selected_path),
+        format_func=lambda path: selector_labels.get(path, Path(path).name),
+        key=EOS_STUDY_SELECTED_PATH_STATE_KEY,
+    )
+    if not selected_path:
         return
 
-    st.session_state[EOS_STUDY_SELECTED_PATH_STATE_KEY] = str(study_dir)
+    study_dir = Path(selected_path)
 
     with st.spinner("Loading study..."):
         manifest = load_eos_study_manifest(study_dir)

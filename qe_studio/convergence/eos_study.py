@@ -5,6 +5,7 @@ import shutil
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ase import Atoms
 from ase.io import read as read_atoms
@@ -206,9 +207,14 @@ def build_eos_study(
     studies_dir: Path,
     pseudopotentials: dict[str, str],
     pseudo_dir: str,
+    *,
+    source_metadata: dict[str, Any] | None = None,
+    structure_signature: dict[str, Any] | None = None,
+    structure_mode: str | None = None,
 ) -> tuple[Path, list[EosStudyPoint]]:
     """Generate an Equation of State (EOS) study based on isotropic scaling."""
     sweep_spec.validate()
+    source_metadata = dict(source_metadata or {})
 
     study_dir = make_unique_study_dir(
         studies_dir,
@@ -261,6 +267,28 @@ def build_eos_study(
 
     # Write manifest
     manifest_path = study_dir / EOS_STUDY_MANIFEST_FILENAME
+    resolved_entries = base_context.resolved_entries or {}
+    per_species_pseudos = []
+    for species in (base_context.species_order or tuple(sorted(resolved_entries))):
+        entry = resolved_entries.get(species, {})
+        per_species_pseudos.append(
+            {
+                "species": species,
+                "filename": entry.get("filename"),
+                "md5": entry.get("md5"),
+                "pseudopotential": entry.get("pseudopotential") or pseudopotentials.get(species),
+            }
+        )
+    if not per_species_pseudos:
+        per_species_pseudos = [
+            {
+                "species": species,
+                "filename": None,
+                "md5": None,
+                "pseudopotential": pseudo_name,
+            }
+            for species, pseudo_name in sorted(pseudopotentials.items())
+        ]
     manifest = {
         "schema_version": CONVERGENCE_SCHEMA_VERSION,
         "study_type": ConvergenceWorkflowType.EOS.value,
@@ -284,9 +312,18 @@ def build_eos_study(
         ],
         "atom_count": len(atoms),
         "structure": {
+            "source_kind": source_metadata.get("source_kind"),
+            "source_label": source_metadata.get("source_label"),
+            "source_format": source_metadata.get("source_format"),
+            "source_details": dict(source_metadata.get("source_details") or {}),
+            "structure_signature": structure_signature,
             "formula": get_preferred_formula(atoms),
             "atom_count": len(atoms),
+            "structure_mode": structure_mode,
             "fitted_cell_snapshot": _serialize_atoms_snapshot(atoms),
+        },
+        "pseudopotentials": {
+            "per_species": per_species_pseudos,
         },
         "baseline_snapshot": {
             "physics_parameters": baseline,

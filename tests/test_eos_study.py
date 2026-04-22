@@ -48,7 +48,23 @@ def test_build_eos_study(atoms, base_context, tmp_path):
     spec = EosSweepSpec(mode="isotropic_scale", start_scale=0.9, stop_scale=1.1, num_points=3)
     baseline = {"k_points_grid": [4, 4, 4], "ecutwfc": 30.0, "ecutrho": 120.0}
     pseudopotentials = {"Si": "Si.upf"}
-    study_dir, points = build_eos_study(atoms, base_context, baseline, spec, tmp_path, pseudopotentials, "")
+    study_dir, points = build_eos_study(
+        atoms,
+        base_context,
+        baseline,
+        spec,
+        tmp_path,
+        pseudopotentials,
+        "",
+        source_metadata={
+            "source_kind": "prototype",
+            "source_label": "Si Primitive",
+            "source_format": "built",
+            "source_details": {"family": "diamond"},
+        },
+        structure_signature={"version": 1, "hash": "si-signature"},
+        structure_mode="primitive",
+    )
 
     assert study_dir.is_dir()
     manifest_path = study_dir / EOS_STUDY_MANIFEST_FILENAME
@@ -57,6 +73,10 @@ def test_build_eos_study(atoms, base_context, tmp_path):
     data = json.loads(manifest_path.read_text())
     assert data["study_type"] == ConvergenceWorkflowType.EOS.value
     assert len(data["points"]) == 3
+    assert data["structure"]["source_label"] == "Si Primitive"
+    assert data["structure"]["structure_signature"]["hash"] == "si-signature"
+    assert data["structure"]["structure_mode"] == "primitive"
+    assert data["pseudopotentials"]["per_species"][0]["pseudopotential"] == "Si.upf"
 
     assert len(points) == 3
     assert points[0].scale_factor == 0.9

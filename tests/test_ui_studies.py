@@ -20,6 +20,79 @@ def test_ui_studies_importable():
     assert ui_studies is not None
 
 
+def test_build_study_selector_options_groups_latest_revision_by_material() -> None:
+    studies = [
+        Path("/tmp/na2cacdf6_20260422T130805Z"),
+        Path("/tmp/na2cacdf6_20260422T130533Z"),
+        Path("/tmp/h6cacdna2_20260418T032811Z"),
+    ]
+    manifest_by_path = {
+        str(studies[0]): {
+            "study_type": "eos",
+            "created_at": "2026-04-22T13:08:05+00:00",
+            "structure": {
+                "formula": "Na2CaCdF6",
+                "structure_signature": {"hash": "na2-signature"},
+            },
+        },
+        str(studies[1]): {
+            "study_type": "eos",
+            "created_at": "2026-04-22T13:05:33+00:00",
+            "structure": {
+                "formula": "Na2CaCdF6",
+                "structure_signature": {"hash": "na2-signature"},
+            },
+        },
+        str(studies[2]): {
+            "study_type": "eos",
+            "created_at": "2026-04-18T03:28:11+00:00",
+            "structure": {
+                "formula": "H6CaCdNa2",
+                "structure_signature": {"hash": "h6-signature"},
+            },
+        },
+    }
+
+    options, labels, canonical_paths = ui_studies._build_study_selector_options(
+        studies,
+        load_manifest=lambda path: manifest_by_path[str(path)],
+        latest_per_material=True,
+    )
+
+    assert options == [str(studies[0]), str(studies[2])]
+    assert canonical_paths[str(studies[0])] == str(studies[0])
+    assert canonical_paths[str(studies[1])] == str(studies[0])
+    assert labels[str(studies[0])].startswith("Na2CaCdF6")
+    assert "2 revisions" in labels[str(studies[0])]
+
+
+def test_build_study_selector_options_falls_back_to_timestampless_directory_prefix() -> None:
+    studies = [
+        Path("/tmp/na2cacdf6_20260422T130805Z"),
+        Path("/tmp/na2cacdf6_20260422T130533Z"),
+    ]
+    manifest_by_path = {
+        str(studies[0]): {
+            "study_type": "eos",
+            "created_at": "2026-04-22T13:08:05+00:00",
+        },
+        str(studies[1]): {
+            "study_type": "eos",
+            "created_at": "2026-04-22T13:05:33+00:00",
+        },
+    }
+
+    options, labels, canonical_paths = ui_studies._build_study_selector_options(
+        studies,
+        load_manifest=lambda path: manifest_by_path[str(path)],
+        latest_per_material=True,
+    )
+
+    assert options == [str(studies[0])]
+    assert canonical_paths[str(studies[1])] == str(studies[0])
+    assert labels[str(studies[0])].startswith("na2cacdf6")
+
+
 class _DummyThread:
     def __init__(self, alive: bool) -> None:
         self._alive = alive
