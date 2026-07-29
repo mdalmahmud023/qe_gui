@@ -15,10 +15,12 @@ from ..core.state_keys import (
 )
 from ..core.structure_state import (
     apply_structure_mode_selection,
+    apply_structure_supercell_selection,
     clear_structure_state,
     commit_structure_source,
     get_atomic_positions_coordinate_mode,
     get_structure_mode,
+    get_structure_supercell_repeat,
     set_atomic_positions_coordinate_mode,
     set_structure_error,
 )
@@ -863,6 +865,69 @@ def _render_structure_mode_controls(ctx: ProjectContext) -> None:
         else:
             st.rerun()
 
+    current_repeat = get_structure_supercell_repeat()
+    default_supercell_mode = _get_supercell_mode_for_repeat(current_repeat)
+    stored_supercell_mode = st.session_state.get(VIEWER_SUPERCELL_MODE_WIDGET_KEY)
+    if stored_supercell_mode not in SUPERCELL_MODE_OPTIONS:
+        st.session_state.pop(VIEWER_SUPERCELL_MODE_WIDGET_KEY, None)
+    selected_supercell_mode = st.selectbox(
+        "Active supercell",
+        options=SUPERCELL_MODE_OPTIONS,
+        index=SUPERCELL_MODE_OPTIONS.index(default_supercell_mode),
+        key=VIEWER_SUPERCELL_MODE_WIDGET_KEY,
+        format_func=lambda value: {
+            "preset_111": "1x1x1",
+            "preset_211": "2x1x1",
+            "preset_222": "2x2x2",
+            SUPERCELL_MODE_CUSTOM: "Custom",
+        }[value],
+        help="Changes the active structure used by Setup, Studies, Run, and Analysis.",
+    )
+    if selected_supercell_mode == SUPERCELL_MODE_CUSTOM:
+        st.session_state.setdefault(VIEWER_SUPERCELL_A_WIDGET_KEY, current_repeat[0])
+        st.session_state.setdefault(VIEWER_SUPERCELL_B_WIDGET_KEY, current_repeat[1])
+        st.session_state.setdefault(VIEWER_SUPERCELL_C_WIDGET_KEY, current_repeat[2])
+        repeat_cols = st.columns(3)
+        repeat_cols[0].number_input(
+            "Repeat a",
+            min_value=1,
+            max_value=3,
+            step=1,
+            key=VIEWER_SUPERCELL_A_WIDGET_KEY,
+        )
+        repeat_cols[1].number_input(
+            "Repeat b",
+            min_value=1,
+            max_value=3,
+            step=1,
+            key=VIEWER_SUPERCELL_B_WIDGET_KEY,
+        )
+        repeat_cols[2].number_input(
+            "Repeat c",
+            min_value=1,
+            max_value=3,
+            step=1,
+            key=VIEWER_SUPERCELL_C_WIDGET_KEY,
+        )
+        selected_repeat = get_supercell_repeat_for_mode(
+            selected_supercell_mode,
+            custom_repeat=(
+                st.session_state.get(VIEWER_SUPERCELL_A_WIDGET_KEY, 1),
+                st.session_state.get(VIEWER_SUPERCELL_B_WIDGET_KEY, 1),
+                st.session_state.get(VIEWER_SUPERCELL_C_WIDGET_KEY, 1),
+            ),
+        )
+    else:
+        selected_repeat = get_supercell_repeat_for_mode(selected_supercell_mode)
+
+    if selected_repeat != current_repeat:
+        try:
+            apply_structure_supercell_selection(selected_repeat)
+        except Exception as exc:
+            st.error(f"Failed to apply the selected supercell: {exc}")
+        else:
+            st.rerun()
+
     current_coordinate_mode = get_atomic_positions_coordinate_mode()
     selected_coordinate_mode = st.radio(
         "Atomic positions coordinate system",
@@ -881,10 +946,18 @@ def _render_structure_mode_controls(ctx: ProjectContext) -> None:
         elif ctx.structure.mode_status not in {"Using the source cell.", "The source structure already looks like a primitive cell."}:
             status_bits.append(ctx.structure.mode_status)
     status_bits.append(
-        "Changing the active cell representation or atomic-position coordinate system affects newly generated QE inputs. "
+        "Changing the active cell representation, supercell, or atomic-position coordinate system affects newly generated QE inputs. "
         "Regenerate `pw.in` before DOS or bands."
     )
     st.caption(" ".join(status_bits))
+
+
+def _get_supercell_mode_for_repeat(repeat: tuple[int, int, int]) -> str:
+    """Return the preset selector mode matching an active repeat tuple."""
+    for mode in SUPERCELL_MODE_OPTIONS:
+        if mode != SUPERCELL_MODE_CUSTOM and get_supercell_repeat_for_mode(mode) == repeat:
+            return mode
+    return SUPERCELL_MODE_CUSTOM
 
 
 def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
@@ -897,10 +970,6 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
     st.session_state.setdefault(VIEWER_SHOW_BONDS_WIDGET_KEY, False)
     st.session_state.setdefault(VIEWER_SHOW_UNIT_CELL_WIDGET_KEY, True)
     st.session_state.setdefault(VIEWER_SHOW_AXES_WIDGET_KEY, False)
-    st.session_state.setdefault(VIEWER_SUPERCELL_MODE_WIDGET_KEY, "preset_111")
-    st.session_state.setdefault(VIEWER_SUPERCELL_A_WIDGET_KEY, 1)
-    st.session_state.setdefault(VIEWER_SUPERCELL_B_WIDGET_KEY, 1)
-    st.session_state.setdefault(VIEWER_SUPERCELL_C_WIDGET_KEY, 1)
 
     top_control_cols = st.columns(2, gap="medium")
     label_mode = top_control_cols[0].selectbox(
@@ -950,32 +1019,6 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
             key=VIEWER_SHOW_AXES_WIDGET_KEY,
             help="Viewer only. Adds simple Cartesian axes for orientation.",
         )
-        supercell_mode = st.selectbox(
-            "Supercell repeat",
-            options=SUPERCELL_MODE_OPTIONS,
-            key=VIEWER_SUPERCELL_MODE_WIDGET_KEY,
-            format_func=lambda value: {
-                "preset_111": "1x1x1",
-                "preset_211": "2x1x1",
-                "preset_222": "2x2x2",
-                SUPERCELL_MODE_CUSTOM: "Custom",
-            }[value],
-        )
-        if supercell_mode == SUPERCELL_MODE_CUSTOM:
-            repeat_cols = st.columns(3)
-            repeat_cols[0].number_input("Repeat a", min_value=1, max_value=3, step=1, key=VIEWER_SUPERCELL_A_WIDGET_KEY)
-            repeat_cols[1].number_input("Repeat b", min_value=1, max_value=3, step=1, key=VIEWER_SUPERCELL_B_WIDGET_KEY)
-            repeat_cols[2].number_input("Repeat c", min_value=1, max_value=3, step=1, key=VIEWER_SUPERCELL_C_WIDGET_KEY)
-            supercell_repeat = get_supercell_repeat_for_mode(
-                supercell_mode,
-                custom_repeat=(
-                    st.session_state.get(VIEWER_SUPERCELL_A_WIDGET_KEY, 1),
-                    st.session_state.get(VIEWER_SUPERCELL_B_WIDGET_KEY, 1),
-                    st.session_state.get(VIEWER_SUPERCELL_C_WIDGET_KEY, 1),
-                ),
-            )
-        else:
-            supercell_repeat = get_supercell_repeat_for_mode(supercell_mode)
 
     effective_show_bonds = get_effective_show_bonds(style_mode, show_bonds)
     settings = ViewerSettings(
@@ -985,18 +1028,13 @@ def _render_structure_viewer_controls(ctx: ProjectContext) -> ViewerSettings:
         show_unit_cell=show_unit_cell,
         show_axes=bool(st.session_state.get(VIEWER_SHOW_AXES_WIDGET_KEY, False)),
         visible_species=tuple(visible_species),
-        supercell_repeat=supercell_repeat,
     )
 
-    st.caption("Viewer only: labels, species filters, bonds, and supercell repeats affect only the display.")
+    st.caption("Viewer only: labels, species filters, bonds, axes, and unit-cell outlines affect only the display.")
     if effective_show_bonds:
         st.caption("PBC-aware inspection bonds use ASE neighbor-list distance heuristics.")
     elif style_supports_bond_toggle(style_mode):
         st.caption("PBC-aware inspection bonds are off by default for a cleaner crystal view.")
-    if settings.supercell_repeat != (1, 1, 1):
-        st.caption(
-            f"Viewer only supercell repeat: {format_supercell_repeat(settings.supercell_repeat)}. QE Studio still uses the original active structure downstream."
-        )
     if style_mode == STYLE_MODE_STICK:
         st.caption("Stick style always renders bonds in the viewer.")
     elif style_mode == STYLE_MODE_SPACEFILL:
@@ -1008,7 +1046,6 @@ def _render_structure_viewer(ctx: ProjectContext, viewer_settings: ViewerSetting
     display_atoms = build_display_atoms(
         ctx.atoms,
         visible_species=viewer_settings.visible_species,
-        supercell_repeat=viewer_settings.supercell_repeat,
     )
     if display_atoms is None or len(display_atoms) == 0:
         st.info("Select at least one visible species to render the active structure.")
@@ -1019,7 +1056,7 @@ def _render_structure_viewer(ctx: ProjectContext, viewer_settings: ViewerSetting
         height=620,
     )
     st.caption(
-        f"Displayed species: {', '.join(viewer_settings.visible_species)} • Displayed cell: {format_supercell_repeat(viewer_settings.supercell_repeat)}"
+        f"Displayed species: {', '.join(viewer_settings.visible_species)} • Active cell repeat: {format_supercell_repeat(get_structure_supercell_repeat())}"
     )
 
 

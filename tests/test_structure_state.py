@@ -108,6 +108,83 @@ class StructureStateTests(unittest.TestCase):
 
         self.assertEqual(ss.get_atomic_positions_coordinate_mode(), "crystal")
 
+    def test_apply_structure_supercell_selection_updates_active_atoms_and_cell(self) -> None:
+        raw_atoms = Atoms(
+            "Si",
+            scaled_positions=[[0.0, 0.0, 0.0]],
+            cell=[2.0, 3.0, 4.0],
+            pbc=True,
+        )
+        ss.commit_structure_source(
+            raw_atoms,
+            source_kind="manual",
+            source_label="Manual Builder",
+        )
+
+        ss.apply_structure_supercell_selection((2, 2, 1))
+
+        active_atoms = st.session_state[ss.ATOMS_STATE_KEY]
+        retained_raw_atoms = st.session_state[ss.RAW_ATOMS_STATE_KEY]
+        self.assertEqual(len(active_atoms), 4)
+        self.assertEqual(len(retained_raw_atoms), 1)
+        self.assertEqual(active_atoms.cell.lengths().tolist(), [4.0, 6.0, 4.0])
+        self.assertEqual(retained_raw_atoms.cell.lengths().tolist(), [2.0, 3.0, 4.0])
+        self.assertEqual(ss.get_structure_supercell_repeat(), (2, 2, 1))
+
+    def test_changing_structure_supercell_repeat_does_not_compound(self) -> None:
+        raw_atoms = Atoms(
+            "Si",
+            scaled_positions=[[0.0, 0.0, 0.0]],
+            cell=[2.0, 3.0, 4.0],
+            pbc=True,
+        )
+        ss.commit_structure_source(
+            raw_atoms,
+            source_kind="manual",
+            source_label="Manual Builder",
+        )
+        ss.apply_structure_supercell_selection((2, 2, 2))
+
+        ss.apply_structure_supercell_selection((3, 1, 1))
+
+        active_atoms = st.session_state[ss.ATOMS_STATE_KEY]
+        self.assertEqual(len(active_atoms), 3)
+        self.assertEqual(active_atoms.cell.lengths().tolist(), [6.0, 3.0, 4.0])
+        self.assertEqual(len(st.session_state[ss.RAW_ATOMS_STATE_KEY]), 1)
+
+    def test_structure_mode_change_preserves_active_supercell_repeat(self) -> None:
+        conventional = bulk("Si", "diamond", a=5.43, cubic=True)
+        ss.commit_structure_source(
+            conventional,
+            source_kind="file",
+            source_label="Si.cif",
+            source_format="cif",
+        )
+        ss.apply_structure_supercell_selection((2, 1, 1))
+
+        ss.apply_structure_mode_selection("primitive")
+
+        primitive_atoms, resolved_mode, _message = ss.resolve_atoms_for_structure_mode(
+            conventional,
+            "primitive",
+        )
+        self.assertEqual(resolved_mode, "primitive")
+        self.assertEqual(ss.get_structure_supercell_repeat(), (2, 1, 1))
+        self.assertEqual(
+            len(st.session_state[ss.ATOMS_STATE_KEY]),
+            len(primitive_atoms) * 2,
+        )
+
+    def test_clear_structure_state_removes_active_supercell_repeat(self) -> None:
+        atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.43] * 3, pbc=True)
+        ss.commit_structure_source(atoms, source_kind="manual", source_label="Manual Builder")
+        ss.apply_structure_supercell_selection((2, 2, 2))
+
+        ss.clear_structure_state()
+
+        self.assertNotIn(ss.STRUCTURE_SUPERCELL_REPEAT_STATE_KEY, st.session_state)
+        self.assertEqual(ss.get_structure_supercell_repeat(), (1, 1, 1))
+
     def test_apply_structure_mode_selection_keeps_pseudopotentials_resolved_when_cell_changes(self) -> None:
         conventional = bulk("Si", "diamond", a=5.43, cubic=True)
         ss.commit_structure_source(conventional, source_kind="file", source_label="Si.cif", source_format="cif")

@@ -300,7 +300,8 @@ class UIStructureTests(unittest.TestCase):
         )
         observed: dict[str, object] = {}
 
-        def fake_selectbox(_label, options, *, index=0, **_kwargs):
+        def fake_selectbox(label, options, *, index=0, **_kwargs):
+            observed.setdefault("selectbox_labels", []).append(label)
             return options[index]
 
         def fake_radio(label, options, *, index=0, horizontal=False, format_func=None, **_kwargs):
@@ -330,6 +331,82 @@ class UIStructureTests(unittest.TestCase):
             observed["labels"],
             ["Fractional (crystal)", "Cartesian (angstrom)"],
         )
+        self.assertEqual(
+            observed["selectbox_labels"],
+            ["Active cell mode", "Active supercell"],
+        )
+
+    def test_render_structure_mode_controls_applies_selected_supercell(self) -> None:
+        atoms = SimpleNamespace()
+        ctx = SimpleNamespace(
+            raw_atoms=atoms,
+            structure=SimpleNamespace(mode_status=None),
+        )
+
+        def fake_selectbox(label, options, *, index=0, **_kwargs):
+            if label == "Active supercell":
+                return "preset_222"
+            return options[index]
+
+        with (
+            mock.patch.object(ui.st, "markdown"),
+            mock.patch.object(ui.st, "info"),
+            mock.patch.object(ui.st, "warning"),
+            mock.patch.object(ui.st, "caption"),
+            mock.patch.object(ui.st, "selectbox", side_effect=fake_selectbox),
+            mock.patch.object(
+                ui.st,
+                "radio",
+                return_value=ui.ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS[0],
+            ),
+            mock.patch.object(ui.st, "rerun"),
+            mock.patch.object(ui, "get_structure_mode", return_value="source"),
+            mock.patch.object(
+                ui,
+                "get_structure_supercell_repeat",
+                return_value=(1, 1, 1),
+            ),
+            mock.patch.object(ui, "apply_structure_supercell_selection") as apply_mock,
+        ):
+            ui._render_structure_mode_controls(ctx)
+
+        apply_mock.assert_called_once_with((2, 2, 2))
+
+    def test_render_structure_mode_controls_restores_supercell_after_widget_cleanup(self) -> None:
+        ctx = SimpleNamespace(
+            raw_atoms=SimpleNamespace(),
+            structure=SimpleNamespace(mode_status=None),
+        )
+        observed: dict[str, int] = {}
+
+        def fake_selectbox(label, options, *, index=0, **_kwargs):
+            if label == "Active supercell":
+                observed["supercell_index"] = index
+            return options[index]
+
+        with (
+            mock.patch.object(ui.st, "markdown"),
+            mock.patch.object(ui.st, "info"),
+            mock.patch.object(ui.st, "warning"),
+            mock.patch.object(ui.st, "caption"),
+            mock.patch.object(ui.st, "selectbox", side_effect=fake_selectbox),
+            mock.patch.object(
+                ui.st,
+                "radio",
+                return_value=ui.ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS[0],
+            ),
+            mock.patch.object(ui, "get_structure_mode", return_value="source"),
+            mock.patch.object(
+                ui,
+                "get_structure_supercell_repeat",
+                return_value=(2, 2, 2),
+            ),
+            mock.patch.object(ui, "apply_structure_supercell_selection") as apply_mock,
+        ):
+            ui._render_structure_mode_controls(ctx)
+
+        self.assertEqual(observed["supercell_index"], 2)
+        apply_mock.assert_not_called()
 
 
 if __name__ == "__main__":

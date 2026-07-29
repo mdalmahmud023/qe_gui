@@ -46,6 +46,7 @@ from .state_keys import (
     STRUCTURE_MODE_OPTIONS,
     STRUCTURE_MODE_STATE_KEY,
     STRUCTURE_MODE_STATUS_STATE_KEY,
+    STRUCTURE_SUPERCELL_REPEAT_STATE_KEY,
 )
 from .workspace import (
     PROVENANCE_RECORD_BANDS,
@@ -62,6 +63,8 @@ from ..services.structure_tools import make_primitive_atoms
 STRUCTURE_SIGNATURE_VERSION = 1
 STRUCTURE_SIGNATURE_DIGITS = 8
 STRUCTURE_SIGNATURE_TOLERANCE = 1.0e-8
+DEFAULT_STRUCTURE_SUPERCELL_REPEAT = (1, 1, 1)
+MAX_STRUCTURE_SUPERCELL_REPEAT = 3
 
 QE_STUDIO_PROVENANCE_FILENAME = "qe_studio_provenance.json"
 QE_STUDIO_PROVENANCE_VERSION = 1
@@ -86,6 +89,39 @@ def normalize_structure_mode(mode: str | None) -> str:
 def get_structure_mode() -> str:
     """Return the current structure cell-mode selection."""
     return normalize_structure_mode(st.session_state.get(STRUCTURE_MODE_STATE_KEY, "source"))
+
+
+def normalize_structure_supercell_repeat(values: Any) -> tuple[int, int, int]:
+    """Return a safe three-axis repeat tuple for the active structure."""
+    if isinstance(values, (str, bytes)) or values is None:
+        return DEFAULT_STRUCTURE_SUPERCELL_REPEAT
+    try:
+        raw_values = list(values)
+    except TypeError:
+        return DEFAULT_STRUCTURE_SUPERCELL_REPEAT
+
+    normalized_values: list[int] = []
+    for value in raw_values[:3]:
+        try:
+            normalized_value = int(value)
+        except (TypeError, ValueError, OverflowError):
+            normalized_value = 1
+        normalized_values.append(
+            max(1, min(MAX_STRUCTURE_SUPERCELL_REPEAT, normalized_value))
+        )
+    while len(normalized_values) < 3:
+        normalized_values.append(1)
+    return tuple(normalized_values)  # type: ignore[return-value]
+
+
+def get_structure_supercell_repeat() -> tuple[int, int, int]:
+    """Return the repeat currently applied to the active structure."""
+    return normalize_structure_supercell_repeat(
+        st.session_state.get(
+            STRUCTURE_SUPERCELL_REPEAT_STATE_KEY,
+            DEFAULT_STRUCTURE_SUPERCELL_REPEAT,
+        )
+    )
 
 
 def normalize_atomic_positions_coordinate_mode(mode: str | None) -> str:
@@ -259,6 +295,7 @@ def clear_structure_state() -> None:
         ERROR_STATE_KEY,
         STRUCTURE_MODE_STATE_KEY,
         STRUCTURE_MODE_STATUS_STATE_KEY,
+        STRUCTURE_SUPERCELL_REPEAT_STATE_KEY,
     ):
         st.session_state.pop(key, None)
     set_atomic_positions_coordinate_mode(DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE)
@@ -427,6 +464,25 @@ def resolve_atoms_for_structure_mode(raw_atoms, mode: str) -> tuple[object, str,
     return primitive_result.atoms, "primitive", primitive_result.message
 
 
+def resolve_active_structure(
+    raw_atoms,
+    mode: str,
+    supercell_repeat: Any = DEFAULT_STRUCTURE_SUPERCELL_REPEAT,
+) -> tuple[object, str, str, tuple[int, int, int]]:
+    """Build the active structure from the unrepeated source cell."""
+    base_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(
+        raw_atoms,
+        mode,
+    )
+    normalized_repeat = normalize_structure_supercell_repeat(supercell_repeat)
+    if normalized_repeat != DEFAULT_STRUCTURE_SUPERCELL_REPEAT:
+        active_atoms = base_atoms.repeat(normalized_repeat)
+        active_atoms.pbc = base_atoms.pbc
+    else:
+        active_atoms = base_atoms
+    return active_atoms, resolved_mode, status_message, normalized_repeat
+
+
 def _resolve_pseudopotential_state_for_active_structure(active_signature: dict[str, Any]) -> None:
     resolved_pseudo_signature = st.session_state.get(PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY)
     status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
@@ -514,6 +570,7 @@ def _store_active_structure(
     source_details: dict[str, Any] | None,
     structure_mode: str,
     structure_mode_message: str,
+    supercell_repeat: Any = DEFAULT_STRUCTURE_SUPERCELL_REPEAT,
     payload_bytes: bytes | None = None,
 ) -> None:
     preferred_formula = get_preferred_formula(raw_atoms, source_details=source_details)
@@ -538,6 +595,9 @@ def _store_active_structure(
     st.session_state[ERROR_STATE_KEY] = None
     st.session_state[STRUCTURE_MODE_STATE_KEY] = structure_mode
     st.session_state[STRUCTURE_MODE_STATUS_STATE_KEY] = structure_mode_message
+    st.session_state[STRUCTURE_SUPERCELL_REPEAT_STATE_KEY] = (
+        normalize_structure_supercell_repeat(supercell_repeat)
+    )
     if payload_bytes is not None:
         st.session_state[STRUCTURE_FILE_BYTES_STATE_KEY] = payload_bytes
     else:
@@ -552,6 +612,7 @@ def commit_structure_source(
     source_format: str | None = None,
     source_details: dict[str, Any] | None = None,
     requested_mode: str | None = None,
+    requested_supercell_repeat: Any = None,
     payload_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     """Commit a newly imported or built source structure into session state."""
@@ -559,8 +620,17 @@ def commit_structure_source(
         raise ValueError("No structure was supplied.")
 
     requested_cell_mode = normalize_structure_mode(requested_mode or get_structure_mode())
+    repeat = (
+        get_structure_supercell_repeat()
+        if requested_supercell_repeat is None
+        else normalize_structure_supercell_repeat(requested_supercell_repeat)
+    )
     raw_atoms_copy = raw_atoms.copy()
-    active_atoms, resolved_mode, structure_mode_message = resolve_atoms_for_structure_mode(raw_atoms_copy, requested_cell_mode)
+    active_atoms, resolved_mode, structure_mode_message, repeat = resolve_active_structure(
+        raw_atoms_copy,
+        requested_cell_mode,
+        repeat,
+    )
     _store_active_structure(
         raw_atoms_copy,
         active_atoms,
@@ -570,6 +640,7 @@ def commit_structure_source(
         source_details=source_details,
         structure_mode=resolved_mode,
         structure_mode_message=structure_mode_message,
+        supercell_repeat=repeat,
         payload_bytes=payload_bytes,
     )
     set_atomic_positions_coordinate_mode(DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE)
@@ -585,7 +656,11 @@ def apply_structure_mode_selection(mode: str) -> None:
     if raw_atoms is None:
         return
 
-    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(raw_atoms, mode)
+    active_atoms, resolved_mode, status_message, repeat = resolve_active_structure(
+        raw_atoms,
+        mode,
+        get_structure_supercell_repeat(),
+    )
     _store_active_structure(
         raw_atoms.copy(),
         active_atoms,
@@ -595,6 +670,32 @@ def apply_structure_mode_selection(mode: str) -> None:
         source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
         structure_mode=resolved_mode,
         structure_mode_message=status_message,
+        supercell_repeat=repeat,
+        payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
+    )
+
+
+def apply_structure_supercell_selection(supercell_repeat: Any) -> None:
+    """Apply a supercell repeat using the stored unrepeated source structure."""
+    raw_atoms = st.session_state.get(RAW_ATOMS_STATE_KEY)
+    if raw_atoms is None:
+        return
+
+    active_atoms, resolved_mode, status_message, repeat = resolve_active_structure(
+        raw_atoms,
+        get_structure_mode(),
+        supercell_repeat,
+    )
+    _store_active_structure(
+        raw_atoms.copy(),
+        active_atoms,
+        source_kind=st.session_state.get(SOURCE_KIND_STATE_KEY, "file"),
+        source_label=st.session_state.get(SOURCE_LABEL_STATE_KEY),
+        source_format=st.session_state.get(SOURCE_FORMAT_STATE_KEY),
+        source_details=dict(st.session_state.get(SOURCE_DETAILS_STATE_KEY) or {}),
+        structure_mode=resolved_mode,
+        structure_mode_message=status_message,
+        supercell_repeat=repeat,
         payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
     )
 

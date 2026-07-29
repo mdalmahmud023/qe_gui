@@ -493,7 +493,12 @@ def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) ->
         st.error("QE Studio could not apply the requested EOS scaling because the derived scale factor is invalid.")
         return False
 
-    from ..core.structure_state import get_structure_mode, resolve_atoms_for_structure_mode, _store_active_structure
+    from ..core.structure_state import (
+        _store_active_structure,
+        get_structure_mode,
+        get_structure_supercell_repeat,
+        resolve_active_structure,
+    )
     from ..core.state_keys import (
         RAW_ATOMS_STATE_KEY,
         SOURCE_DETAILS_STATE_KEY,
@@ -511,7 +516,11 @@ def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) ->
     new_raw_atoms = raw_atoms.copy()
     new_raw_atoms.set_cell(new_raw_atoms.cell * scale_factor, scale_atoms=True)
 
-    active_atoms, resolved_mode, status_message = resolve_atoms_for_structure_mode(new_raw_atoms, get_structure_mode())
+    active_atoms, resolved_mode, status_message, repeat = resolve_active_structure(
+        new_raw_atoms,
+        get_structure_mode(),
+        get_structure_supercell_repeat(),
+    )
     source_kind = st.session_state.get(SOURCE_KIND_STATE_KEY, "file")
     source_details = _scale_structure_source_details_for_eos_apply(
         source_kind=source_kind,
@@ -528,6 +537,7 @@ def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) ->
         source_details=source_details,
         structure_mode=resolved_mode,
         structure_mode_message=status_message,
+        supercell_repeat=repeat,
         payload_bytes=st.session_state.get(STRUCTURE_FILE_BYTES_STATE_KEY),
     )
     _sync_scaled_structure_source_draft(source_kind=source_kind, source_details=source_details)

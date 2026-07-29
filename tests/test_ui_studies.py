@@ -5,6 +5,7 @@ from pathlib import Path
 from ase.build import bulk
 import pytest
 import streamlit as st
+from qe_studio.core import structure_state
 from qe_studio.pages import ui_studies
 from qe_studio.services import qe_runner
 
@@ -339,6 +340,30 @@ def test_sync_scaled_structure_source_draft_updates_durable_prototype_value() ->
     prototype_draft = ui_structure._get_structure_drafts()["prototype"]
     assert prototype_draft["selected_family"] == "ordered_double_perovskite_a2bbx6"
     assert prototype_draft["families"]["ordered_double_perovskite_a2bbx6"]["lattice_parameter"] == pytest.approx(8.75)
+
+
+def test_apply_scaled_raw_structure_preserves_active_supercell(monkeypatch) -> None:
+    raw_atoms = bulk("Si", "sc", a=2.0)
+    structure_state.commit_structure_source(
+        raw_atoms,
+        source_kind="manual",
+        source_label="Manual Builder",
+    )
+    structure_state.apply_structure_supercell_selection((2, 1, 1))
+    monkeypatch.setattr(ui_studies.st, "success", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ui_studies.st, "rerun", lambda: None)
+
+    applied = ui_studies._apply_scaled_raw_structure(
+        scale_factor=1.1,
+        success_message="Applied.",
+    )
+
+    assert applied is True
+    assert structure_state.get_structure_supercell_repeat() == (2, 1, 1)
+    assert len(st.session_state[structure_state.RAW_ATOMS_STATE_KEY]) == 1
+    assert len(st.session_state[structure_state.ATOMS_STATE_KEY]) == 2
+    assert st.session_state[structure_state.RAW_ATOMS_STATE_KEY].cell.lengths() == pytest.approx([2.2, 2.2, 2.2])
+    assert st.session_state[structure_state.ATOMS_STATE_KEY].cell.lengths() == pytest.approx([4.4, 2.2, 2.2])
 
 
 def test_get_available_eos_display_modes_disables_normalized_modes_without_atom_count() -> None:

@@ -1,11 +1,13 @@
 import unittest
 import json
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ase import Atoms
 import streamlit as st
 
+from qe_studio.core import structure_state
 from qe_studio.pages import ui_setup
 from qe_studio.services.input_generator import VdwMethod
 
@@ -199,6 +201,42 @@ class UISetupHelperTests(unittest.TestCase):
         self.assertEqual(context.control.outdir, "./tmp")
         self.assertEqual(context.feature_states["control"].status, "adjusted")
         self.assertIn("sanitized_prefix", [reason.code for reason in context.feature_states["control"].reasons])
+
+    def test_generated_qe_input_uses_active_supercell_atoms_and_lattice(self) -> None:
+        raw_atoms = Atoms(
+            "Si",
+            scaled_positions=[[0.0, 0.0, 0.0]],
+            cell=[2.0, 3.0, 4.0],
+            pbc=True,
+        )
+        structure_state.commit_structure_source(
+            raw_atoms,
+            source_kind="manual",
+            source_label="Manual Builder",
+        )
+        structure_state.apply_structure_supercell_selection((2, 1, 1))
+        active_atoms = st.session_state[structure_state.ATOMS_STATE_KEY]
+        parameters = ui_setup.default_qe_parameters(atoms=active_atoms)
+
+        with TemporaryDirectory() as tmp_dir:
+            qe_input_text, _internal_path, _ui_path, _context = (
+                ui_setup._generate_qe_input_via_context(
+                    active_atoms,
+                    parameters,
+                    {"Si": "Si.UPF"},
+                    "pseudo",
+                    run_dir=Path(tmp_dir),
+                )
+            )
+
+        self.assertRegex(qe_input_text, re.compile(r"\bnat\s*=\s*2\b"))
+        self.assertRegex(
+            qe_input_text,
+            re.compile(
+                r"CELL_PARAMETERS\s+angstrom\s*\n"
+                r"\s*4(?:\.0+)?\s+0(?:\.0+)?\s+0(?:\.0+)?",
+            ),
+        )
 
     def test_generate_and_persist_qe_input_blocked_attempt_does_not_overwrite_existing_files(self) -> None:
         atoms = Atoms("Si", positions=[[0.0, 0.0, 0.0]], cell=[5.4, 5.4, 5.4], pbc=True)

@@ -104,7 +104,7 @@ def normalize_visible_species(
 
 
 def normalize_supercell_repeat(values: Iterable[int | float | str]) -> tuple[int, int, int]:
-    """Clamp supercell repeat values into a small safe viewer-only range."""
+    """Clamp supercell repeat values into the supported safe range."""
     normalized_values: list[int] = []
     for value in values:
         try:
@@ -122,7 +122,7 @@ def get_supercell_repeat_for_mode(
     *,
     custom_repeat: Sequence[int | float | str] | None = None,
 ) -> tuple[int, int, int]:
-    """Resolve one viewer-only supercell repeat tuple from preset or custom input."""
+    """Resolve one supercell repeat tuple from preset or custom input."""
     if preset_mode == SUPERCELL_MODE_CUSTOM:
         return normalize_supercell_repeat(custom_repeat or (1, 1, 1))
     return SUPERCELL_PRESET_REPEATS.get(preset_mode, (1, 1, 1))

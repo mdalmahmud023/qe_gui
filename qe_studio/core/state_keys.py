@@ -62,6 +62,7 @@ DEFAULT_PSEUDO_SETTINGS = {
     "fully_relativistic": False,
 }
 STRUCTURE_MODE_OPTIONS = ("source", "primitive")
+STRUCTURE_SUPERCELL_REPEAT_STATE_KEY = "structure_supercell_repeat"
 ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS = ("crystal", "angstrom")
 DEFAULT_ATOMIC_POSITIONS_COORDINATE_MODE = "crystal"
 
