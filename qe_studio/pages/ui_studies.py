@@ -480,10 +480,11 @@ def _sync_scaled_structure_source_draft(
 
     from . import ui_structure
 
-    st.session_state[ui_structure.PROTOTYPE_FAMILY_WIDGET_KEY] = family_key
-    st.session_state[
-        ui_structure._prototype_family_field_widget_key(family_key, "lattice_parameter")
-    ] = lattice_parameter_value
+    ui_structure._update_prototype_draft_values(
+        family_key,
+        {"lattice_parameter": lattice_parameter_value},
+        select_family=True,
+    )
 
 
 def _apply_scaled_raw_structure(*, scale_factor: float, success_message: str) -> bool:

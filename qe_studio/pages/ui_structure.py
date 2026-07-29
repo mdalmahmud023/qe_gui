@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import streamlit as st
@@ -9,6 +10,7 @@ from ..core.project_context import ProjectContext
 from ..core.state_keys import (
     ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS,
     ERROR_STATE_KEY,
+    STRUCTURE_DRAFTS_STATE_KEY,
     STRUCTURE_MODE_OPTIONS,
 )
 from ..core.structure_state import (
@@ -101,6 +103,226 @@ PROTOTYPE_DRAFT_NONCE_STATE_KEY = "structure_prototype_draft_nonce"
 ACTIVE_BANNER_CONTAINER_KEY = "structure_active_banner"
 DRAFT_PANEL_CONTAINER_KEY = "structure_draft_panel"
 INSPECT_PANEL_CONTAINER_KEY = "structure_inspect_panel"
+
+
+def _default_file_draft() -> dict[str, Any]:
+    return {
+        "requested_format": FILE_FORMAT_AUTO,
+        "filename": None,
+        "file_bytes": None,
+    }
+
+
+def _default_manual_draft() -> dict[str, Any]:
+    return {
+        "formula_text": "",
+        "a": 6.0,
+        "b": 6.0,
+        "c": 6.0,
+        "alpha": 90.0,
+        "beta": 90.0,
+        "gamma": 90.0,
+        "coordinate_mode": MANUAL_COORDINATE_MODE_FRACTIONAL,
+        "atom_rows": _default_manual_atom_rows(),
+    }
+
+
+def _default_prototype_draft() -> dict[str, Any]:
+    return {
+        "selected_family": DEFAULT_PROTOTYPE_FAMILY_KEY,
+        "families": {},
+    }
+
+
+def _default_structure_drafts() -> dict[str, Any]:
+    return {
+        "selected_mode": SOURCE_MODE_FILE,
+        "file": _default_file_draft(),
+        "manual": _default_manual_draft(),
+        "prototype": _default_prototype_draft(),
+    }
+
+
+def _coerce_bounded_float(
+    value: object,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        candidate = float(default)
+    if not math.isfinite(candidate):
+        candidate = float(default)
+    if minimum is not None:
+        candidate = max(candidate, float(minimum))
+    if maximum is not None:
+        candidate = min(candidate, float(maximum))
+    return candidate
+
+
+def _normalize_manual_atom_rows(rows: object) -> list[dict[str, object]]:
+    if hasattr(rows, "to_dict"):
+        try:
+            records = rows.to_dict("records")
+        except (TypeError, ValueError):
+            records = None
+    elif isinstance(rows, list):
+        records = rows
+    else:
+        records = None
+
+    if records is None:
+        return _default_manual_atom_rows()
+
+    normalized_rows: list[dict[str, object]] = []
+    for row in records:
+        row_data = row if isinstance(row, dict) else {}
+        normalized_rows.append(
+            {
+                "symbol": row_data.get("symbol", ""),
+                "x": row_data.get("x", 0.0),
+                "y": row_data.get("y", 0.0),
+                "z": row_data.get("z", 0.0),
+            }
+        )
+    return normalized_rows
+
+
+def _normalize_file_draft(value: object) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    requested_format = raw.get("requested_format", FILE_FORMAT_AUTO)
+    supported_formats = (FILE_FORMAT_AUTO, FILE_FORMAT_CIF, FILE_FORMAT_VASP, FILE_FORMAT_XSF, FILE_FORMAT_XYZ)
+    if requested_format not in supported_formats:
+        requested_format = FILE_FORMAT_AUTO
+
+    filename = raw.get("filename")
+    if not isinstance(filename, str) or not filename.strip():
+        filename = None
+
+    file_bytes = raw.get("file_bytes")
+    if isinstance(file_bytes, bytearray):
+        file_bytes = bytes(file_bytes)
+    if not isinstance(file_bytes, bytes):
+        file_bytes = None
+    if filename is None or file_bytes is None:
+        filename = None
+        file_bytes = None
+
+    return {
+        "requested_format": requested_format,
+        "filename": filename,
+        "file_bytes": file_bytes,
+    }
+
+
+def _normalize_manual_draft(value: object) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    coordinate_mode = raw.get("coordinate_mode", MANUAL_COORDINATE_MODE_FRACTIONAL)
+    if coordinate_mode not in (MANUAL_COORDINATE_MODE_FRACTIONAL, MANUAL_COORDINATE_MODE_CARTESIAN):
+        coordinate_mode = MANUAL_COORDINATE_MODE_FRACTIONAL
+    return {
+        "formula_text": str(raw.get("formula_text") or ""),
+        "a": _coerce_bounded_float(raw.get("a"), 6.0, minimum=0.0),
+        "b": _coerce_bounded_float(raw.get("b"), 6.0, minimum=0.0),
+        "c": _coerce_bounded_float(raw.get("c"), 6.0, minimum=0.0),
+        "alpha": _coerce_bounded_float(raw.get("alpha"), 90.0, minimum=0.0, maximum=180.0),
+        "beta": _coerce_bounded_float(raw.get("beta"), 90.0, minimum=0.0, maximum=180.0),
+        "gamma": _coerce_bounded_float(raw.get("gamma"), 90.0, minimum=0.0, maximum=180.0),
+        "coordinate_mode": coordinate_mode,
+        "atom_rows": _normalize_manual_atom_rows(raw.get("atom_rows")),
+    }
+
+
+def _normalize_prototype_family_values(
+    family: PrototypeFamilyDefinition,
+    value: object,
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    normalized: dict[str, Any] = {}
+    for field in family.all_fields:
+        field_value = raw.get(field.key, field.default)
+        if field.input_kind == FIELD_KIND_FLOAT:
+            normalized[field.key] = _coerce_bounded_float(
+                field_value,
+                float(field.default),
+                minimum=field.min_value,
+                maximum=field.max_value,
+            )
+        else:
+            normalized[field.key] = str(field_value)
+    return normalized
+
+
+def _normalize_prototype_draft(value: object) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    family_keys = get_prototype_family_keys()
+    selected_family = raw.get("selected_family", DEFAULT_PROTOTYPE_FAMILY_KEY)
+    if selected_family not in family_keys:
+        selected_family = DEFAULT_PROTOTYPE_FAMILY_KEY
+
+    raw_families = raw.get("families")
+    if not isinstance(raw_families, dict):
+        raw_families = {}
+    families = {
+        family_key: _normalize_prototype_family_values(
+            get_prototype_family(family_key),
+            raw_families.get(family_key),
+        )
+        for family_key in family_keys
+        if family_key in raw_families
+    }
+    return {
+        "selected_family": selected_family,
+        "families": families,
+    }
+
+
+def _normalize_structure_drafts(value: object) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    selected_mode = raw.get("selected_mode", SOURCE_MODE_FILE)
+    if selected_mode not in SOURCE_MODE_OPTIONS:
+        selected_mode = SOURCE_MODE_FILE
+    return {
+        "selected_mode": selected_mode,
+        "file": _normalize_file_draft(raw.get("file")),
+        "manual": _normalize_manual_draft(raw.get("manual")),
+        "prototype": _normalize_prototype_draft(raw.get("prototype")),
+    }
+
+
+def _get_structure_drafts() -> dict[str, Any]:
+    normalized = _normalize_structure_drafts(st.session_state.get(STRUCTURE_DRAFTS_STATE_KEY))
+    st.session_state[STRUCTURE_DRAFTS_STATE_KEY] = normalized
+    return normalized
+
+
+def _store_structure_drafts(drafts: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_structure_drafts(drafts)
+    st.session_state[STRUCTURE_DRAFTS_STATE_KEY] = normalized
+    return normalized
+
+
+def _update_prototype_draft_values(
+    family_key: str,
+    values: dict[str, Any],
+    *,
+    select_family: bool = False,
+) -> None:
+    family = get_prototype_family(family_key)
+    drafts = _get_structure_drafts()
+    prototype_draft = dict(drafts["prototype"])
+    families = dict(prototype_draft["families"])
+    current_values = dict(families.get(family_key) or {})
+    current_values.update(values)
+    families[family_key] = _normalize_prototype_family_values(family, current_values)
+    prototype_draft["families"] = families
+    if select_family:
+        prototype_draft["selected_family"] = family_key
+    drafts["prototype"] = prototype_draft
+    _store_structure_drafts(drafts)
 
 
 def render_page(ctx: ProjectContext) -> None:
@@ -241,14 +463,17 @@ def _collect_active_structure_messages(ctx: ProjectContext) -> list[tuple[str, s
     return deduplicated
 
 
+@st.fragment
 def _render_structure_draft_panel() -> None:
     st.markdown("#### Import / Build Draft")
     st.caption("Changing draft modes preserves the current active structure. A draft becomes active only after explicit apply.")
 
+    drafts = _get_structure_drafts()
+    selected_mode_value = drafts["selected_mode"]
     selected_mode = st.radio(
         "Draft Source",
         options=SOURCE_MODE_OPTIONS,
-        index=0,
+        index=SOURCE_MODE_OPTIONS.index(selected_mode_value),
         horizontal=True,
         key=DRAFT_MODE_WIDGET_KEY,
         format_func=lambda value: {
@@ -257,6 +482,9 @@ def _render_structure_draft_panel() -> None:
             SOURCE_MODE_PROTOTYPE: "Prototype Builder",
         }[value],
     )
+    if selected_mode != selected_mode_value:
+        drafts["selected_mode"] = selected_mode
+        _store_structure_drafts(drafts)
 
     error_message = st.session_state.get(ERROR_STATE_KEY)
     if error_message:
@@ -272,26 +500,56 @@ def _render_structure_draft_panel() -> None:
 
 def _render_file_import_mode() -> None:
     st.caption("Draft only until applied. Supported v1 formats: CIF, VASP POSCAR/CONTCAR, XSF, and periodic XYZ / extXYZ.")
+    drafts = _get_structure_drafts()
+    file_draft = drafts["file"]
+    format_options = (FILE_FORMAT_AUTO, FILE_FORMAT_CIF, FILE_FORMAT_VASP, FILE_FORMAT_XSF, FILE_FORMAT_XYZ)
     selected_format_key = _draft_widget_key(FILE_FORMAT_WIDGET_KEY, FILE_DRAFT_NONCE_STATE_KEY)
     uploaded_file_key = _draft_widget_key(FILE_UPLOADER_KEY, FILE_DRAFT_NONCE_STATE_KEY)
-    with st.form("structure_file_import_form"):
-        selected_format = st.selectbox(
-            "File format",
-            options=(FILE_FORMAT_AUTO, FILE_FORMAT_CIF, FILE_FORMAT_VASP, FILE_FORMAT_XSF, FILE_FORMAT_XYZ),
-            index=0,
-            key=selected_format_key,
-            format_func=lambda value: {
-                FILE_FORMAT_AUTO: "Auto-detect from filename",
-                FILE_FORMAT_CIF: "CIF",
-                FILE_FORMAT_VASP: "VASP POSCAR/CONTCAR",
-                FILE_FORMAT_XSF: "XSF",
-                FILE_FORMAT_XYZ: "XYZ / extXYZ",
-            }[value],
+    selected_format = st.selectbox(
+        "File format",
+        options=format_options,
+        index=format_options.index(file_draft["requested_format"]),
+        key=selected_format_key,
+        format_func=lambda value: {
+            FILE_FORMAT_AUTO: "Auto-detect from filename",
+            FILE_FORMAT_CIF: "CIF",
+            FILE_FORMAT_VASP: "VASP POSCAR/CONTCAR",
+            FILE_FORMAT_XSF: "XSF",
+            FILE_FORMAT_XYZ: "XYZ / extXYZ",
+        }[value],
+    )
+    uploaded_file = st.file_uploader("Structure file", key=uploaded_file_key)
+
+    retained_filename = file_draft["filename"]
+    retained_file_bytes = file_draft["file_bytes"]
+    if uploaded_file is not None:
+        retained_filename = uploaded_file.name
+        retained_file_bytes = uploaded_file.getvalue()
+
+    drafts["file"] = {
+        "requested_format": selected_format,
+        "filename": retained_filename,
+        "file_bytes": retained_file_bytes,
+    }
+    file_draft = _store_structure_drafts(drafts)["file"]
+
+    if file_draft["filename"] is not None and file_draft["file_bytes"] is not None:
+        st.caption(
+            f"Retained draft file: `{file_draft['filename']}` "
+            f"({len(file_draft['file_bytes']):,} bytes). Reset Draft removes it."
         )
-        uploaded_file = st.file_uploader("Structure file", key=uploaded_file_key)
-        action_col, reset_col = st.columns(2)
-        apply_clicked = action_col.form_submit_button("Import and Set Active", use_container_width=True)
-        reset_clicked = reset_col.form_submit_button("Reset Draft", use_container_width=True)
+
+    action_col, reset_col = st.columns(2)
+    apply_clicked = action_col.button(
+        "Import and Set Active",
+        key="structure_file_import_apply_button",
+        use_container_width=True,
+    )
+    reset_clicked = reset_col.button(
+        "Reset Draft",
+        key="structure_file_import_reset_button",
+        use_container_width=True,
+    )
 
     if reset_clicked:
         _reset_file_import_draft()
@@ -299,15 +557,15 @@ def _render_file_import_mode() -> None:
         return
     if not apply_clicked:
         return
-    if uploaded_file is None:
+    if file_draft["filename"] is None or file_draft["file_bytes"] is None:
         set_structure_error("Select a structure file to import.")
         st.rerun()
         return
 
     try:
-        file_bytes = uploaded_file.getvalue()
+        file_bytes = file_draft["file_bytes"]
         result = import_structure_file(
-            filename=uploaded_file.name,
+            filename=file_draft["filename"],
             file_bytes=file_bytes,
             requested_format=selected_format,
         )
@@ -319,6 +577,8 @@ def _render_file_import_mode() -> None:
 
 def _render_manual_builder_mode() -> None:
     st.caption("Draft only until applied. Enter a periodic crystal source cell using lattice parameters plus an atom table.")
+    drafts = _get_structure_drafts()
+    manual_draft = drafts["manual"]
     formula_key = _draft_widget_key(MANUAL_FORMULA_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     a_key = _draft_widget_key(MANUAL_A_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     b_key = _draft_widget_key(MANUAL_B_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
@@ -328,40 +588,85 @@ def _render_manual_builder_mode() -> None:
     gamma_key = _draft_widget_key(MANUAL_GAMMA_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     coordinate_mode_key = _draft_widget_key(MANUAL_COORDINATE_MODE_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
     atom_table_key = _draft_widget_key(MANUAL_ATOM_TABLE_WIDGET_KEY, MANUAL_DRAFT_NONCE_STATE_KEY)
-    with st.form("structure_manual_builder_form"):
-        formula_text = st.text_input(
-            "Formula (optional validation only)",
-            key=formula_key,
-            help="Use this only to validate the atom table. The structure is built from the rows below, not from the formula text.",
-        )
+    formula_text = st.text_input(
+        "Formula (optional validation only)",
+        value=manual_draft["formula_text"],
+        key=formula_key,
+        help="Use this only to validate the atom table. The structure is built from the rows below, not from the formula text.",
+    )
 
-        row_one_col1, row_one_col2, row_one_col3 = st.columns(3)
-        row_one_col1.number_input("a (A)", min_value=0.0, value=6.0, step=0.1, key=a_key)
-        row_one_col2.number_input("b (A)", min_value=0.0, value=6.0, step=0.1, key=b_key)
-        row_one_col3.number_input("c (A)", min_value=0.0, value=6.0, step=0.1, key=c_key)
+    row_one_col1, row_one_col2, row_one_col3 = st.columns(3)
+    a_value = row_one_col1.number_input("a (A)", min_value=0.0, value=manual_draft["a"], step=0.1, key=a_key)
+    b_value = row_one_col2.number_input("b (A)", min_value=0.0, value=manual_draft["b"], step=0.1, key=b_key)
+    c_value = row_one_col3.number_input("c (A)", min_value=0.0, value=manual_draft["c"], step=0.1, key=c_key)
 
-        row_two_col1, row_two_col2, row_two_col3 = st.columns(3)
-        row_two_col1.number_input("alpha (deg)", min_value=0.0, max_value=180.0, value=90.0, step=1.0, key=alpha_key)
-        row_two_col2.number_input("beta (deg)", min_value=0.0, max_value=180.0, value=90.0, step=1.0, key=beta_key)
-        row_two_col3.number_input("gamma (deg)", min_value=0.0, max_value=180.0, value=90.0, step=1.0, key=gamma_key)
+    row_two_col1, row_two_col2, row_two_col3 = st.columns(3)
+    alpha_value = row_two_col1.number_input(
+        "alpha (deg)",
+        min_value=0.0,
+        max_value=180.0,
+        value=manual_draft["alpha"],
+        step=1.0,
+        key=alpha_key,
+    )
+    beta_value = row_two_col2.number_input(
+        "beta (deg)",
+        min_value=0.0,
+        max_value=180.0,
+        value=manual_draft["beta"],
+        step=1.0,
+        key=beta_key,
+    )
+    gamma_value = row_two_col3.number_input(
+        "gamma (deg)",
+        min_value=0.0,
+        max_value=180.0,
+        value=manual_draft["gamma"],
+        step=1.0,
+        key=gamma_key,
+    )
 
-        st.radio(
-            "Coordinate mode",
-            options=(MANUAL_COORDINATE_MODE_FRACTIONAL, MANUAL_COORDINATE_MODE_CARTESIAN),
-            horizontal=True,
-            key=coordinate_mode_key,
-            format_func=lambda value: "Fractional" if value == MANUAL_COORDINATE_MODE_FRACTIONAL else "Cartesian",
-        )
-        atom_rows = st.data_editor(
-            _default_manual_atom_rows(),
-            key=atom_table_key,
-            num_rows="dynamic",
-            use_container_width=True,
-            hide_index=True,
-        )
-        action_col, reset_col = st.columns(2)
-        apply_clicked = action_col.form_submit_button("Build and Set Active", use_container_width=True)
-        reset_clicked = reset_col.form_submit_button("Reset Draft", use_container_width=True)
+    coordinate_options = (MANUAL_COORDINATE_MODE_FRACTIONAL, MANUAL_COORDINATE_MODE_CARTESIAN)
+    coordinate_mode = st.radio(
+        "Coordinate mode",
+        options=coordinate_options,
+        index=coordinate_options.index(manual_draft["coordinate_mode"]),
+        horizontal=True,
+        key=coordinate_mode_key,
+        format_func=lambda value: "Fractional" if value == MANUAL_COORDINATE_MODE_FRACTIONAL else "Cartesian",
+    )
+    atom_rows = st.data_editor(
+        manual_draft["atom_rows"],
+        key=atom_table_key,
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    drafts["manual"] = {
+        "formula_text": formula_text,
+        "a": a_value,
+        "b": b_value,
+        "c": c_value,
+        "alpha": alpha_value,
+        "beta": beta_value,
+        "gamma": gamma_value,
+        "coordinate_mode": coordinate_mode,
+        "atom_rows": _normalize_manual_atom_rows(atom_rows),
+    }
+    manual_draft = _store_structure_drafts(drafts)["manual"]
+
+    action_col, reset_col = st.columns(2)
+    apply_clicked = action_col.button(
+        "Build and Set Active",
+        key="structure_manual_build_apply_button",
+        use_container_width=True,
+    )
+    reset_clicked = reset_col.button(
+        "Reset Draft",
+        key="structure_manual_build_reset_button",
+        use_container_width=True,
+    )
 
     if reset_clicked:
         _reset_manual_builder_draft()
@@ -372,15 +677,15 @@ def _render_manual_builder_mode() -> None:
 
     try:
         result = build_manual_structure(
-            a=float(st.session_state.get(a_key, 6.0)),
-            b=float(st.session_state.get(b_key, 6.0)),
-            c=float(st.session_state.get(c_key, 6.0)),
-            alpha=float(st.session_state.get(alpha_key, 90.0)),
-            beta=float(st.session_state.get(beta_key, 90.0)),
-            gamma=float(st.session_state.get(gamma_key, 90.0)),
-            coordinate_mode=st.session_state.get(coordinate_mode_key, MANUAL_COORDINATE_MODE_FRACTIONAL),
-            atom_rows=atom_rows,
-            formula_text=formula_text,
+            a=manual_draft["a"],
+            b=manual_draft["b"],
+            c=manual_draft["c"],
+            alpha=manual_draft["alpha"],
+            beta=manual_draft["beta"],
+            gamma=manual_draft["gamma"],
+            coordinate_mode=manual_draft["coordinate_mode"],
+            atom_rows=manual_draft["atom_rows"],
+            formula_text=manual_draft["formula_text"],
         )
         _commit_structure_result(result)
     except Exception as exc:
@@ -389,27 +694,38 @@ def _render_manual_builder_mode() -> None:
 
 
 def _render_prototype_builder_mode() -> None:
+    drafts = _get_structure_drafts()
+    prototype_draft = drafts["prototype"]
     family_keys = get_prototype_family_keys()
-    selected_family_key = st.session_state.get(PROTOTYPE_FAMILY_WIDGET_KEY, DEFAULT_PROTOTYPE_FAMILY_KEY)
-    if selected_family_key not in family_keys:
-        selected_family_key = DEFAULT_PROTOTYPE_FAMILY_KEY
-        st.session_state[PROTOTYPE_FAMILY_WIDGET_KEY] = selected_family_key
-
     selected_family_key = st.selectbox(
         "Prototype Family",
         options=family_keys,
+        index=family_keys.index(prototype_draft["selected_family"]),
         key=PROTOTYPE_FAMILY_WIDGET_KEY,
         format_func=lambda family_key: get_prototype_family(family_key).source_label,
     )
     family = get_prototype_family(selected_family_key)
+    family_values = _normalize_prototype_family_values(
+        family,
+        prototype_draft["families"].get(selected_family_key),
+    )
     st.caption(f"Draft only until applied. {family.short_description}")
     st.caption(f"Formula template: `{family.formula_template}`")
 
-    with st.form("structure_prototype_builder_form"):
-        _render_prototype_family_fields(family)
-        action_col, reset_col = st.columns(2)
-        apply_clicked = action_col.form_submit_button("Build and Set Active", use_container_width=True)
-        reset_clicked = reset_col.form_submit_button("Reset Draft", use_container_width=True)
+    family_values = _render_prototype_family_fields(family, family_values)
+    _update_prototype_draft_values(selected_family_key, family_values, select_family=True)
+
+    action_col, reset_col = st.columns(2)
+    apply_clicked = action_col.button(
+        "Build and Set Active",
+        key="structure_prototype_build_apply_button",
+        use_container_width=True,
+    )
+    reset_clicked = reset_col.button(
+        "Reset Draft",
+        key="structure_prototype_build_reset_button",
+        use_container_width=True,
+    )
 
     if reset_clicked:
         _reset_prototype_builder_draft(selected_family_key)
@@ -419,14 +735,18 @@ def _render_prototype_builder_mode() -> None:
         return
 
     try:
-        result = build_prototype_family(selected_family_key, _collect_prototype_family_values(family))
+        result = build_prototype_family(selected_family_key, family_values)
         _commit_structure_result(result)
     except Exception as exc:
         set_structure_error(f"Failed to build the prototype structure: {exc}")
     st.rerun()
 
 
-def _render_prototype_family_fields(family: PrototypeFamilyDefinition) -> None:
+def _render_prototype_family_fields(
+    family: PrototypeFamilyDefinition,
+    values: dict[str, Any],
+) -> dict[str, Any]:
+    rendered_values: dict[str, Any] = {}
     text_fields = [field for field in family.core_fields if field.input_kind != FIELD_KIND_FLOAT]
     numeric_fields = [field for field in family.core_fields if field.input_kind == FIELD_KIND_FLOAT]
 
@@ -436,40 +756,57 @@ def _render_prototype_family_fields(family: PrototypeFamilyDefinition) -> None:
             columns = st.columns(2)
             for column, field in zip(columns, field_pair):
                 with column:
-                    _render_prototype_field_input(family, field)
+                    rendered_values[field.key] = _render_prototype_field_input(
+                        family,
+                        field,
+                        values.get(field.key, field.default),
+                    )
 
     for field in numeric_fields:
-        _render_prototype_field_input(family, field)
+        rendered_values[field.key] = _render_prototype_field_input(
+            family,
+            field,
+            values.get(field.key, field.default),
+        )
 
     if family.advanced_fields:
         with st.expander("Advanced prototype options", expanded=False):
             for field in family.advanced_fields:
-                _render_prototype_field_input(family, field)
+                rendered_values[field.key] = _render_prototype_field_input(
+                    family,
+                    field,
+                    values.get(field.key, field.default),
+                )
+    return rendered_values
 
 
-def _render_prototype_field_input(family: PrototypeFamilyDefinition, field: PrototypeFieldDefinition) -> None:
+def _render_prototype_field_input(
+    family: PrototypeFamilyDefinition,
+    field: PrototypeFieldDefinition,
+    value: Any,
+) -> Any:
     widget_key = _prototype_family_field_widget_key(family.key, field.key)
     if field.input_kind == FIELD_KIND_FLOAT:
-        st.number_input(
+        return st.number_input(
             field.label,
             min_value=field.min_value,
             max_value=field.max_value,
-            value=float(field.default),
+            value=float(value),
             step=field.step or 0.1,
             key=widget_key,
             help=field.help_text,
         )
-        return
 
-    st.text_input(
+    return st.text_input(
         field.label,
-        value=str(field.default),
+        value=str(value),
         key=widget_key,
         help=field.help_text,
     )
 
 
 def _collect_prototype_family_values(family: PrototypeFamilyDefinition) -> dict[str, Any]:
+    """Collect currently rendered prototype widget values for compatibility."""
     values: dict[str, Any] = {}
     for field in family.all_fields:
         widget_key = _prototype_family_field_widget_key(family.key, field.key)
@@ -761,11 +1098,17 @@ def _increment_draft_nonce(nonce_state_key: str) -> None:
 
 
 def _reset_file_import_draft() -> None:
+    drafts = _get_structure_drafts()
+    drafts["file"] = _default_file_draft()
+    _store_structure_drafts(drafts)
     _increment_draft_nonce(FILE_DRAFT_NONCE_STATE_KEY)
     set_structure_error(None)
 
 
 def _reset_manual_builder_draft() -> None:
+    drafts = _get_structure_drafts()
+    drafts["manual"] = _default_manual_draft()
+    _store_structure_drafts(drafts)
     _increment_draft_nonce(MANUAL_DRAFT_NONCE_STATE_KEY)
     set_structure_error(None)
 
@@ -782,6 +1125,16 @@ def _prototype_family_field_widget_key(family_key: str, field_key: str) -> str:
 
 
 def _reset_prototype_builder_draft(family_key: str | None = None) -> None:
-    resolved_family_key = family_key or st.session_state.get(PROTOTYPE_FAMILY_WIDGET_KEY, DEFAULT_PROTOTYPE_FAMILY_KEY)
+    drafts = _get_structure_drafts()
+    resolved_family_key = family_key or drafts["prototype"]["selected_family"]
+    prototype_draft = dict(drafts["prototype"])
+    families = dict(prototype_draft["families"])
+    families[resolved_family_key] = _normalize_prototype_family_values(
+        get_prototype_family(resolved_family_key),
+        {},
+    )
+    prototype_draft["families"] = families
+    drafts["prototype"] = prototype_draft
+    _store_structure_drafts(drafts)
     _increment_draft_nonce(_prototype_family_nonce_state_key(resolved_family_key))
     set_structure_error(None)

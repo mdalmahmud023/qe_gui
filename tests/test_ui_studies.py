@@ -325,7 +325,7 @@ def test_scale_structure_source_details_for_eos_apply_updates_prototype_lattice_
     assert scaled["lattice_parameter"] == pytest.approx(10.0)
 
 
-def test_sync_scaled_structure_source_draft_updates_prototype_widget_value() -> None:
+def test_sync_scaled_structure_source_draft_updates_durable_prototype_value() -> None:
     ui_studies._sync_scaled_structure_source_draft(
         source_kind="prototype",
         source_details={
@@ -334,8 +334,11 @@ def test_sync_scaled_structure_source_draft_updates_prototype_widget_value() -> 
         },
     )
 
-    assert st.session_state["structure_prototype_family"] == "ordered_double_perovskite_a2bbx6"
-    assert st.session_state["structure_prototype_field_ordered_double_perovskite_a2bbx6_lattice_parameter_0"] == pytest.approx(8.75)
+    from qe_studio.pages import ui_structure
+
+    prototype_draft = ui_structure._get_structure_drafts()["prototype"]
+    assert prototype_draft["selected_family"] == "ordered_double_perovskite_a2bbx6"
+    assert prototype_draft["families"]["ordered_double_perovskite_a2bbx6"]["lattice_parameter"] == pytest.approx(8.75)
 
 
 def test_get_available_eos_display_modes_disables_normalized_modes_without_atom_count() -> None:
