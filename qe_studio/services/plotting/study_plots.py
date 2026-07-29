@@ -4,10 +4,50 @@ from typing import Any
 
 import plotly.graph_objects as go
 
+from ..electronic_properties import (
+    INTERACTIVE_FIGURE_MODE,
+    build_plot_layout,
+    is_publication_export_mode,
+)
 
 _EOS_DISPLAY_MODE_CELL_TOTAL = "cell_total"
 _EOS_DISPLAY_MODE_PER_ATOM = "per_atom"
 _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM = "relative_per_atom"
+INTERACTIVE_STUDY_FIGURE_HEIGHT = 500
+PUBLICATION_STUDY_FIGURE_HEIGHT = 560
+
+
+def _study_plot_layout(
+    *,
+    figure_mode: str,
+    title: str,
+    xaxis_title: str,
+    yaxis_title: str,
+    categorical_xaxis: bool = False,
+) -> dict[str, Any]:
+    """Return the shared light layout with study-specific labels and legend."""
+    publication_mode = is_publication_export_mode(figure_mode)
+    layout = build_plot_layout(
+        height=PUBLICATION_STUDY_FIGURE_HEIGHT if publication_mode else INTERACTIVE_STUDY_FIGURE_HEIGHT,
+        figure_mode=figure_mode,
+    )
+    layout.update(
+        {
+            "title": title,
+            "xaxis_title": xaxis_title,
+            "yaxis_title": yaxis_title,
+            "legend": {
+                "orientation": "h",
+                "yanchor": "bottom",
+                "y": 1.02,
+                "xanchor": "right",
+                "x": 1,
+            },
+        }
+    )
+    if categorical_xaxis:
+        layout["xaxis"] = {**layout["xaxis"], "type": "category"}
+    return layout
 
 
 def _add_categorical_reference_line(
@@ -139,7 +179,11 @@ def _transform_eos_total_values_for_display(
     return display_volume, total_energy
 
 
-def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
+def plot_cutoff_convergence(
+    summary_data: dict[str, Any],
+    *,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+) -> go.Figure:
     """Create a Plotly figure for a cutoff convergence study.
 
     Args:
@@ -150,6 +194,7 @@ def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
     """
     points = summary_data.get("points", [])
     recommendation = summary_data.get("recommendation", {})
+    publication_mode = is_publication_export_mode(figure_mode)
 
     # Extract valid points for the line plot
     # A point must have a valid energy_per_atom_ev to be plotted on the main line.
@@ -197,8 +242,8 @@ def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
                 y=valid_y,
                 mode="lines+markers",
                 name="Energy/Atom",
-                line=dict(color="#1f77b4", width=2),
-                marker=dict(size=8, color="#1f77b4", symbol="circle"),
+                line=dict(color="#1f77b4", width=2.4 if publication_mode else 2),
+                marker=dict(size=10 if publication_mode else 8, color="#1f77b4", symbol="circle"),
                 hoverinfo="text",
                 text=[hover_texts[points.index(p)] for p in points if p.get("energy_per_atom_ev") is not None],
             )
@@ -221,20 +266,21 @@ def plot_cutoff_convergence(summary_data: dict[str, Any]) -> go.Figure:
             annotation_position="top right",
         )
 
-    fig.update_layout(
+    fig.update_layout(**_study_plot_layout(
+        figure_mode=figure_mode,
         title="Cutoff Convergence",
         xaxis_title="Wavefunction Cutoff (Ry)",
         yaxis_title="Energy per Atom (eV)",
-        hovermode="closest",
-        template="plotly_white",
-        margin=dict(l=40, r=40, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
+    ))
 
     return fig
 
 
-def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
+def plot_kpoint_convergence(
+    summary_data: dict[str, Any],
+    *,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+) -> go.Figure:
     """Create a Plotly figure for a k-point convergence study.
 
     Args:
@@ -245,6 +291,7 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
     """
     points = summary_data.get("points", [])
     recommendation = summary_data.get("recommendation", {})
+    publication_mode = is_publication_export_mode(figure_mode)
 
     valid_x = []
     valid_y = []
@@ -285,8 +332,8 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
                 y=valid_y,
                 mode="lines+markers",
                 name="Energy/Atom",
-                line=dict(color="#2ca02c", width=2),
-                marker=dict(size=8, color="#2ca02c", symbol="circle"),
+                line=dict(color="#2ca02c", width=2.4 if publication_mode else 2),
+                marker=dict(size=10 if publication_mode else 8, color="#2ca02c", symbol="circle"),
                 hoverinfo="text",
                 text=valid_hover_texts,
             )
@@ -306,21 +353,23 @@ def plot_kpoint_convergence(summary_data: dict[str, Any]) -> go.Figure:
             annotation_text=f"Suggested Minimum Grid ({recommended_grid_label})",
         )
 
-    fig.update_layout(
+    fig.update_layout(**_study_plot_layout(
+        figure_mode=figure_mode,
         title="K-Point Convergence",
         xaxis_title="K-Point Grid",
         yaxis_title="Energy per Atom (eV)",
-        hovermode="closest",
-        template="plotly_white",
-        margin=dict(l=40, r=40, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis=dict(type='category')
-    )
+        categorical_xaxis=True,
+    ))
 
     return fig
 
 
-def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DISPLAY_MODE_CELL_TOTAL) -> go.Figure:
+def plot_eos_study(
+    summary_data: dict[str, Any],
+    *,
+    display_mode: str = _EOS_DISPLAY_MODE_CELL_TOTAL,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+) -> go.Figure:
     """Create a Plotly figure for an Equation of State (EOS) study.
 
     Args:
@@ -334,6 +383,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
     fit_data = summary_data.get("fit", {})
     display_context = _resolve_eos_display_context(summary_data, display_mode)
     divisor = display_context["divisor"]
+    publication_mode = is_publication_export_mode(figure_mode)
 
     valid_v = []
     valid_e = []
@@ -389,7 +439,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
                 y=valid_e,
                 mode="markers",
                 name=str(display_context["point_trace_name"]),
-                marker=dict(size=10, color="#d62728", symbol="circle"),
+                marker=dict(size=12 if publication_mode else 10, color="#d62728", symbol="circle"),
                 hoverinfo="text",
                 text=valid_hover_texts,
             )
@@ -442,7 +492,7 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
                     y=e_plot,
                     mode="lines",
                     name=str(display_context["fit_trace_name"]),
-                    line=dict(color="#1f77b4", width=2),
+                    line=dict(color="#1f77b4", width=2.4 if publication_mode else 2),
                     hoverinfo="skip"
                 )
             )
@@ -462,14 +512,11 @@ def plot_eos_study(summary_data: dict[str, Any], *, display_mode: str = _EOS_DIS
             annotation_position="top right",
         )
 
-    fig.update_layout(
+    fig.update_layout(**_study_plot_layout(
+        figure_mode=figure_mode,
         title="Equation of State (EOS)",
         xaxis_title=display_context["xaxis_title"],
         yaxis_title=display_context["yaxis_title"],
-        hovermode="closest",
-        template="plotly_white",
-        margin=dict(l=40, r=40, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
+    ))
 
     return fig

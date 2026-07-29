@@ -8,7 +8,6 @@ from ..core.project_context import ProjectContext
 from ..core.state_keys import BAND_ALIGNMENT_MODE_WIDGET_KEY, DOS_ALIGNMENT_WIDGET_KEY
 from ..core.workspace import BAND_ALIGNMENT_MODE_OPTIONS
 from ..services.electronic_properties import (
-    DEFAULT_PLOTLY_CONFIG,
     AnalysisParseError,
     BandData,
     BandGapSummary,
@@ -23,10 +22,18 @@ from ..services.electronic_properties import (
     parse_qe_band_structure,
     parse_qe_dos,
 )
+from .shared import (
+    EXPORT_FORMAT_OPTIONS,
+    FIGURE_MODE_OPTIONS,
+    PLOT_COLUMN_WEIGHTS,
+    make_plotly_chart_config,
+    render_centered_plotly_chart as render_shared_centered_plotly_chart,
+    render_plotly_figure_options,
+)
 
-ANALYSIS_PLOT_COLUMN_WEIGHTS = [0.85, 5.3, 0.85]
-ANALYSIS_FIGURE_MODE_OPTIONS = [INTERACTIVE_FIGURE_MODE, PUBLICATION_EXPORT_FIGURE_MODE]
-ANALYSIS_EXPORT_FORMAT_OPTIONS = ["png", "svg"]
+ANALYSIS_PLOT_COLUMN_WEIGHTS = PLOT_COLUMN_WEIGHTS
+ANALYSIS_FIGURE_MODE_OPTIONS = FIGURE_MODE_OPTIONS
+ANALYSIS_EXPORT_FORMAT_OPTIONS = EXPORT_FORMAT_OPTIONS
 ANALYSIS_FIGURE_MODE_WIDGET_KEY = "analysis_figure_mode"
 ANALYSIS_EXPORT_FORMAT_WIDGET_KEY = "analysis_export_format"
 PUBLICATION_EXPORT_DOS_WIDTH = 980
@@ -71,61 +78,12 @@ def format_fermi_source_label(fermi_metadata: FermiMetadata | None) -> str:
     return f"{fermi_metadata.source_type}: {fermi_metadata.reference_kind}"
 
 
-def make_plotly_chart_config(
-    filename: str,
-    *,
-    export_format: str = "png",
-    export_height: int | None = None,
-    export_width: int | None = None,
-    figure_mode: str = INTERACTIVE_FIGURE_MODE,
-) -> dict:
-    """Return Plotly export settings with a figure-specific filename."""
-    export_options = dict(DEFAULT_PLOTLY_CONFIG["toImageButtonOptions"])
-    export_options["filename"] = filename
-    export_options["format"] = export_format
-    export_options["scale"] = 1 if export_format == "svg" else (3 if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else 2)
-    if export_height is not None:
-        export_options["height"] = export_height
-    if export_width is not None:
-        export_options["width"] = export_width
-    config = dict(DEFAULT_PLOTLY_CONFIG)
-    config["toImageButtonOptions"] = export_options
-    return config
-
-
 def render_figure_options() -> tuple[str, str]:
     """Render global Analysis-page figure controls."""
-    with st.expander("Figure options", expanded=False):
-        col1, col2 = st.columns([1.7, 1.2])
-        figure_mode = col1.radio(
-            "Figure mode",
-            options=ANALYSIS_FIGURE_MODE_OPTIONS,
-            horizontal=True,
-            format_func=lambda mode: {
-                INTERACTIVE_FIGURE_MODE: "Interactive",
-                PUBLICATION_EXPORT_FIGURE_MODE: "Publication Export",
-            }[mode],
-            key=ANALYSIS_FIGURE_MODE_WIDGET_KEY,
-        )
-        export_format = col2.selectbox(
-            "Export format",
-            options=ANALYSIS_EXPORT_FORMAT_OPTIONS,
-            format_func=lambda file_format: {
-                "png": "PNG",
-                "svg": "SVG",
-            }[file_format],
-            key=ANALYSIS_EXPORT_FORMAT_WIDGET_KEY,
-        )
-        if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE:
-            st.caption(
-                "Publication Export uses larger fonts, tighter margins, and fixed export sizing. "
-                "Use the Plotly camera button to save the current figure; SVG is recommended for journal layouts and PDF workflows."
-            )
-        else:
-            st.caption(
-                "Interactive keeps a compact on-screen layout. The Plotly camera button exports the current figure using the selected format."
-            )
-    return figure_mode, export_format
+    return render_plotly_figure_options(
+        figure_mode_widget_key=ANALYSIS_FIGURE_MODE_WIDGET_KEY,
+        export_format_widget_key=ANALYSIS_EXPORT_FORMAT_WIDGET_KEY,
+    )
 
 
 def render_centered_plotly_chart(
@@ -137,20 +95,14 @@ def render_centered_plotly_chart(
     export_width: int | None = None,
 ) -> None:
     """Render an analysis figure in a centered, narrower layout."""
-    _left, center, _right = st.columns(ANALYSIS_PLOT_COLUMN_WEIGHTS)
-    with center:
-        st.plotly_chart(
-            figure,
-            use_container_width=True,
-            config=make_plotly_chart_config(
-                filename,
-                export_format=export_format,
-                export_height=int(figure.layout.height) if figure.layout.height is not None else None,
-                export_width=export_width,
-                figure_mode=figure_mode,
-            ),
-            theme=None,
-        )
+    render_shared_centered_plotly_chart(
+        figure,
+        filename=filename,
+        export_format=export_format,
+        figure_mode=figure_mode,
+        export_width=export_width,
+        column_weights=ANALYSIS_PLOT_COLUMN_WEIGHTS,
+    )
 
 
 def render_artifact_summary_row(run_dir: Path, analysis_files, fermi_metadata: FermiMetadata | None) -> None:

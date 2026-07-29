@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import plotly.graph_objects as go
 import pytest
+from qe_studio.services.electronic_properties import (
+    INTERACTIVE_FIGURE_MODE,
+    PUBLICATION_EXPORT_FIGURE_MODE,
+    PUBLICATION_TEXT,
+)
 from qe_studio.services.plotting.study_plots import (
+    INTERACTIVE_STUDY_FIGURE_HEIGHT,
+    PUBLICATION_STUDY_FIGURE_HEIGHT,
     plot_cutoff_convergence,
     plot_eos_study,
     plot_kpoint_convergence,
@@ -221,3 +228,71 @@ def test_plot_eos_study_display_modes():
     relative_fit_trace = fig_relative.data[1]
     assert list(relative_fit_trace.x) == pytest.approx([float(value) / 2.0 for value in cell_fit_trace.x])
     assert list(relative_fit_trace.y) == pytest.approx([((float(value) + 20.0) * 1000.0) / 2.0 for value in cell_fit_trace.y])
+
+
+def test_all_study_plots_use_explicit_light_layouts() -> None:
+    figures = [
+        plot_cutoff_convergence({}),
+        plot_kpoint_convergence({}),
+        plot_eos_study({}),
+    ]
+
+    for figure in figures:
+        assert figure.layout.paper_bgcolor == "white"
+        assert figure.layout.plot_bgcolor == "white"
+        assert figure.layout.font.color == PUBLICATION_TEXT
+        assert figure.layout.xaxis.tickfont.color == PUBLICATION_TEXT
+        assert figure.layout.yaxis.tickfont.color == PUBLICATION_TEXT
+        assert figure.layout.height == INTERACTIVE_STUDY_FIGURE_HEIGHT
+
+
+def test_publication_mode_preserves_data_and_increases_study_plot_styling() -> None:
+    cutoff_summary = {
+        "points": [
+            {
+                "ecutwfc_ry": 40.0,
+                "ecutrho_ry": 320.0,
+                "status": "success",
+                "energy_per_atom_ev": -10.0,
+            }
+        ],
+        "recommendation": {},
+    }
+    kpoint_summary = {
+        "points": [
+            {
+                "grid_label": "4x4x4",
+                "status": "success",
+                "energy_per_atom_ev": -10.0,
+            }
+        ],
+        "recommendation": {},
+    }
+    eos_summary = {
+        "points": [
+            {
+                "scale_factor": 1.0,
+                "volume": 100.0,
+                "status": "success",
+                "total_energy_ev": -20.0,
+            }
+        ],
+        "fit": {},
+    }
+    interactive_figures = [
+        plot_cutoff_convergence(cutoff_summary, figure_mode=INTERACTIVE_FIGURE_MODE),
+        plot_kpoint_convergence(kpoint_summary, figure_mode=INTERACTIVE_FIGURE_MODE),
+        plot_eos_study(eos_summary, figure_mode=INTERACTIVE_FIGURE_MODE),
+    ]
+    publication_figures = [
+        plot_cutoff_convergence(cutoff_summary, figure_mode=PUBLICATION_EXPORT_FIGURE_MODE),
+        plot_kpoint_convergence(kpoint_summary, figure_mode=PUBLICATION_EXPORT_FIGURE_MODE),
+        plot_eos_study(eos_summary, figure_mode=PUBLICATION_EXPORT_FIGURE_MODE),
+    ]
+
+    for interactive, publication in zip(interactive_figures, publication_figures, strict=True):
+        assert publication.layout.height == PUBLICATION_STUDY_FIGURE_HEIGHT
+        assert publication.layout.font.size > interactive.layout.font.size
+        assert publication.data[0].x == interactive.data[0].x
+        assert publication.data[0].y == interactive.data[0].y
+        assert publication.data[0].marker.size > interactive.data[0].marker.size

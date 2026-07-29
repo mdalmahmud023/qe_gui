@@ -57,12 +57,22 @@ from ..core.structure_state import (
 )
 from ..core.workspace import QE_CONVERGENCE_DIR
 from ..services.input_generator import CalculationContext
+from ..services.electronic_properties import (
+    INTERACTIVE_FIGURE_MODE,
+    PUBLICATION_EXPORT_FIGURE_MODE,
+)
 from ..services.structure_tools import make_conventional_atoms
 from ..convergence.models import (
     EOS_FIT_ENERGY_BASIS_CELL_TOTAL_EV,
     EOS_FIT_VOLUME_BASIS_CELL_TOTAL_ANG3,
 )
-from .shared import render_path_captions, render_status_messages, render_table
+from .shared import (
+    render_centered_plotly_chart,
+    render_path_captions,
+    render_plotly_figure_options,
+    render_status_messages,
+    render_table,
+)
 from .ui_setup import (
     _build_generation_context_from_parameters,
     _sanitize_saved_qe_parameters,
@@ -111,6 +121,12 @@ _EOS_DISPLAY_MODE_LABELS = {
     _EOS_DISPLAY_MODE_PER_ATOM: "Per atom: Energy/atom (eV) vs Volume/atom (Å³)",
     _EOS_DISPLAY_MODE_RELATIVE_PER_ATOM: "Relative: ΔE (meV/atom) vs Volume/atom (Å³/atom)",
 }
+STUDIES_FIGURE_MODE_WIDGET_KEY = "studies_figure_mode"
+STUDIES_EXPORT_FORMAT_WIDGET_KEY = "studies_export_format"
+PUBLICATION_EXPORT_STUDY_WIDTH = 980
+CUTOFF_STUDY_EXPORT_FILENAME = "qe_studio_cutoff_convergence"
+KPOINT_STUDY_EXPORT_FILENAME = "qe_studio_kpoint_convergence"
+EOS_STUDY_EXPORT_FILENAME = "qe_studio_eos"
 
 _ECUTRHO_MODE_LABELS = {
     EcutrhoMode.METADATA_DUAL.value: "Pseudo metadata dual ratios",
@@ -1023,7 +1039,14 @@ def render_study_run_controls(
             st.code("".join(tail), language="text")
 
 
-def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
+def render_cutoff_study_results(
+    ctx: ProjectContext,
+    active_baseline: dict,
+    active_structure_signature: dict | None,
+    *,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+    export_format: str = "png",
+) -> None:
     """Render the cutoff-study selection, refresh controls, and summary table."""
     st.markdown("### Cutoff Study Results")
     studies = discover_cutoff_studies(QE_CONVERGENCE_DIR)
@@ -1117,8 +1140,7 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
     status = str(summary.get("study_status") or recommendation.get("status") or "incomplete")
     message = str(recommendation.get("message") or "Cutoff study summary is available.")
     
-    # 2-column layout for Summary and Chart
-    col_summary, col_chart = st.columns([1, 2])
+    col_summary, col_recommendation = st.columns([1, 2])
     
     with col_summary:
         st.markdown("#### Study Summary")
@@ -1139,9 +1161,9 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
         tolerance = sweep_spec.get("tolerance_mev_per_atom")
         if tolerance is not None:
             st.write(f"**Tolerance:** {tolerance} meV/atom")
-            
-        st.divider()
-        st.write("**Recommendation:**")
+
+    with col_recommendation:
+        st.markdown("#### Recommendation")
         if status == "complete":
             st.success(message)
             if st.button("Apply Recommended Cutoff to Setup", use_container_width=True):
@@ -1155,9 +1177,14 @@ def render_cutoff_study_results(ctx: ProjectContext, active_baseline: dict, acti
         else:
             st.warning(message)
 
-    with col_chart:
-        fig = plot_cutoff_convergence(summary)
-        st.plotly_chart(fig, use_container_width=True)
+    fig = plot_cutoff_convergence(summary, figure_mode=figure_mode)
+    render_centered_plotly_chart(
+        fig,
+        filename=CUTOFF_STUDY_EXPORT_FILENAME,
+        export_format=export_format,
+        figure_mode=figure_mode,
+        export_width=PUBLICATION_EXPORT_STUDY_WIDTH if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else None,
+    )
 
     summary_warnings = [str(warning) for warning in summary.get("warnings", [])]
     if summary_warnings:
@@ -1464,7 +1491,14 @@ def render_kpoint_study_config(ctx: ProjectContext, baseline: dict, pseudopotent
     st.success(f"Generated k-point convergence inputs under `{study_result['study_dir']}`.")
 
 
-def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
+def render_kpoint_study_results(
+    ctx: ProjectContext,
+    active_baseline: dict,
+    active_structure_signature: dict | None,
+    *,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+    export_format: str = "png",
+) -> None:
     st.markdown("### K-Point Study Results")
     studies = discover_kpoint_studies(QE_CONVERGENCE_DIR)
     if not studies:
@@ -1556,7 +1590,7 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
     status = str(summary.get("study_status") or recommendation.get("status") or "incomplete")
     message = str(recommendation.get("message") or "K-point study summary is available.")
     
-    col_summary, col_chart = st.columns([1, 2])
+    col_summary, col_recommendation = st.columns([1, 2])
     
     with col_summary:
         st.markdown("#### Study Summary")
@@ -1578,9 +1612,9 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
         tolerance = sweep_spec.get("tolerance_mev_per_atom")
         if tolerance is not None:
             st.write(f"**Tolerance:** {tolerance} meV/atom")
-            
-        st.divider()
-        st.write("**Recommendation:**")
+
+    with col_recommendation:
+        st.markdown("#### Recommendation")
         if status == "complete":
             st.success(message)
             if st.button("Apply Recommended K-grid to Setup", use_container_width=True):
@@ -1592,9 +1626,14 @@ def render_kpoint_study_results(ctx: ProjectContext, active_baseline: dict, acti
         else:
             st.warning(message)
 
-    with col_chart:
-        fig = plot_kpoint_convergence(summary)
-        st.plotly_chart(fig, use_container_width=True)
+    fig = plot_kpoint_convergence(summary, figure_mode=figure_mode)
+    render_centered_plotly_chart(
+        fig,
+        filename=KPOINT_STUDY_EXPORT_FILENAME,
+        export_format=export_format,
+        figure_mode=figure_mode,
+        export_width=PUBLICATION_EXPORT_STUDY_WIDTH if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else None,
+    )
 
     summary_warnings = [str(warning) for warning in summary.get("warnings", [])]
     if summary_warnings:
@@ -1650,6 +1689,11 @@ def render_page(ctx: ProjectContext) -> None:
     col3.metric("K-Points", k_grid_str)
     col4.metric("Occupations", baseline.get("occupations", "N/A").capitalize())
 
+    figure_mode, export_format = render_plotly_figure_options(
+        figure_mode_widget_key=STUDIES_FIGURE_MODE_WIDGET_KEY,
+        export_format_widget_key=STUDIES_EXPORT_FORMAT_WIDGET_KEY,
+    )
+
     st.divider()
 
     st.markdown("### Study Type")
@@ -1658,12 +1702,24 @@ def render_page(ctx: ProjectContext) -> None:
     with tabs[0]:
         render_cutoff_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
         st.divider()
-        render_cutoff_study_results(ctx, baseline, get_current_active_structure_signature())
+        render_cutoff_study_results(
+            ctx,
+            baseline,
+            get_current_active_structure_signature(),
+            figure_mode=figure_mode,
+            export_format=export_format,
+        )
 
     with tabs[1]:
         render_kpoint_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
         st.divider()
-        render_kpoint_study_results(ctx, baseline, get_current_active_structure_signature())
+        render_kpoint_study_results(
+            ctx,
+            baseline,
+            get_current_active_structure_signature(),
+            figure_mode=figure_mode,
+            export_format=export_format,
+        )
 
     with tabs[2]:
         st.subheader("Equation of State (EOS) Study")
@@ -1671,7 +1727,13 @@ def render_page(ctx: ProjectContext) -> None:
         st.divider()
         render_eos_study_config(ctx, baseline, pseudopotentials, pseudo_dir, resolved_entries, atoms)
         st.divider()
-        render_eos_study_results(ctx, baseline, get_current_active_structure_signature())
+        render_eos_study_results(
+            ctx,
+            baseline,
+            get_current_active_structure_signature(),
+            figure_mode=figure_mode,
+            export_format=export_format,
+        )
 
 
 def default_eos_study_parameters() -> dict:
@@ -1794,7 +1856,14 @@ def render_eos_study_config(ctx: ProjectContext, baseline: dict, pseudopotential
             st.success(f"Generated EOS study inputs under `{study_dir.name}`.")
 
 
-def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_structure_signature: dict | None) -> None:
+def render_eos_study_results(
+    ctx: ProjectContext,
+    active_baseline: dict,
+    active_structure_signature: dict | None,
+    *,
+    figure_mode: str = INTERACTIVE_FIGURE_MODE,
+    export_format: str = "png",
+) -> None:
     st.markdown("### View Study Results")
     studies = discover_eos_studies(QE_CONVERGENCE_DIR)
     if not studies:
@@ -1904,9 +1973,18 @@ def render_eos_study_results(ctx: ProjectContext, active_baseline: dict, active_
         if status == "running":
             st.info("⏳ Calculation is still running or outputs are missing.")
 
-        # Plotly chart
-        fig = plot_eos_study(summary, display_mode=display_mode)
-        st.plotly_chart(fig, use_container_width=True)
+        fig = plot_eos_study(
+            summary,
+            display_mode=display_mode,
+            figure_mode=figure_mode,
+        )
+        render_centered_plotly_chart(
+            fig,
+            filename=EOS_STUDY_EXPORT_FILENAME,
+            export_format=export_format,
+            figure_mode=figure_mode,
+            export_width=PUBLICATION_EXPORT_STUDY_WIDTH if figure_mode == PUBLICATION_EXPORT_FIGURE_MODE else None,
+        )
 
         # Summary Cards
         st.markdown("### Fit Summary")

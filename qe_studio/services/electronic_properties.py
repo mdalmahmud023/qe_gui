@@ -402,7 +402,7 @@ def make_dos_figure(
     """Build a publication-friendly Plotly figure for total DOS."""
     x_values = _shifted_values(dos_data.energies_ev, dos_data.fermi_energy_ev, align_to_fermi)
     reference_x = 0.0 if align_to_fermi and dos_data.fermi_energy_ev is not None else dos_data.fermi_energy_ev
-    publication_mode = _is_publication_export_mode(figure_mode)
+    publication_mode = is_publication_export_mode(figure_mode)
 
     figure = go.Figure()
     figure.add_trace(
@@ -421,7 +421,7 @@ def make_dos_figure(
         xaxis_title="Energy (eV)",
         yaxis_title="DOS",
         showlegend=False,
-        **_base_plot_layout(
+        **build_plot_layout(
             height=PUBLICATION_DOS_HEIGHT if publication_mode else INTERACTIVE_DOS_HEIGHT,
             figure_mode=figure_mode,
         ),
@@ -488,7 +488,7 @@ def make_band_figure(
 ) -> go.Figure:
     """Build a publication-friendly Plotly figure for band structure."""
     figure = go.Figure()
-    publication_mode = _is_publication_export_mode(figure_mode)
+    publication_mode = is_publication_export_mode(figure_mode)
     energy_shift, reference_y, yaxis_title = _resolve_band_alignment(
         band_data,
         alignment_mode=alignment_mode,
@@ -514,7 +514,7 @@ def make_band_figure(
         xaxis_title="k-path distance",
         yaxis_title=yaxis_title,
         showlegend=False,
-        **_base_plot_layout(
+        **build_plot_layout(
             height=PUBLICATION_BAND_HEIGHT if publication_mode else INTERACTIVE_BAND_HEIGHT,
             figure_mode=figure_mode,
         ),
@@ -927,8 +927,9 @@ def _shifted_values(values: list[float], reference: float | None, align_to_refer
     return [value - reference for value in values]
 
 
-def _base_plot_layout(*, height: int, figure_mode: str = INTERACTIVE_FIGURE_MODE) -> dict:
-    publication_mode = _is_publication_export_mode(figure_mode)
+def build_plot_layout(*, height: int, figure_mode: str = INTERACTIVE_FIGURE_MODE) -> dict:
+    """Return the shared light, publication-friendly Plotly layout."""
+    publication_mode = is_publication_export_mode(figure_mode)
     return {
         "template": "none",
         "plot_bgcolor": "white",
@@ -990,5 +991,6 @@ def _base_plot_layout(*, height: int, figure_mode: str = INTERACTIVE_FIGURE_MODE
     }
 
 
-def _is_publication_export_mode(figure_mode: str) -> bool:
+def is_publication_export_mode(figure_mode: str) -> bool:
+    """Return whether a figure should use publication-export styling."""
     return figure_mode.strip().lower() == PUBLICATION_EXPORT_FIGURE_MODE
