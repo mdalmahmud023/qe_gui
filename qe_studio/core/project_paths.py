@@ -41,6 +41,27 @@ class WorkspacePaths:
         return Path(path).resolve().is_relative_to(self.pseudo_base_dir.resolve())
 
 
+@dataclass(frozen=True)
+class ProjectPaths(WorkspacePaths):
+    """Project identity files alongside the existing workspace path contract."""
+
+    @property
+    def root_path(self) -> Path:
+        return self.run_dir
+
+    @property
+    def marker(self) -> Path:
+        return self.root_path / "project.json"
+
+    @property
+    def database(self) -> Path:
+        return self.root_path / "project.sqlite3"
+
+    @property
+    def staging_dir(self) -> Path:
+        return self.root_path / ".staging"
+
+
 def session_input_matches_workspace(state: Mapping[str, Any], paths: WorkspacePaths) -> bool:
     """Require recorded ownership before using a session input preview."""
     ui_path = state.get(QE_INPUT_UI_PATH_STATE_KEY)

@@ -6,7 +6,8 @@ from typing import Any
 
 import streamlit as st
 
-from .project_paths import WorkspacePaths, session_input_matches_workspace
+from .project_models import Project
+from .project_paths import ProjectPaths, WorkspacePaths, session_input_matches_workspace
 from .state_keys import (
     ATOMS_STATE_KEY,
     ERROR_STATE_KEY,
@@ -133,16 +134,21 @@ class ProjectContext:
     run_dir: Path
     atoms: Any | None
     raw_atoms: Any | None
-    analysis_files: AnalysisFiles
-    structure: StructureSummary
-    pseudopotentials: PseudopotentialSummary
-    input_files: InputSummary
-    jobs: JobStatusSummary
-    artifacts: ArtifactSummary
+    analysis_files: AnalysisFiles | None
+    structure: StructureSummary | None
+    pseudopotentials: PseudopotentialSummary | None
+    input_files: InputSummary | None
+    jobs: JobStatusSummary | None
+    artifacts: ArtifactSummary | None
+    project: Project | None = None
+
+    def __post_init__(self) -> None:
+        if self.project is not None and Path(self.run_dir).resolve() != self.project.root_path:
+            raise ValueError("Project context root must match the opened project.")
 
     @property
     def paths(self) -> WorkspacePaths:
-        return WorkspacePaths(self.run_dir)
+        return ProjectPaths(self.project.root_path) if self.project else WorkspacePaths(self.run_dir)
 
 
 def format_cell_parameters(atoms) -> str:
@@ -231,8 +237,14 @@ def sync_active_job_summary_from_run_state() -> None:
     update_job_summary(owner, **summary_updates)
 
 
-def build_project_context(run_dir: Path = QE_RUNS_DIR) -> ProjectContext:
-    """Build a lightweight app context from session state plus disk summaries."""
+def build_project_context(run_dir: Path | None = None, *, project: Project | None = None) -> ProjectContext:
+    """Opened identity, or legacy scientific summaries when no project is supplied."""
+    if project is not None:
+        # Phase 1 projects are identity-only. Do not discover science or mutate
+        # runner state while building their overview, even with foreign session data.
+        return ProjectContext(Path(run_dir) if run_dir is not None else project.root_path,
+                              None, None, None, None, None, None, None, None, project)
+    run_dir = QE_RUNS_DIR if run_dir is None else run_dir
     initialize_run_state(st.session_state)
     reconcile_run_state(st.session_state)
     initialize_job_summaries_state()

@@ -3,8 +3,11 @@ from __future__ import annotations
 import streamlit as st
 
 from .core.project_context import build_project_context, initialize_job_summaries_state
+from .core.project_models import ProjectError
+from .core.project_session import ACTIVE_KEY, LEGACY, LOCATION_KEY, MANAGER, PREFIX, apply_pending_context
 from .core.workspace import QE_RUNS_DIR
-from .pages import ui_analysis, ui_run, ui_setup, ui_structure, ui_studies
+from .pages import ui_analysis, ui_projects, ui_run, ui_setup, ui_structure, ui_studies
+from .services.project_service import open_project
 from .services.qe_runner import initialize_run_state
 
 
@@ -120,6 +123,29 @@ def render_workflow_indicator(active_title: str) -> None:
 def main() -> None:
     st.set_page_config(page_title="QE Studio", layout="wide")
     render_app_shell_styles()
+    apply_pending_context(st.session_state)
+    notice = st.session_state.pop(PREFIX + "notice", None)
+    if notice:
+        st.warning(notice)
+    identity = st.session_state[ACTIVE_KEY]
+    if identity == MANAGER:
+        st.navigation([st.Page(ui_projects.render_manager, title="Projects", default=True)], position="top").run()
+        return
+    if identity != LEGACY:
+        try:
+            project = open_project(st.session_state[LOCATION_KEY])
+            if project.id != identity:
+                raise ProjectError("The selected location now contains a different project. Reopen it from Projects.")
+        except ProjectError as exc:
+            ui_projects.render_context_controls()
+            st.navigation([st.Page(lambda: st.error(str(exc)), title="Project unavailable", default=True)], position="top").run()
+            return
+        ctx = build_project_context(project=project)
+        ui_projects.render_context_controls(project)
+        st.navigation([st.Page(lambda: ui_projects.render_overview(ctx), title="Project", default=True)], position="top").run()
+        return
+
+    ui_projects.render_context_controls(legacy=True)
     initialize_run_state(st.session_state)
     initialize_job_summaries_state()
     ctx = build_project_context(QE_RUNS_DIR)

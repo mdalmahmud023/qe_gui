@@ -4,6 +4,25 @@ QE Studio is a Streamlit-based web GUI for Quantum ESPRESSO workflows — coveri
 
 ## Features
 
+### Projects (Phase 1)
+
+The app opens with **Projects**, offering **Create Project**, **Open Existing**, and **Recent Projects**. Opened projects currently show an overview plus rename, description, and close controls. Select **Legacy Workspace** to use the existing Structure / Setup / Studies / Run / Analysis workflow and its `qe_runs` files. Phase 1 does not migrate or persist scientific data in projects.
+
+A newly created project contains only:
+
+```text
+My-project/
+├── project.json
+├── project.sqlite3
+└── .staging/
+```
+
+The UUID stored in both identity files is authoritative. Display names may be duplicated; renaming a display name leaves the directory and UUID unchanged. After moving a directory, use **Open Existing** at its new location to update Recents. Creating a project never initializes over an existing directory. Independent copies sharing one UUID are not supported in this phase.
+
+Project SQLite databases contain only `project` and `schema_migrations`. Recents live separately at `$XDG_DATA_HOME/qe-studio/workspace.sqlite3` (default `~/.local/share/qe-studio/workspace.sqlite3`); set `QE_STUDIO_WORKSPACE_DIR` to override that directory. Open Existing refers to the Streamlit host filesystem. Missing, corrupt, and unsupported project schemas show an error without falling back to another workspace.
+
+Each browser tab keeps its own project selections and transient state. Context switching isolates Legacy Workspace structure/setup drafts and preserves its runner IDs without cancelling jobs. Project details reload from disk; conflicting edits in another tab require **Reload Project Details** before saving. Scientific persistence and durable execution remain later phases; browser refresh still resets transient legacy drafts.
+
 ### Structure
 - Import structure files through ASE-backed readers:
   - `.cif`
@@ -253,8 +272,8 @@ HISTORY.md
 
 ## Notes
 
-- Page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). The application still defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to route Setup, Studies, Run, and Analysis to another workspace. All three study types retain the legacy `convergence/cutoff` subdirectory.
-- Pseudopotential resolution and cache clearing use that workspace's `pseudopotentials` directory. Input previews and cached pseudopotential paths from another workspace are rejected. This is the path-isolation foundation, not yet a persistent project manager or full session-state isolation. Explicit external QE scratch paths retain their legacy behavior.
+- Legacy page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). Legacy Workspace defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to supply another root. All three study types retain the legacy `convergence/cutoff` subdirectory. `build_project_context(project=opened_project)` instead exposes project identity and `ProjectPaths`, without discovering science or touching runtime state.
+- Pseudopotential resolution and cache clearing use the legacy workspace's `pseudopotentials` directory. Input previews and cached pseudopotential paths from another workspace are rejected. Explicit external QE scratch paths retain their legacy behavior.
 - The app stores source and active ASE `Atoms` objects in `st.session_state`; a hard browser refresh resets session state.
 - All generated inputs, logs, study manifests, and provenance metadata are disk-first under `qe_runs/`; pages reconstruct their state from disk after a refresh.
 - The `Cell Representation` selector (source vs. primitive cell) affects newly generated QE inputs and study baselines. Switching cells requires regenerating `pw.in` and any studies.

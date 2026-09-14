@@ -12,7 +12,8 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Current State
 
-- Phase 0 workspace paths are explicit: `ProjectContext.paths` routes generation, study discovery, pseudopotential caches, execution, and provenance. Default startup still uses `qe_runs`; SQLite projects and session namespacing are not implemented yet.
+- Phase 1 adds a Project Manager and identity-only project overviews. UUIDs, names, descriptions, timestamps and schema versions persist in a two-table project SQLite database; the machine-local recents index is separate. Project folders can move without changing identity. No scientific records are persisted or migrated into these projects yet.
+- Phase 0 workspace paths remain explicit. The five scientific pages are available through **Legacy Workspace**, using `qe_runs` by default. Transient domain state is banked per context within each browser session; switching does not cancel legacy jobs or expose legacy structure/setup state in project overviews.
 - Streamlit app entrypoint exists at `app.py` and acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
 - The app uses a wide layout and a **5-page workflow**:
   - `Structure`
@@ -72,6 +73,15 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-09-14 — Phase 1: minimal project foundation
+
+- Added project models, `ProjectPaths`, short SQLite transactions, version/checksum validation, and create/open/rename services. Creation uses an exclusive directory and rolls back owned files on failure; open is read-only and rejects invalid/newer identities.
+- Added a separate recents index, move detection, duplicate display names, and optimistic rename conflict detection between tabs. UUIDs are independent of folder paths and display names.
+- Added Create / Open Existing / Recent / Rename / Close UI. New projects show overview and lifecycle controls only, as approved; science remains in Legacy Workspace with its existing routes and files.
+- Added per-tab context state banks and UUID-scoped project widgets. Legacy run ownership survives switching; no execution redesign, scientific database tables, or migration was introduced.
+- Added service, session, concurrency, and Streamlit UI tests for identity, moves, missing/corrupt/newer schemas, rollback, tab conflicts, and isolation. No QE calculations were launched.
+- Validation: `.venv/bin/python -m pytest -q --tb=short` — **483 passed**, including all 446 prior tests and 37 Phase 1 tests; 12 spglib deprecation warnings.
 
 ### 2026-09-14 — Phase 0: explicit workspace paths
 
@@ -385,7 +395,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Next Likely Steps
 
-- Project Phase 1: add persistent project identity and SQLite storage, Project Manager, and project/entity session-state isolation on top of the explicit path boundary.
+- Project Phase 2: persist structure versions, project-owned pseudopotentials, and baselines on the proven identity and path foundations. Keep scientific services unchanged while adapting ownership.
 - End-to-end validation: run a full Cutoff → K-Point → EOS workflow on a real structure and verify parsed energies, recommendations, and EOS fitting.
 - Add MPI support option for study runs (e.g., `mpirun -n N pw.x -in pw.in`).
 - Add anisotropic EOS scaling modes (e.g., uniaxial or biaxial strain).
