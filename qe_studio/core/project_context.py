@@ -6,6 +6,7 @@ from typing import Any
 
 import streamlit as st
 
+from .project_paths import WorkspacePaths, session_input_matches_workspace
 from .state_keys import (
     ATOMS_STATE_KEY,
     ERROR_STATE_KEY,
@@ -28,6 +29,7 @@ from .structure_state import (
     get_atomic_positions_coordinate_mode,
     get_current_active_structure_signature,
     get_qe_generation_blocker_message,
+    get_workspace_pseudopotential_blocker,
     get_structure_mode,
     has_resolved_pseudopotential_data,
     load_provenance,
@@ -138,6 +140,10 @@ class ProjectContext:
     jobs: JobStatusSummary
     artifacts: ArtifactSummary
 
+    @property
+    def paths(self) -> WorkspacePaths:
+        return WorkspacePaths(self.run_dir)
+
 
 def format_cell_parameters(atoms) -> str:
     """Format basic cell parameters for structure display."""
@@ -240,7 +246,7 @@ def build_project_context(run_dir: Path = QE_RUNS_DIR) -> ProjectContext:
     analysis_files = find_available_analysis_files(run_dir)
 
     structure_summary = _build_structure_summary(atoms)
-    pseudo_summary = _build_pseudopotential_summary()
+    pseudo_summary = _build_pseudopotential_summary(WorkspacePaths(run_dir))
     input_summary = _build_input_summary(atoms, run_dir, current_signature, provenance)
     job_summary = _build_job_status_summary()
     artifact_summary = _build_artifact_summary(analysis_files, current_signature, provenance)
@@ -285,10 +291,13 @@ def _build_structure_summary(atoms) -> StructureSummary:
     )
 
 
-def _build_pseudopotential_summary() -> PseudopotentialSummary:
+def _build_pseudopotential_summary(paths: WorkspacePaths) -> PseudopotentialSummary:
     status = st.session_state.get(PSEUDO_RESOLUTION_STATUS_STATE_KEY, {})
     rows = st.session_state.get(PSEUDO_RESOLVED_ROWS_STATE_KEY, []) or []
     state = status.get("state") or ("resolved" if rows else "unresolved")
+    workspace_blocker = get_workspace_pseudopotential_blocker(paths)
+    if workspace_blocker:
+        state = "stale"
     label_map = {
         "resolved": "Resolved",
         "stale": "Stale",
@@ -300,7 +309,7 @@ def _build_pseudopotential_summary() -> PseudopotentialSummary:
         state=state,
         ready=ready,
         status_label=label_map.get(state, state.replace("_", " ").title()),
-        message=status.get("message"),
+        message=workspace_blocker or status.get("message"),
         warning_count=len(status.get("warnings", [])),
         pseudo_dir=st.session_state.get(PSEUDO_DIR_STATE_KEY),
         resolved_count=len(rows),
@@ -313,13 +322,18 @@ def _build_input_summary(
     current_signature: dict[str, Any] | None,
     provenance: dict[str, Any],
 ) -> InputSummary:
-    ui_path = Path(st.session_state.get(QE_INPUT_UI_PATH_STATE_KEY, run_dir / "pw.in"))
-    internal_path = Path(st.session_state.get(QE_INPUT_INTERNAL_PATH_STATE_KEY, run_dir / "espresso.pwi"))
-    has_session_preview = bool(st.session_state.get(QE_INPUT_TEXT_STATE_KEY))
+    paths = WorkspacePaths(run_dir)
+    matching_session = session_input_matches_workspace(st.session_state, paths)
+    ui_path = run_dir / "pw.in"
+    internal_path = run_dir / "espresso.pwi"
+    if matching_session:
+        ui_path = Path(st.session_state[QE_INPUT_UI_PATH_STATE_KEY])
+        internal_path = Path(st.session_state.get(QE_INPUT_INTERNAL_PATH_STATE_KEY) or internal_path)
+    has_session_preview = matching_session and bool(st.session_state.get(QE_INPUT_TEXT_STATE_KEY))
     ui_exists = ui_path.is_file()
     preview_source = "session" if has_session_preview else "disk" if ui_exists else "none"
     available = has_session_preview or ui_exists
-    blocker_message = get_qe_generation_blocker_message(atoms)
+    blocker_message = get_workspace_pseudopotential_blocker(paths) or get_qe_generation_blocker_message(atoms)
     if available:
         status_label = "Generated"
     elif blocker_message:

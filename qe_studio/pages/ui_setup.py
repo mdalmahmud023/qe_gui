@@ -8,6 +8,7 @@ import streamlit as st
 
 from ..convergence import inspect_metadata_dual_support
 from ..core.project_context import ProjectContext
+from ..core.project_paths import session_input_matches_workspace
 from ..core.state_keys import (
     ATOMS_STATE_KEY,
     DEFAULT_PSEUDO_SETTINGS,
@@ -41,6 +42,7 @@ from ..core.structure_state import (
     get_current_pseudo_settings,
     get_current_source_metadata,
     get_qe_generation_blocker_message,
+    get_workspace_pseudopotential_blocker,
     get_structure_mode,
     record_generated_input_provenance,
     set_resolution_status,
@@ -287,6 +289,7 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
             mode=current_settings["mode"],
             version=current_settings["version"],
             fully_relativistic=fully_relativistic,
+            cache_root=ctx.paths.pseudo_base_dir if fully_relativistic else ctx.paths.sssp_cache_dir,
         )
         clear_pseudopotential_state(clear_structure_signature=False)
         st.session_state[PSEUDO_STRUCTURE_SIGNATURE_STATE_KEY] = get_structure_signature(ctx.atoms)
@@ -313,6 +316,7 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
                 resolution_result = resolve_fully_relativistic_pseudopotentials(
                     ctx.atoms,
                     functional=current_settings["functional"],
+                    cache_root=ctx.paths.pseudo_base_dir,
                     use_cache=use_cache,
                     progress_callback=update_resolution_progress,
                 )
@@ -322,6 +326,7 @@ def render_pseudopotentials_section(ctx: ProjectContext) -> None:
                     version=current_settings["version"],
                     functional=current_settings["functional"],
                     mode=current_settings["mode"],
+                    cache_root=ctx.paths.sssp_cache_dir,
                     use_cache=use_cache,
                     progress_callback=update_resolution_progress,
                 )
@@ -375,7 +380,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
     resolved_entries = st.session_state.get("pseudo_resolved_entries") or {}
     metadata_dual_info = inspect_metadata_dual_support(resolved_entries)
     current_pseudo_settings = get_current_pseudo_settings()
-    blocker_message = get_qe_generation_blocker_message(ctx.atoms)
+    blocker_message = get_workspace_pseudopotential_blocker(ctx.paths) or get_qe_generation_blocker_message(ctx.atoms)
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
     submit_block_reason = _get_generation_submit_block_reason(
         blocker_message=blocker_message,
@@ -451,7 +456,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         outdir = row_control_col2.text_input(
             "Outdir",
             value=str(defaults.get("outdir", DEFAULT_OUTDIR)),
-            help="QE scratch directory written into `&CONTROL`. Relative paths resolve from `qe_runs/`.",
+            help=f"QE scratch directory written into `&CONTROL`. Relative paths resolve from `{ctx.paths.run_dir}`.",
         )
 
         row_two_col1, row_two_col2 = st.columns(2)
@@ -719,7 +724,7 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
         qe_parameters,
         pseudopotentials,
         pseudo_dir,
-        run_dir=QE_RUNS_DIR,
+        run_dir=ctx.paths.run_dir,
         current_pseudo_settings=current_pseudo_settings,
         resolved_entries=resolved_entries or None,
         source_metadata=get_current_source_metadata(),
@@ -734,25 +739,25 @@ def render_qe_input_form(ctx: ProjectContext) -> None:
             st.error(result.error_message)
         return
 
-        assert result.qe_input_text is not None
-        assert result.internal_path is not None
-        assert result.ui_path is not None
-        assert result.metadata_path is not None
-        assert result.generation_context is not None
+    assert result.qe_input_text is not None
+    assert result.internal_path is not None
+    assert result.ui_path is not None
+    assert result.metadata_path is not None
+    assert result.generation_context is not None
 
-        reset_run_state(st.session_state)
-        st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
-        st.session_state[QE_INPUT_TEXT_STATE_KEY] = result.qe_input_text
-        st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(result.internal_path)
-        st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(result.ui_path)
-        record_generated_input_provenance(
-            QE_RUNS_DIR,
-            ui_path=str(result.ui_path),
-            internal_path=str(result.internal_path),
-            metadata_path=str(result.metadata_path),
-        )
-        st.success("Generated updated QE input files under `qe_runs/`.")
-        return
+    reset_run_state(st.session_state)
+    st.session_state[QE_PARAMS_STATE_KEY] = qe_parameters
+    st.session_state[QE_INPUT_TEXT_STATE_KEY] = result.qe_input_text
+    st.session_state[QE_INPUT_INTERNAL_PATH_STATE_KEY] = str(result.internal_path)
+    st.session_state[QE_INPUT_UI_PATH_STATE_KEY] = str(result.ui_path)
+    record_generated_input_provenance(
+        ctx.paths.run_dir,
+        ui_path=str(result.ui_path),
+        internal_path=str(result.internal_path),
+        metadata_path=str(result.metadata_path),
+    )
+    st.success(f"Generated updated QE input files under `{ctx.paths.run_dir}`.")
+    return
 
 
 
@@ -783,7 +788,7 @@ def render_generated_qe_input_preview(ctx: ProjectContext) -> None:
 def load_generated_input_preview_text(ctx: ProjectContext) -> str | None:
     """Load the current `pw.in` preview from session state or disk."""
     preview_text = st.session_state.get(QE_INPUT_TEXT_STATE_KEY)
-    if preview_text:
+    if preview_text and session_input_matches_workspace(st.session_state, ctx.paths):
         return preview_text
     if ctx.input_files.ui_path.is_file():
         return ctx.input_files.ui_path.read_text(encoding="utf-8")

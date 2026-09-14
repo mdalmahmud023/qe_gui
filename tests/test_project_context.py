@@ -88,6 +88,7 @@ class ProjectContextTests(unittest.TestCase):
         }
 
         with TemporaryDirectory() as tmp_dir:
+            st.session_state[ss.PSEUDO_DIR_STATE_KEY] = str(Path(tmp_dir) / "pseudopotentials")
             resolved_ctx = pc.build_project_context(Path(tmp_dir))
 
         self.assertTrue(resolved_ctx.pseudopotentials.ready)
@@ -99,6 +100,7 @@ class ProjectContextTests(unittest.TestCase):
             "warnings": ["Changed structure."],
         }
         with TemporaryDirectory() as tmp_dir:
+            st.session_state[ss.PSEUDO_DIR_STATE_KEY] = str(Path(tmp_dir) / "pseudopotentials")
             stale_ctx = pc.build_project_context(Path(tmp_dir))
 
         self.assertFalse(stale_ctx.pseudopotentials.ready)

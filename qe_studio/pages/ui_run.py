@@ -44,7 +44,6 @@ from ..core.workspace import (
     PROVENANCE_RECORD_DOS,
     QE_OUTPUT_FILENAME,
     QE_RUN_COMMAND,
-    QE_RUNS_DIR,
 )
 from ..services.postprocessing import (
     build_bands_pp_input_text,
@@ -102,8 +101,8 @@ def render_page(ctx: ProjectContext) -> None:
     render_qe_run_section(ctx)
     st.divider()
     st.markdown("### Post-Processing")
-    st.caption("Run follow-up DOS and band-structure workflows using the saved QE data under `qe_runs/`.")
-    render_dos_runner_subsection()
+    st.caption(f"Run follow-up DOS and band-structure workflows using the saved QE data under `{ctx.paths.run_dir}`.")
+    render_dos_runner_subsection(ctx)
     st.divider()
     render_band_workflow_subsection(ctx)
 
@@ -396,7 +395,7 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
     run_active = bool(st.session_state.get(RUN_ACTIVE_STATE_KEY))
     active_owner = get_active_job_owner()
     summary = get_job_summary(JOB_OWNER_PW)
-    output_path_text = summary.get("current_output_path") or str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)
+    output_path_text = summary.get("current_output_path") or str(ctx.paths.run_dir / QE_OUTPUT_FILENAME)
 
     render_job_status_block(JOB_OWNER_PW, idle_message="Launch `pw.x` against the generated `pw.in` input file.")
     st.caption(f"Command: `{' '.join(QE_RUN_COMMAND)}`")
@@ -417,11 +416,11 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
         else:
             try:
                 record_workflow_provenance(
-                    QE_RUNS_DIR,
+                    ctx.paths.run_dir,
                     PROVENANCE_RECORD_BASE_RUN,
                     paths={
                         "pw.in": str(input_path),
-                        "pw.out": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME),
+                        "pw.out": str(ctx.paths.run_dir / QE_OUTPUT_FILENAME),
                     },
                 )
                 start_managed_qe_job(
@@ -431,14 +430,14 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
                         JobStep(
                             label="pw.x",
                             command=QE_RUN_COMMAND,
-                            cwd=QE_RUNS_DIR,
-                            output_path=QE_RUNS_DIR / QE_OUTPUT_FILENAME,
+                            cwd=ctx.paths.run_dir,
+                            output_path=ctx.paths.run_dir / QE_OUTPUT_FILENAME,
                         )
                     ],
-                    log_paths={"pw.x log": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME)},
+                    log_paths={"pw.x log": str(ctx.paths.run_dir / QE_OUTPUT_FILENAME)},
                     artifacts={
                         "pw.in": str(input_path),
-                        "pw.out": str(QE_RUNS_DIR / QE_OUTPUT_FILENAME),
+                        "pw.out": str(ctx.paths.run_dir / QE_OUTPUT_FILENAME),
                     },
                 )
             except Exception as exc:
@@ -452,14 +451,14 @@ def render_qe_run_section(ctx: ProjectContext) -> None:
         render_job_artifact_summary(JOB_OWNER_PW)
 
 
-def render_dos_runner_subsection() -> None:
+def render_dos_runner_subsection(ctx: ProjectContext) -> None:
     """Render DOS post-processing controls and status."""
-    context = resolve_qe_run_context(QE_RUNS_DIR)
+    context = resolve_qe_run_context(ctx.paths.run_dir)
     prerequisites = validate_dos_prerequisites(context)
     default_dos_file = "dos.dat"
 
     st.markdown("#### Density of States (DOS)")
-    st.caption("Run `dos.x` against saved QE data in `qe_runs/` without changing the main `pw.x` input form.")
+    st.caption(f"Run `dos.x` against saved QE data in `{ctx.paths.run_dir}` without changing the main `pw.x` input form.")
     render_saved_run_context(context)
     render_prerequisite_feedback(prerequisites)
 
@@ -494,13 +493,13 @@ def render_dos_runner_subsection() -> None:
             disabled=bool(st.session_state.get(RUN_ACTIVE_STATE_KEY)),
         )
 
-    dos_input_path = QE_RUNS_DIR / DOS_INPUT_FILENAME
-    dos_log_path = QE_RUNS_DIR / DOS_OUTPUT_FILENAME
+    dos_input_path = ctx.paths.run_dir / DOS_INPUT_FILENAME
+    dos_log_path = ctx.paths.run_dir / DOS_OUTPUT_FILENAME
     try:
         dos_data_name = sanitize_leaf_filename(fildos, default_name=default_dos_file)
     except ValueError:
         dos_data_name = default_dos_file
-    dos_data_path = QE_RUNS_DIR / dos_data_name
+    dos_data_path = ctx.paths.run_dir / dos_data_name
 
     render_job_status_block(JOB_OWNER_DOS, idle_message="Configure and launch `dos.x` from the saved QE run directory.")
     st.caption(f"Command: `{' '.join(DOS_COMMAND)}`")
@@ -518,7 +517,7 @@ def render_dos_runner_subsection() -> None:
         else:
             try:
                 dos_data_name = sanitize_leaf_filename(fildos, default_name=default_dos_file)
-                dos_data_path = QE_RUNS_DIR / dos_data_name
+                dos_data_path = ctx.paths.run_dir / dos_data_name
                 dos_input_text = build_dos_input_text(
                     prefix=context.prefix,
                     outdir=context.effective_outdir,
@@ -532,7 +531,7 @@ def render_dos_runner_subsection() -> None:
                 )
                 dos_input_path.write_text(dos_input_text, encoding="utf-8")
                 record_workflow_provenance(
-                    QE_RUNS_DIR,
+                    ctx.paths.run_dir,
                     PROVENANCE_RECORD_DOS,
                     paths={
                         "dos.in": str(dos_input_path),
@@ -547,7 +546,7 @@ def render_dos_runner_subsection() -> None:
                         JobStep(
                             label="dos.x",
                             command=DOS_COMMAND,
-                            cwd=QE_RUNS_DIR,
+                            cwd=ctx.paths.run_dir,
                             output_path=dos_log_path,
                             validator=lambda path=dos_data_path: validate_dos_output_file(path),
                         )
@@ -570,11 +569,11 @@ def render_dos_runner_subsection() -> None:
 
 def render_band_workflow_subsection(ctx: ProjectContext) -> None:
     """Render the dedicated band-structure workflow controls and status."""
-    context = resolve_qe_run_context(QE_RUNS_DIR)
+    context = resolve_qe_run_context(ctx.paths.run_dir)
     default_nbnd = context.band_count_estimate.recommended_nbnd if context.band_count_estimate is not None else 16
 
     st.markdown("#### Band Structure")
-    st.caption("Run a dedicated band-path `pw.x` calculation followed by `bands.x` using the saved SCF source in `qe_runs/`.")
+    st.caption(f"Run a dedicated band-path `pw.x` calculation followed by `bands.x` using the saved SCF source in `{ctx.paths.run_dir}`.")
     render_saved_run_context(context)
     st.info("This workflow is a new band-path run plus `bands.x` post-processing. It is not just post-processing of the original SCF job.")
     render_auto_band_path_controls(ctx)
@@ -635,12 +634,12 @@ def render_band_workflow_subsection(ctx: ProjectContext) -> None:
             "The band-path run will reuse the saved potential and generate fresh wavefunctions."
         )
 
-    bands_pw_input_path = QE_RUNS_DIR / BANDS_PW_INPUT_FILENAME
-    bands_pw_log_path = QE_RUNS_DIR / BANDS_PW_OUTPUT_FILENAME
-    bands_pp_input_path = QE_RUNS_DIR / BANDS_PP_INPUT_FILENAME
-    bands_pp_log_path = QE_RUNS_DIR / BANDS_PP_OUTPUT_FILENAME
-    filband_path = QE_RUNS_DIR / FILBAND_FILENAME
-    filband_gnu_path = QE_RUNS_DIR / FILBAND_GNU_FILENAME
+    bands_pw_input_path = ctx.paths.run_dir / BANDS_PW_INPUT_FILENAME
+    bands_pw_log_path = ctx.paths.run_dir / BANDS_PW_OUTPUT_FILENAME
+    bands_pp_input_path = ctx.paths.run_dir / BANDS_PP_INPUT_FILENAME
+    bands_pp_log_path = ctx.paths.run_dir / BANDS_PP_OUTPUT_FILENAME
+    filband_path = ctx.paths.run_dir / FILBAND_FILENAME
+    filband_gnu_path = ctx.paths.run_dir / FILBAND_GNU_FILENAME
 
     render_job_status_block(JOB_OWNER_BANDS, idle_message="Configure a band path, then launch the dedicated `pw.x` + `bands.x` workflow.")
     st.caption(f"Step 1 command: `{' '.join(BANDS_PW_COMMAND)}`")
@@ -670,7 +669,7 @@ def render_band_workflow_subsection(ctx: ProjectContext) -> None:
                 )
                 bands_pw_input_path.write_text(bands_pw_text, encoding="utf-8")
                 record_workflow_provenance(
-                    QE_RUNS_DIR,
+                    ctx.paths.run_dir,
                     PROVENANCE_RECORD_BANDS,
                     paths={
                         "bands_pw.in": str(bands_pw_input_path),
@@ -697,13 +696,13 @@ def render_band_workflow_subsection(ctx: ProjectContext) -> None:
                         JobStep(
                             label="bands pw.x",
                             command=BANDS_PW_COMMAND,
-                            cwd=QE_RUNS_DIR,
+                            cwd=ctx.paths.run_dir,
                             output_path=bands_pw_log_path,
                         ),
                         JobStep(
                             label="bands.x",
                             command=BANDS_PP_COMMAND,
-                            cwd=QE_RUNS_DIR,
+                            cwd=ctx.paths.run_dir,
                             output_path=bands_pp_log_path,
                             prepare=prepare_bands_pp_input,
                             validator=lambda path=filband_gnu_path, band_input=bands_pw_input_path: validate_band_output_file(

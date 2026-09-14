@@ -193,7 +193,7 @@ def validate_dos_prerequisites(context: QERunContext) -> PrerequisiteCheck:
     warnings: list[str] = []
 
     if context.source_input_file is None:
-        blockers.append("No saved QE input was found in `qe_runs/` (`pw.in` or `espresso.pwi`).")
+        blockers.append(f"No saved QE input was found in `{context.run_dir}` (`pw.in` or `espresso.pwi`).")
     if context.save_dir is None:
         blockers.append("No usable `prefix.save` directory was found for the current QE run.")
 
@@ -228,11 +228,11 @@ def validate_bands_prerequisites(
     warnings: list[str] = []
 
     if context.source_input_file is None:
-        blockers.append("No saved QE input was found in `qe_runs/` (`pw.in` or `espresso.pwi`).")
+        blockers.append(f"No saved QE input was found in `{context.run_dir}` (`pw.in` or `espresso.pwi`).")
     if context.save_dir is None:
         blockers.append("No usable `prefix.save` directory was found for the current QE run.")
     if (context.calculation or "").lower() != "scf":
-        blockers.append("Band workflows require a prior SCF source input in `qe_runs/`.")
+        blockers.append(f"Band workflows require a prior SCF source input in `{context.run_dir}`.")
     if nbnd is None or int(nbnd) <= 0:
         blockers.append("`nbnd` must be a positive integer.")
 
@@ -274,7 +274,7 @@ def get_effective_band_nbnd(context: QERunContext, requested_nbnd: int) -> int:
 
 
 def sanitize_leaf_filename(filename: str, *, default_name: str) -> str:
-    """Keep generated artifacts inside qe_runs by accepting only leaf filenames."""
+    """Keep generated artifacts inside the run directory by accepting only leaf filenames."""
     candidate = (filename or "").strip()
     if not candidate:
         return default_name

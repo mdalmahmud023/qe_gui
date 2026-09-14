@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import streamlit as st
 
+from .project_paths import WorkspacePaths
 from .state_keys import (
     ACTIVE_STRUCTURE_SIGNATURE_STATE_KEY,
     ATOMIC_POSITIONS_COORDINATE_MODE_OPTIONS,
@@ -337,6 +338,30 @@ def get_qe_generation_blocker_message(atoms) -> str | None:
     if status.get("state") != "resolved":
         return "Resolve pseudopotentials before generating a runnable Quantum ESPRESSO input file."
 
+    return None
+
+
+def get_workspace_pseudopotential_blocker(paths: WorkspacePaths) -> str | None:
+    """Reject resolution paths left in session state by another workspace.
+
+    Check both the QE filename map and local paths used for SOC inspection.
+    This does not clear state or alter the legacy resolver's status.
+    """
+    pseudo_dir = st.session_state.get(PSEUDO_DIR_STATE_KEY)
+    candidates = [pseudo_dir] if pseudo_dir else []
+    if pseudo_dir:
+        candidates.extend(
+            Path(pseudo_dir) / filename
+            for filename in (st.session_state.get(PSEUDO_RESOLVED_MAP_STATE_KEY) or {}).values()
+        )
+    entries = (st.session_state.get("pseudo_resolved_entries") or {}).values()
+    rows = st.session_state.get(PSEUDO_RESOLVED_ROWS_STATE_KEY) or []
+    candidates.extend(row["local_path"] for row in [*entries, *rows] if row.get("local_path"))
+    if any(not paths.owns_pseudopotential(path) for path in candidates):
+        return (
+            f"The cached pseudopotential resolution belongs outside workspace `{paths.run_dir}`. "
+            "Resolve pseudopotentials in this workspace before generating inputs or studies."
+        )
     return None
 
 

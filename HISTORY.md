@@ -12,6 +12,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Current State
 
+- Phase 0 workspace paths are explicit: `ProjectContext.paths` routes generation, study discovery, pseudopotential caches, execution, and provenance. Default startup still uses `qe_runs`; SQLite projects and session namespacing are not implemented yet.
 - Streamlit app entrypoint exists at `app.py` and acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
 - The app uses a wide layout and a **5-page workflow**:
   - `Structure`
@@ -71,6 +72,15 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-09-14 — Phase 0: explicit workspace paths
+
+- Added immutable `WorkspacePaths` and a derived `ProjectContext.paths` property without creating directories or changing the default layout.
+- Routed Setup, all study types, base QE execution, DOS, and bands through the supplied context; passed explicit cache roots for both SSSP and SG15 resolution and cache clearing.
+- Guarded session input previews and pseudopotential paths against workspace mismatch, including local-path metadata and symlink targets.
+- Corrected the unreachable Setup success handler so generated input paths, preview state, and workspace provenance are actually recorded.
+- Added two-workspace integration tests using real Streamlit page actions, generation, parsing, and filesystem writes with mocked downloads and subprocesses. Tests cover relative/absolute roots, unrelated-CWD sentinels, and legacy external scratch paths.
+- No legacy data migration, database, navigation change, or runner redesign is included.
 
 ### 2026-04-07
 
@@ -375,6 +385,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Next Likely Steps
 
+- Project Phase 1: add persistent project identity and SQLite storage, Project Manager, and project/entity session-state isolation on top of the explicit path boundary.
 - End-to-end validation: run a full Cutoff → K-Point → EOS workflow on a real structure and verify parsed energies, recommendations, and EOS fitting.
 - Add MPI support option for study runs (e.g., `mpirun -n N pw.x -in pw.in`).
 - Add anisotropic EOS scaling modes (e.g., uniaxial or biaxial strain).

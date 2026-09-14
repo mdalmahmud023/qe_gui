@@ -253,6 +253,8 @@ HISTORY.md
 
 ## Notes
 
+- Page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). The application still defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to route Setup, Studies, Run, and Analysis to another workspace. All three study types retain the legacy `convergence/cutoff` subdirectory.
+- Pseudopotential resolution and cache clearing use that workspace's `pseudopotentials` directory. Input previews and cached pseudopotential paths from another workspace are rejected. This is the path-isolation foundation, not yet a persistent project manager or full session-state isolation. Explicit external QE scratch paths retain their legacy behavior.
 - The app stores source and active ASE `Atoms` objects in `st.session_state`; a hard browser refresh resets session state.
 - All generated inputs, logs, study manifests, and provenance metadata are disk-first under `qe_runs/`; pages reconstruct their state from disk after a refresh.
 - The `Cell Representation` selector (source vs. primitive cell) affects newly generated QE inputs and study baselines. Switching cells requires regenerating `pw.in` and any studies.

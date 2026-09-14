@@ -54,8 +54,8 @@ from ..core.structure_state import (
     get_current_pseudo_settings,
     get_current_source_metadata,
     get_structure_mode,
+    get_workspace_pseudopotential_blocker,
 )
-from ..core.workspace import QE_CONVERGENCE_DIR
 from ..services.input_generator import CalculationContext
 from ..services.electronic_properties import (
     INTERACTIVE_FIGURE_MODE,
@@ -1060,7 +1060,7 @@ def render_cutoff_study_results(
 ) -> None:
     """Render the cutoff-study selection, refresh controls, and summary table."""
     st.markdown("### Cutoff Study Results")
-    studies = discover_cutoff_studies(QE_CONVERGENCE_DIR)
+    studies = discover_cutoff_studies(ctx.paths.studies_dir)
     if not studies:
         st.info("Generate a cutoff convergence study from this page to review its manifest and parsed results.")
         return
@@ -1396,7 +1396,7 @@ def render_cutoff_study_config(ctx: ProjectContext, baseline: dict, pseudopotent
             source_metadata=get_current_source_metadata(),
             structure_signature=get_current_active_structure_signature(),
             structure_mode=get_structure_mode(),
-            studies_root=QE_CONVERGENCE_DIR,
+            studies_root=ctx.paths.studies_dir,
         )
     except Exception as exc:
         st.error(f"Failed to generate the cutoff convergence study: {exc}")
@@ -1490,7 +1490,7 @@ def render_kpoint_study_config(ctx: ProjectContext, baseline: dict, pseudopotent
             source_metadata=get_current_source_metadata(),
             structure_signature=get_current_active_structure_signature(),
             structure_mode=get_structure_mode(),
-            studies_root=QE_CONVERGENCE_DIR,
+            studies_root=ctx.paths.studies_dir,
         )
     except Exception as exc:
         st.error(f"Failed to generate the k-point convergence study: {exc}")
@@ -1511,7 +1511,7 @@ def render_kpoint_study_results(
     export_format: str = "png",
 ) -> None:
     st.markdown("### K-Point Study Results")
-    studies = discover_kpoint_studies(QE_CONVERGENCE_DIR)
+    studies = discover_kpoint_studies(ctx.paths.studies_dir)
     if not studies:
         st.info("Generate a k-point convergence study from this page to review its manifest and parsed results.")
         return
@@ -1690,6 +1690,11 @@ def render_page(ctx: ProjectContext) -> None:
         st.warning("Pseudopotentials must be resolved on the Setup page before running studies.")
         return
 
+    workspace_blocker = get_workspace_pseudopotential_blocker(ctx.paths)
+    if workspace_blocker:
+        st.warning(workspace_blocker)
+        return
+
     baseline = get_qe_parameters(resolved_entries=resolved_entries, atoms=ctx.atoms)
     k_grid_str = " x ".join(str(k) for k in baseline.get("k_points_grid", [1, 1, 1]))
 
@@ -1855,7 +1860,7 @@ def render_eos_study_config(ctx: ProjectContext, baseline: dict, pseudopotential
                     base_context,
                     baseline,
                     sweep_spec,
-                    QE_CONVERGENCE_DIR,
+                    ctx.paths.studies_dir,
                     pseudopotentials,
                     pseudo_dir,
                     source_metadata=get_current_source_metadata(),
@@ -1876,7 +1881,7 @@ def render_eos_study_results(
     export_format: str = "png",
 ) -> None:
     st.markdown("### View Study Results")
-    studies = discover_eos_studies(QE_CONVERGENCE_DIR)
+    studies = discover_eos_studies(ctx.paths.studies_dir)
     if not studies:
         st.info("No EOS studies found.")
         return
