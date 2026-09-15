@@ -26,7 +26,8 @@ def test_create_reopen_minimal_project(tmp_path):
     assert {p.name for p in project.root_path.iterdir()} == {'project.json', 'project.sqlite3', '.staging'}
     with connect(ProjectPaths(project.root_path).database, read_only=True) as db:
         assert {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")} == {
-            'project', 'schema_migrations', 'structures', 'pseudo_sets', 'pseudo_entries', 'baselines'}
+            'project', 'schema_migrations', 'structures', 'pseudo_sets', 'pseudo_entries', 'baselines', 'calculations', 'runs', 'run_steps', 'artifacts',
+            'studies', 'study_points', 'study_results', 'study_result_sources', 'baseline_recommendations'}
         assert db.execute('PRAGMA foreign_keys').fetchone()[0] == 1
         assert db.execute('PRAGMA journal_mode').fetchone()[0] == 'delete'
     assert not ProjectPaths(tmp_path / 'unused').root_path.exists()
@@ -119,7 +120,7 @@ def test_reject_invalid_project_without_mutation(tmp_path, damage):
         marker['project_id' if damage == 'uuid' else 'schema_version'] = 'invalid'
         paths.marker.write_text(json.dumps(marker))
     else:
-        statements = {'newer': 'PRAGMA user_version=3', 'older': 'PRAGMA user_version=0',
+        statements = {'newer': 'PRAGMA user_version=7', 'older': 'PRAGMA user_version=0',
                       'migration': "UPDATE schema_migrations SET checksum='broken'", 'extra_table': 'CREATE TABLE science (id TEXT)',
                       'missing_table': 'DROP TABLE project'}
         with connect(paths.database) as db:

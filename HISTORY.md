@@ -8,14 +8,17 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 - Project name: QE Studio
 - Goal: build a web-based GUI for Quantum ESPRESSO using Python, Streamlit, and ASE
-- Current stage: 5-page workflow covering structure import, QE input generation, multi-run convergence studies (Cutoff, K-Point, EOS), live execution, post-processing, and electronic-properties analysis
+- Current stage: project structures, calculations, persistent studies/results, and selected-item compatibility/provenance, alongside the existing five-page Legacy Workspace workflow
 
 ## Current State
 
-- Phase 2 adds project Structure and Baseline pages: immutable structure history, active structure selection, project-owned SHA-256 pseudopotential sets, and immutable baseline revisions. SQLite schema 2 upgrades valid Phase 1 projects transactionally; project marker format/UUIDs and separate Recents remain unchanged. No persistent calculations, runs, studies, dependency graph, or legacy migration is introduced.
+- Phase 5 adds on-demand freshness policy v1 (`current`/`stale`/`unknown`), typed views over existing provenance, independent availability/integrity diagnostics, recommendation-linked baselines, and duplication using the current baseline. SQLite schema 6 adds only immutable `baseline_recommendations`; old run/result history is unchanged. A general workflow graph, persistent daemon, and legacy import remain deferred.
+- Phase 4 immutable study specifications, normal point calculations, EOS structure lineage, and versioned results retain their existing storage and shared execution coordinator.
+- Phase 3A/3B editable calculations, revisioned inputs, first-attempt freezing, and durable runs/steps/artifacts remain the execution foundation. Marker format/UUIDs and Recents remain unchanged.
+- Phase 2 structure history, project-owned SHA-256 UPFs, immutable baseline revisions, and active pointers remain the scientific starting state. The Calculations browser adds Overview / Parameters / Input / Runs / Results; `/setup` is a project editor alias.
 - Phase 0 workspace paths remain explicit. The five scientific pages are available through **Legacy Workspace**, using `qe_runs` by default. Transient domain state is banked per context within each browser session; switching does not cancel legacy jobs or expose legacy structure/setup state in project overviews.
 - Streamlit app entrypoint exists at `app.py` and acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
-- The app uses a wide layout and a **5-page workflow**:
+- Legacy Workspace uses a wide layout and a **5-page workflow**:
   - `Structure`
   - `Setup`
   - `Studies`
@@ -33,7 +36,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
   - Interactive Plotly result charts and data tables for all three study types.
 - The `Run` page handles base `pw.x` execution, DOS post-processing (`dos.x`), band-structure workflow (`pw.x` + `bands.x`), live logs, and artifact summaries.
 - The `Analysis` page renders interactive total DOS and non-projected band-structure charts from real QE output files.
-- All generated inputs, study manifests/summaries, logs, and provenance metadata are disk-first under `qe_runs/`.
+- Legacy files remain under `qe_runs/`; project calculation inputs and attempts live under their project root.
 - `services/input_generator.py` contains `CalculationContext`, `NumericalSettings`, `PhysicalOptions`, and `ControlSettings` dataclasses plus `generate_qe_input_text`.
 - `convergence/` package contains models, study generators, result parsers, EOS fitting, recommendation logic, and `study_runner.py` which converts manifests into `JobStep` lists for `run_chained_jobs`.
 - Dependencies are listed in `requirements.txt`.
@@ -73,6 +76,34 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-09-15 — Phase 5: scientific compatibility and typed provenance
+
+- Added `dependency_service.py` with versioned scientific projections, structured reasons, explicit parent-chain propagation, and independent file availability/integrity/capability assessments. Baseline UUID differences alone do not imply staleness. Missing evidence yields unknown; missing restart bytes do not change execution or scientific freshness.
+- Reused parent-run fields, registered artifacts, study result sources, membership tables, and EOS structure metadata as provenance authorities. Added only `baseline_recommendations` in schema 6, with immutable records and same-transaction baseline creation.
+- Added fixed-parameter study comparisons: cutoff excludes cutoff fields, k-point excludes its grid, and EOS point comparisons use the frozen experiment reference. Historical results remain unchanged and accessible.
+- Added selected-item freshness badges/explanations, strong expected/found UPF integrity diagnostics, baseline field-origin views, Apply Recommendation to New Baseline, and Duplicate using current baseline. Parent-dependent copies require explicit new parent selection. Missing restart trees no longer hide intact historical DOS plots.
+- New calculation creation now verifies its project UPFs. Corruption blocks new work while preserving historical inspection. General graph editing, global sidebar scans, elaborate caching, and legacy migration remain outside this phase.
+- Validation: full suite **578 passed, 1 skipped**, with 34 spglib deprecation warnings. The 28 new tests cover scientific projections, exact parent-chain propagation, independent integrity/availability, historical DOS viewing with missing scratch, recommendation chaining/EOS provenance, cross-project rejection, rollback, migrations, and UI actions. `git diff --check` passed. Real-QE validation remains opt-in and was not rerun in this phase; Legacy Workspace data was not migrated.
+
+### 2026-09-15 — Phase 4: persistent convergence and EOS studies
+
+- Added schema 5 study specifications, immutable point membership, append-only result revisions, and exact result-to-run source records. Draft edits use revision checks; generation freezes the specification and resumes interrupted work under a per-study lock. Deterministic point identities reuse committed calculations/structures after interrupted membership publication.
+- Cutoff and k-point points use minimal baseline overrides and normal SCF calculations. Effective grids are deduplicated; EOS requires at least four distinct scales, derives precise structure records from the frozen reference, and keeps exact pseudo/settings inheritance through point baselines.
+- Added process-local batch dispatch to the existing coordinator, holding its shared project slot across ordinary calculation attempts. Failed points can be retried without changing completed points or prior runs. Cancellation stops queued successors. Restart never automatically dispatches queued/interrupted work.
+- Added Studies Overview / Points / Results / Plot and point-to-calculation navigation. Study calculations are hidden by default. Result refresh reuses existing scientific parsing, recommendations, EOS fits, geometry normalization, and plots while preserving every revision and source fingerprint.
+- Added explicit EOS equilibrium derivation from a chosen result, with idempotent lineage and separate active-structure adoption. Result browsing does not require active Setup or pseudopotential files. No general dependency graph, stale propagation, or legacy-data migration was added.
+- Validation: full suite **550 passed, 1 skipped**, with 33 spglib deprecation warnings; includes 17 new study service, migration/recovery, execution, and Streamlit tests. The skipped test remains the opt-in real-QE fixture; Phase 4 execution tests use real Python subprocesses with synthetic QE outputs. No real QE study was launched. `git diff --check` passed.
+
+### 2026-09-15 — Phase 3A/3B: calculations and persistent attempts
+
+- Added stable calculation UUIDs/per-kind numbers, baseline-plus-override requests, optimistic draft revisions, input-outdated status, repeatable generation, duplication, and editable names/notes. Generation retains previous input revisions and uses the existing scientific generator.
+- Added schema 3/4 migrations and direct-SQL protections. First attempt creation freezes the exact scientific definition and generator/input fingerprints. Each retry allocates a new attempt with isolated inputs, output, scratch, logs, and results.
+- Added explicit completed parent-run selection and verified ordinary copies of parent scratch for SCF → NSCF → DOS and SCF → bands. Bands records two ordered executable steps. Results use registered attempt artifacts and their own Fermi sources.
+- Added one Linux local project execution slot, persisted controller/process identity, worker-written status/events, process/scientific outcome separation, process-group cancellation, and conservative restart reconciliation. Existing `qe_runner` remains the engine; no daemon or automatic retry was introduced. Legacy Workspace remains independent.
+- Added regression coverage for editing/generation races, two-tab editor conflicts, retained attempts, SQL immutability, cross-project isolation, cancellation between steps, failed launches, inherited stdout handles, surviving-owner leases, stale inherited eigenvalues, and explicit parent scratch copies.
+- Added an opt-in real-QE SCF/NSCF/DOS/bands integration fixture. Its local execution stalled in Open MPI startup before QE output; real saved-data transfer remains unverified on this host. The inherited-stdout hang exposed during that attempt is covered by a subprocess regression test.
+- Final validation: `.venv/bin/python -m pytest -q --tb=short` — **533 passed, 1 skipped**, with 32 existing spglib deprecation warnings. The skipped test is the opt-in real-QE fixture. Project streaming memory is bounded while full disk logs are preserved. `git diff --check` passed; no legacy-data migration was performed.
 
 ### 2026-09-14 — Phase 2: structures, pseudopotentials, and baselines
 
@@ -395,7 +426,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - Manual pseudopotential override does not exist yet.
 - Offline-only pseudopotential resolution does not exist yet.
 - Live UI streaming depends on QE executables flushing stdout/stderr as they run.
-- Only one QE job (studies or main Run page) can run at a time; global run lock is shared.
+- Project-mode studies and ordinary calculations share one execution coordinator slot. Legacy execution remains independent.
 - EOS workflow currently only supports isotropic scaling; anisotropic or axis-specific volume scans are not implemented.
 - Study `Run Study` feature requires `pw.x` on PATH; no MPI or job-scheduler integration exists.
 - V1 analysis does not support PDOS, fat bands, or projected band weights.
@@ -405,7 +436,8 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Next Likely Steps
 
-- Project Phase 3: introduce independent calculations and durable execution bound to immutable structure/pseudo/baseline records. Keep legacy execution available until those workflows are proven.
+- Re-run the opt-in real-QE integration fixture on a functioning MPI/QE installation to validate actual saved-data transfer.
+- Next project phase: conservative copy-based legacy import with incomplete-provenance handling, followed by portability/export and storage management.
 - End-to-end validation: run a full Cutoff → K-Point → EOS workflow on a real structure and verify parsed energies, recommendations, and EOS fitting.
 - Add MPI support option for study runs (e.g., `mpirun -n N pw.x -in pw.in`).
 - Add anisotropic EOS scaling modes (e.g., uniaxial or biaxial strain).

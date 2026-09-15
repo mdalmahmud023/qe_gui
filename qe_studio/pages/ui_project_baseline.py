@@ -8,6 +8,7 @@ from ..services import baseline_service as baselines, pseudo_set_service as pseu
 from ..services.structure_service import load_structure
 from ..services.input_generator import VdwMethod
 from ..services.pseudopotentials import resolve_sssp_pseudopotentials, resolve_fully_relativistic_pseudopotentials
+from .freshness_view import render_baseline_provenance
 
 
 def render_page(ctx):
@@ -20,6 +21,7 @@ def render_page(ctx):
         selected = st.selectbox('View baseline', list(lookup), index=list(lookup).index(project.active_baseline_id) if project.active_baseline_id in lookup else len(history) - 1,
             format_func=lambda identifier, lookup=lookup: f'baseline_{lookup[identifier].sequence:03d}', key=key('history:' + str(project.active_baseline_id)))
         viewed = lookup[selected]
+        render_baseline_provenance(project, selected)
         st.caption(f'Structure: {viewed.structure_id} · Pseudo set: {viewed.pseudo_set_id} · Previous: {viewed.previous_baseline_id or "none"}')
         st.json(json.loads(viewed.settings_json))
         if project.active_baseline_id == selected:

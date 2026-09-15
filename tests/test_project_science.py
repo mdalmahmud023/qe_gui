@@ -272,7 +272,7 @@ def test_v1_migrates_atomically_preserving_identity(tmp_path):
     marker = (root / 'project.json').read_bytes()
     with ThreadPoolExecutor(max_workers=2) as pool:
         projects = list(pool.map(open_project, [root, root]))
-    assert all(p.id == identifier and p.schema_version == 2 for p in projects)
+    assert all(p.id == identifier and p.schema_version == 6 for p in projects)
     assert (root / 'project.json').read_bytes() == marker
     assert {p.name for p in root.iterdir()} == {'project.json', 'project.sqlite3', '.staging'}
     assert open_project(root) == projects[0]

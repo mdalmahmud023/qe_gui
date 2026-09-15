@@ -1,4 +1,4 @@
-"""Small repositories for Phase 2 records; SQLite is the metadata authority."""
+"""Project repositories; SQLite is the metadata authority."""
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10,7 +10,7 @@ from ..core.project_paths import ProjectPaths
 from ..services.project_service import open_project
 from .database import connect
 
-TABLES = {'structures', 'pseudo_sets', 'baselines'}
+TABLES = {'structures', 'pseudo_sets', 'baselines', 'calculations'}
 
 
 @contextmanager
@@ -87,8 +87,18 @@ def pending_payloads(project):
     with project_connection(project) as db:
         owned = {str(Path(row[0]).parent) for row in db.execute('SELECT snapshot_relpath FROM structures')}
         owned.update(str(Path(row[0]).parent) for row in db.execute('SELECT manifest_relpath FROM pseudo_sets'))
+        calculation_roots = {f"calculations/{row['kind']}_{row['sequence']:03d}" for row in db.execute('SELECT kind,sequence FROM calculations')}
+        owned.update(calculation_roots)
+        owned.update(row[0] for row in db.execute('SELECT work_relpath FROM runs'))
+        study_roots = {f"studies/{row['kind']}/{row['kind']}_{row['sequence']:03d}" for row in db.execute('SELECT kind,sequence FROM studies')}
+        owned.update(study_roots)
+        owned.update(str(Path(row[0]).parent) for row in db.execute('SELECT payload_relpath FROM study_results'))
     candidates = []
-    for directory in (paths.staging_dir, paths.structures_dir, paths.pseudo_base_dir):
+    directories = [paths.staging_dir, paths.structures_dir, paths.pseudo_base_dir, paths.resolve_relative('calculations')]
+    directories.extend(paths.resolve_relative(root + '/runs') for root in calculation_roots)
+    directories.extend(paths.resolve_relative('studies/' + kind) for kind in ('cutoff','kpoint','eos'))
+    directories.extend(paths.resolve_relative(root + '/results') for root in study_roots)
+    for directory in directories:
         if directory.exists():
             for child in directory.iterdir():
                 if child.is_dir() and str(child.relative_to(project.root_path)) not in owned:

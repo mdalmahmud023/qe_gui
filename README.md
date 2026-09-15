@@ -4,9 +4,9 @@ QE Studio is a Streamlit-based web GUI for Quantum ESPRESSO workflows — coveri
 
 ## Features
 
-### Projects (Phase 2)
+### Projects (Phase 5)
 
-The app opens with **Projects**, offering **Create Project**, **Open Existing**, and **Recent Projects**. Opened projects have **Project**, **Structure**, and **Baseline** pages. Select **Legacy Workspace** for the existing Structure / Setup / Studies / Run / Analysis workflow and its `qe_runs` files. Project calculations, runs, studies, dependency tracking, and legacy migration are not part of Phase 2.
+The app opens with **Projects**, offering **Create Project**, **Open Existing**, and **Recent Projects**. Opened projects have **Project**, **Structure**, **Baseline**, **Calculations**, and **Studies** pages. Selected calculations and results explain compatibility with the active baseline and their recorded upstream sources. Select **Legacy Workspace** for the existing Structure / Setup / Studies / Run / Analysis workflow and its `qe_runs` files. A general workflow graph and legacy migration remain future work.
 
 A newly created project contains `project.json`, `project.sqlite3`, and `.staging/`. Scientific directories appear only when records are committed:
 
@@ -33,15 +33,107 @@ My-project/
 
 **Pseudopotentials and baselines:** resolve SSSP or fully relativistic SG15 UPFs into the reusable download cache, then **Commit Pseudopotential Set** to copy the selected bytes into the project. Each copy is SHA-256 verified; identical species-to-byte mappings reuse an existing set. The global project-mode cache defaults to `$XDG_CACHE_HOME/qe-studio/pseudopotentials` (`~/.cache/qe-studio/pseudopotentials`); `QE_STUDIO_CACHE_DIR` overrides its parent directory. Legacy Workspace retains its existing cache paths. Deleting the global cache does not affect committed project UPFs.
 
-Edit common physical and numerical defaults on **Baseline**, use **Preview Baseline** for validation, then **Commit Baseline Revision**. Each immutable revision references exact structure and pseudo-set IDs. **Set Active Baseline** restores that revision's structure and settings. The existing typed scientific validation remains in use; no QE input generation or execution is added to project mode.
+Edit common physical and numerical defaults on **Baseline**, use **Preview Baseline** for validation, then **Commit Baseline Revision**. Each immutable revision references exact structure and pseudo-set IDs. **Set Active Baseline** restores that revision's structure and settings. Calculations inherit the selected baseline and apply saved overrides through the existing typed scientific validation and generator.
 
 UUIDs, not names or directory paths, define identity. Display names can be duplicated; renaming a display name leaves the directory unchanged. After moving a project, use **Open Existing** at its new location to update Recents. Independent copies sharing one UUID remain unsupported. Authoritative payload paths are project-relative, so moved projects reload without the original cache or repository location.
 
-SQLite schema 2 contains only `project`, `schema_migrations`, `structures`, `pseudo_sets`, `pseudo_entries`, and `baselines`. Opening a valid Phase 1 project applies a transactional schema upgrade; the container marker format remains version 1. Scientific rows reject updates/deletes. JSON sidecars are snapshots, not editable authorities. Files are staged before publication; interrupted unregistered payloads are retained and reported in the overview for inspection, without inventing successful records.
+SQLite schema 6 adds only `baseline_recommendations` to the existing project, scientific definition, calculation, execution, and study tables. Existing parent-run, study membership, consumed-run, and EOS lineage records remain authoritative. Opening a valid older project applies transactional schema upgrades; the container marker format remains version 1. Structures/pseudos/baselines remain immutable; ordinary calculation science becomes immutable on first attempt creation. Study point settings are bound to their frozen experiment during generation. JSON sidecars are snapshots, not editable authorities. Files are staged before publication; interrupted unregistered payloads are retained and reported in the overview for inspection, without inventing successful records.
 
 Recents live separately at `$XDG_DATA_HOME/qe-studio/workspace.sqlite3` (default `~/.local/share/qe-studio/workspace.sqlite3`); set `QE_STUDIO_WORKSPACE_DIR` to override that directory. Open Existing refers to the Streamlit host filesystem. Invalid/newer schemas show errors without falling back to another workspace.
 
 Each tab has independent selections and UUID-scoped project widgets. Switching projects clears transient project previews/editors and reloads committed active IDs and settings. Legacy drafts and runner IDs remain isolated in their session bank; switching does not cancel jobs. Browser refresh still resets transient drafts. Conflicting project-detail edits require **Reload Project Details** before saving.
+
+### Project calculations and attempts
+
+On **Calculations**, choose a kind and baseline, then **Create Calculation**. The browser filters SCF, NSCF, relax, vc-relax, bands, and DOS and provides **Overview / Parameters / Input / Runs / Results** tabs. The project `/setup` route opens this same editor. Parameters currently use a JSON overrides editor; common defaults remain on Baseline. **Save Draft** persists changes with revision checks; **Reload Editor** resolves another tab's conflicting edit.
+
+Editing and regenerating preserve the calculation UUID and display number. A saved edit increments `draft_revision`; when it exceeds `generated_revision`, the UI shows **Input needs regeneration** and blocks execution. Generation retains prior snapshots in separate revision directories. Creating the first run atomically freezes the baseline, overrides, resolved request, exact input hashes, and generator version/source fingerprint. Thereafter **Duplicate Calculation** starts a new editable definition; names and notes remain editable on the original.
+
+```text
+calculations/scf_001/
+├── calculation.json
+├── input/
+│   └── revision_001_<id>/
+│       ├── pw.in
+│       ├── espresso.pwi
+│       └── metadata.json
+└── runs/
+    ├── run_001/
+    │   ├── run.json
+    │   ├── pw.in
+    │   ├── pw.out
+    │   ├── exit.json
+    │   ├── tmp/
+    │   ├── logs/
+    │   └── results/
+    └── run_002/
+```
+
+Each attempt copies the exact generated inputs into its own working directory. Retrying the same calculation creates another attempt and preserves prior logs, outputs, and scratch. Managed prefixes and relative pseudo/scratch paths keep project execution local to that project. Legacy custom scratch behavior remains unchanged.
+
+NSCF and bands require an explicit completed SCF parent; DOS requires a completed NSCF parent. Create NSCF from SCF and then DOS from that NSCF to run the DOS workflow. Children inherit the parent's baseline, physical model, and cutoffs, with supported numerical/workflow overrides. The parent restart tree is hash-verified and copied into child scratch, with a recorded copy receipt. Bands persists two ordered steps (`pw.x`, then `bands.x`). Results select exact run artifacts; no project-wide filename search combines outputs or Fermi metadata.
+
+Project attempts share a single local execution slot across projects and tabs, using the existing `qe_runner` thread engine. Worker callbacks persist statuses, step exit codes, scientific validation, and logs even when the page is closed. Cancellation targets the process group and prevents the next step. This coordinator currently targets Linux local execution, using `flock` and `/proc` process identity; Legacy Workspace keeps its independent execution behavior. There is no persistent daemon, automatic queue dispatch, or automatic retry. After controller restart, uncertain attempts become **interrupted**; a surviving process still blocks a new project execution owner. Closing a browser or switching projects does not cancel a job.
+
+The default suite uses small Python subprocesses with synthetic QE output to verify orchestration. A real-QE smoke test is opt-in and needs `pw.x`, `dos.x`, `bands.x`, and a compatible silicon UPF:
+
+```bash
+QE_STUDIO_REAL_QE=1 QE_STUDIO_TEST_UPF=/absolute/path/to/Si.UPF \
+  .venv/bin/python -m pytest tests/test_project_execution_real.py -q
+```
+
+The local real-QE attempt on 2026-09-15 stalled in Open MPI startup before QE produced output. Real SCF/NSCF/DOS/bands saved-data transfer remains unverified on this host; the opt-in fixture records that gap rather than certifying it through synthetic outputs.
+
+### Project convergence and EOS studies
+
+On **Studies**, create a cutoff, k-point, or EOS experiment against an exact baseline revision. **Save Study Draft** edits the specification with revision checks. **Generate Study Points** freezes it and creates ordinary SCF calculations with `origin=study_point`. Once generation starts, changes require **Duplicate Study**. If generation is interrupted, **Resume Generation** continues the same specification and reuses committed points; partial experiments cannot run until generation finishes.
+
+The initial specification editor accepts JSON. Range controls use the same scientific sweep models as Legacy Workspace. Explicit lists are also supported: `ecutwfc_values_ry`, `grids` (three integers per grid), or EOS `scales`. Cutoff points override only varied cutoff values; k-point points override only the resolved grid. Duplicate effective grids are collapsed, including repeated Gamma requests in 0D mode. Grid sequences must not decrease any axis. EOS requires at least four distinct increasing scales, keeps full-precision identities, and creates a structure plus baseline for each scaled point, preserving the reference baseline's UPFs and settings. Every EOS point is explicitly SCF and uses the frozen reference structure.
+
+```text
+studies/cutoff/cutoff_001/
+├── manifest.json                  # Specification and point calculation IDs
+└── results/
+    ├── result_001_<id>/summary.json
+    └── result_002_<id>/summary.json
+
+calculations/scf_012/               # A study point's normal calculation
+├── input/...
+└── runs/run_001/...
+```
+
+**Overview / Points / Results / Plot** expose the specification, calculation/run relationships, energy, and status. **Open Calculation** opens a point's normal editor/attempt view. Study points are hidden in the ordinary calculation browser until **Show study calculations** is enabled.
+
+**Run Pending / Failed Points** creates or resumes normal queued attempts through the project coordinator. One execution slot remains owned for the batch, so ordinary project jobs and studies cannot overlap. Failed points do not prevent subsequent points from running; retries preserve earlier attempts and skip points whose latest attempt completed. **Stop Study** cancels the current process group and queued points. After controller restart, queued points require an explicit resume and uncertain running attempts become interrupted; no background daemon or automatic retry was added. Legacy study execution remains independent.
+
+Every **Refresh Study Results** appends a new result revision with exact calculation/run IDs, registered output hashes, parser/algorithm fingerprints, and a timestamp. It uses each point's latest attempt; a failed retry does not silently reuse an older success. The service API additionally accepts an explicit ordinal-to-run selection for historical analysis. Missing or modified outputs produce incomplete/integrity statuses, never an invented running status. Existing cutoff/k-point recommendation algorithms, total-cell EOS fitting, conventional-cell geometry reporting, and Plotly display/export modes are retained. Old results remain browsable without active Setup or available UPF payloads.
+
+An EOS result may contain a fit from at least four successful points while other points remain missing; it is labeled **partial_fit**. **Create Equilibrium Structure** derives an idempotent child from that selected fit and the frozen reference. It does not replace the active structure; use **Structure → Set Active** to adopt it. Applying a recommendation to a new baseline requires a complete, compatible result.
+
+### Compatibility and provenance
+
+Freshness policy **version 1** evaluates the selected item on demand. It reports **current**, **stale**, or **unknown**, with structured reasons and an evaluation key designed for future caching. It does not scan every calculation in the sidebar, persist replacement statuses, or change completed runs. The comparison defaults to the project's active baseline; service callers can supply a specific comparison baseline.
+
+| Dimension | Meaning |
+|---|---|
+| Execution | Historical queued/running/completed/failed/cancelled/interrupted outcome |
+| Freshness | Scientific compatibility with the selected baseline |
+| Availability | Whether a required file or restart tree is present/readable |
+| Integrity | Whether available bytes match their recorded SHA-256 fingerprint |
+
+Two different baseline IDs can be current when their relevant scientific content matches. The service compares committed structure and pseudo-set fingerprints and the resolved scientific settings. Spin/SOC, active Hubbard U, vdW, occupations, and numerical settings are included; names, notes, display settings, source labels, disabled Hubbard settings, and unused smearing settings are excluded. SCF numerical overrides are compared with the selected baseline's values, so a calculation intentionally using different cutoffs can be stale for that baseline while remaining a valid historical calculation. A structure-only comparison ignores numerical settings.
+
+NSCF/bands/DOS preserve workflow-specific grids and occupation/convergence overrides while inheriting compatibility from their exact parent chain. Study compatibility compares fixed settings: cutoff studies exclude `ecutwfc`/`ecutrho`, k-point studies exclude the swept grid, and EOS points compare the frozen reference baseline rather than their deliberately scaled geometries. Saved study results use this same fixed-experiment projection and expose their exact consumed runs/output hashes. Incomplete provenance yields unknown; missing payload bytes alone do not alter scientific freshness.
+
+**Compatibility, provenance, and file checks** shows typed `parent_run`, `consumes_artifact`, `consumed_run`, `derived_from`, and `recommended_by` relationships. Study membership stays in `study_points`; no duplicate membership edges or arbitrary graph editor were added. Integrity failures show expected and found hashes prominently. A changed UPF set can cause staleness, while damaged bytes in an existing set are an integrity problem and block creating new calculations or generating/running inputs with that set. Historical records remain inspectable.
+
+Missing restart data disables restart-dependent work without hiding an intact historical DOS plot or changing a completed run's status. File auditing may hash large restart trees when the selected run is inspected; there is no background integrity cache in this phase.
+
+**Duplicate using current baseline** creates a new editable calculation using current baseline physics and ordinary SCF numerics. It retains workflow-specific band/DOS controls and supported NSCF/bands grids/occupations. Parent-dependent copies require explicit parent selection again; the old parent is not silently rebound.
+
+For a complete compatible study result, **Apply Recommendation to New Baseline** creates a baseline and its result/field provenance in one transaction. Cutoff results record cutoff fields, k-point results record the grid, and EOS results record the derived structure plus its exact fit-result lineage. Integrity failures block application. Missing original outputs alone do not erase a preserved recommendation: applying it can use the immutable stored summary and source fingerprints, provided current structure/UPF payloads remain valid. Use **Baseline → Set Active Baseline** to adopt the new revision explicitly.
+
+Baseline history shows recommendation origins inherited through unchanged fields, including successive cutoff and grid recommendations. These links record where values came from; they are not a blanket claim that every ancestral experiment remains compatible after later edits. Recommendation application, duplication, and freshness evaluation never rewrite old calculations or study results. Legacy Workspace retains its existing behavior.
 
 ### Structure
 - Import structure files through ASE-backed readers:
@@ -294,13 +386,13 @@ HISTORY.md
 
 - Legacy page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). Legacy Workspace defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to supply another root. All three study types retain the legacy `convergence/cutoff` subdirectory. `build_project_context(project=opened_project)` instead exposes project identity and `ProjectPaths`, loading committed structures and baselines without scanning for calculation artifacts or touching runtime state.
 - Pseudopotential resolution and cache clearing use the legacy workspace's `pseudopotentials` directory. Input previews and cached pseudopotential paths from another workspace are rejected. Explicit external QE scratch paths retain their legacy behavior.
-- The app stores source and active ASE `Atoms` objects in `st.session_state`; a hard browser refresh resets session state.
-- All generated inputs, logs, study manifests, and provenance metadata are disk-first under `qe_runs/`; pages reconstruct their state from disk after a refresh.
+- Legacy Workspace stores source and active ASE `Atoms` objects in `st.session_state`; a hard browser refresh resets that state. Project mode reloads committed structures and calculations from its database and payloads.
+- Legacy generated inputs, logs, study manifests, and provenance metadata remain under `qe_runs/`. Project calculations own separate input snapshots and attempt directories.
 - The `Cell Representation` selector (source vs. primitive cell) affects newly generated QE inputs and study baselines. Switching cells requires regenerating `pw.in` and any studies.
 - The pseudopotential resolver supports SSSP `1.3.0` (PBE/PBEsol, efficiency/precision) and the SG15 ONCV PBE FR set for SOC calculations.
 - SOC calculations require fully relativistic pseudopotentials for all species; mixed scalar+FR sets are blocked before input generation.
 - DFT+U uses the legacy `lda_plus_u` path with user-supplied Hubbard U values in eV.
 - Spin-orbit coupling does not yet support noncollinear magnetic vector setup (`angle1/angle2`) or collinear `nspin=2` combined with SOC.
-- Study runs use the same `pw.x` subprocess runner as the main Run page; only one QE job can run at a time.
+- Project studies and ordinary project calculations share the coordinator and runner engine. Legacy studies and the legacy Run page retain their existing behavior and files.
 - The EOS workflow performs isotropic lattice scaling via ASE (`atoms.set_cell(..., scale_atoms=True)`), which preserves fractional coordinates.
 - V1 analysis supports total DOS and non-projected `filband.gnu` band plots; PDOS and fat bands are not yet implemented.

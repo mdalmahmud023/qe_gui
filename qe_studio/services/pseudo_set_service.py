@@ -80,16 +80,18 @@ def commit_pseudo_set(project, resolved_entries, *, settings=None):
 def load_pseudo_entries(project, identifier):
     entry = get_pseudo_set(project, identifier)
     paths = ProjectPaths(project.root_path)
-    if hashlib.sha256(paths.resolve_relative(entry.manifest_relpath).read_bytes()).hexdigest() != entry.manifest_sha256:
-        raise ProjectError('Pseudopotential manifest failed its integrity check.')
+    manifest_hash = hashlib.sha256(paths.resolve_relative(entry.manifest_relpath).read_bytes()).hexdigest()
+    if manifest_hash != entry.manifest_sha256:
+        raise ProjectError(f'Pseudopotential manifest failed its integrity check. Expected SHA-256: {entry.manifest_sha256}; found: {manifest_hash}.')
     with project_connection(project) as db:
         rows = db.execute('SELECT * FROM pseudo_entries WHERE pseudo_set_id=? ORDER BY species', (identifier,)).fetchall()
     result = {}
     hashes = {}
     for row in rows:
         path = paths.resolve_relative(row['relpath'])
-        if hashlib.sha256(path.read_bytes()).hexdigest() != row['sha256']:
-            raise ProjectError(f"Committed UPF content changed for {row['species']}.")
+        found = hashlib.sha256(path.read_bytes()).hexdigest()
+        if found != row['sha256']:
+            raise ProjectError(f"Committed UPF content changed for {row['species']}. Expected SHA-256: {row['sha256']}; found: {found}.")
         hashes[row['species']] = row['sha256']
         result[row['species']] = {**json.loads(row['metadata_json']), 'filename': row['filename'], 'local_path': str(path), 'sha256': row['sha256']}
     if len(result) != entry.entry_count or pseudo_set_hash(hashes) != entry.pseudo_set_hash:

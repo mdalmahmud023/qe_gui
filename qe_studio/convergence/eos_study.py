@@ -193,6 +193,13 @@ def _build_equilibrium_geometry_summary(
     return geometry_summary
 
 
+def equilibrium_geometry_from_reference(atoms: Atoms, volume: float | None) -> dict:
+    """Reuse fitted/conventional-cell normalization with an explicit frozen cell."""
+    return _build_equilibrium_geometry_summary(
+        {'structure': {'fitted_cell_snapshot': _serialize_atoms_snapshot(atoms)}}, Path('.'),
+        fitted_equilibrium_volume=volume)
+
+
 def _format_eos_point_dir_name(point: EosStudyPoint) -> str:
     """Format the directory name for an EOS study point."""
     scale_str = f"{point.scale_factor:.4f}".replace(".", "p")

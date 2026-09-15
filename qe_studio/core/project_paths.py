@@ -65,6 +65,10 @@ class ProjectPaths(WorkspacePaths):
     def structures_dir(self) -> Path:
         return self.root_path / "structures"
 
+    @property
+    def studies_dir(self) -> Path:
+        return self.root_path / "studies"
+
     def resolve_relative(self, relative: str | Path) -> Path:
         """Reject traversal and symlink escapes for project-owned scientific files."""
         relative = Path(relative)

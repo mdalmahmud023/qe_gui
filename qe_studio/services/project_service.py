@@ -43,7 +43,7 @@ def _project_from_row(row, root: Path) -> Project:
     if row is None:
         raise ProjectError("The project database has no identity record.")
     identifier = str(UUID(row["id"]))
-    if identifier != row["id"] or row["schema_version"] not in (1, PROJECT_SCHEMA_VERSION):
+    if identifier != row["id"] or row["schema_version"] not in range(1, PROJECT_SCHEMA_VERSION + 1):
         raise ProjectError("The project identity or schema version is invalid.")
     if not isinstance(row["description"], str):
         raise ProjectError("Project description must be text.")

@@ -1,4 +1,4 @@
-"""Phase 1 project manager and identity-only overview."""
+"""Project lifecycle controls and overview."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +29,7 @@ def _select(project: Project, store: WorkspaceStore) -> None:
 
 def render_manager() -> None:
     st.title("Projects")
-    st.caption("Create or open a local project. Projects support structure history and baselines. Calculations remain in Legacy Workspace.")
+    st.caption("Create or open a local project with structure history, baselines, calculations, studies, and saved results.")
     st.button("Legacy Workspace", key=PREFIX + "legacy", on_click=request_context,
               args=(st.session_state, LEGACY))
     store = WorkspaceStore()
@@ -83,7 +83,7 @@ def render_overview(ctx) -> None:
     st.title(project.display_name)
     if project.description:
         st.write(project.description)
-    st.caption("Project overview · Structure history and scientific baselines")
+    st.caption("Project overview · Structures, baselines, calculations, and studies")
     st.write("Project UUID", project.id)
     st.write("Location", str(project.root_path))
     st.write("Created", project.created_at.isoformat())

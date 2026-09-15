@@ -1749,6 +1749,7 @@ def generate_qe_input_text(
     pseudo_dir: str | Path,
     *,
     run_dir: Path,
+    execution_dir: Path | None = None,
 ) -> tuple[str, Path, Path]:
     """
     Generate a clean ``pw.in`` file and return its text and file paths.
@@ -1791,7 +1792,7 @@ def generate_qe_input_text(
 
     input_data = build_qe_input_namelist(ctx)
     pseudo_dir_path = Path(pseudo_dir)
-    relative_pseudo_dir = Path(os.path.relpath(pseudo_dir_path, run_dir))
+    relative_pseudo_dir = Path(os.path.relpath(pseudo_dir_path, execution_dir or run_dir))
 
     profile = EspressoProfile(command="pw.x", pseudo_dir=relative_pseudo_dir)
     calculator = Espresso(

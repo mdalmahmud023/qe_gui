@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import queue
+import os
+import signal
+import selectors
+import codecs
 import subprocess
 import threading
 import uuid
@@ -285,12 +289,17 @@ def run_chained_jobs(
     *,
     job_label: str,
     steps: Sequence[JobStep],
+    observer: Callable[[dict], None] | None = None,
+    cancel_event: threading.Event | None = None,
+    runtime_id: str | None = None,
+    process_group: bool = False,
+    pass_fds: tuple[int, ...] = (),
 ) -> tuple[str, list[Path]]:
     """Start one or more QE job steps and return the run id plus log paths."""
     if not steps:
         raise ValueError("At least one job step is required.")
 
-    run_id = uuid.uuid4().hex
+    run_id = runtime_id or uuid.uuid4().hex
     normalized_steps = [
         JobStep(
             label=step.label,
@@ -304,7 +313,20 @@ def run_chained_jobs(
     ]
     output_paths = [step.output_path for step in normalized_steps]
 
-    event_queue: queue.Queue[RunEvent] = queue.Queue()
+    # Project observers persist events/logs; their UI does not drain this queue.
+    # Keep only a bounded optional stream while preserving legacy queue behavior.
+    event_queue: queue.Queue[RunEvent] = queue.Queue(maxsize=DEFAULT_MAX_TAIL_LINES if observer else 0)
+
+    def emit(event):
+        try:
+            event_queue.put_nowait(event)
+        except queue.Full:
+            try:
+                event_queue.get_nowait()
+            except queue.Empty:
+                pass
+            event_queue.put_nowait(event)
+
     context = RunContext(
         process=None,
         thread=threading.Thread(target=lambda: None),
@@ -312,73 +334,136 @@ def run_chained_jobs(
         started_at=datetime.now(timezone.utc),
     )
 
+
+    def output_lines(process):
+        if not process_group:
+            yield from process.stdout
+            return
+        # Some MPI helpers inherit stdout and outlive pw.x. A blocking readline
+        # would otherwise prevent cancellation/completion from ever being recorded.
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        pending = ''
+        with selectors.DefaultSelector() as selector:
+            selector.register(descriptor, selectors.EVENT_READ)
+            while True:
+                ready = selector.select(timeout=.1)
+                if not ready and process.poll() is None:
+                    continue
+                try:
+                    chunk = os.read(descriptor, 65536)
+                except BlockingIOError:
+                    if process.poll() is not None:
+                        break
+                    continue
+                if not chunk:
+                    break
+                pending += decoder.decode(chunk)
+                while '\n' in pending:
+                    line, pending = pending.split('\n', 1)
+                    yield line + '\n'
+            pending += decoder.decode(b'', final=True)
+            if pending:
+                yield pending
+
     def worker() -> None:
         process: subprocess.Popen[str] | None = None
         current_output_path = output_paths[0]
+        ordinal = 0
+        outcome = 'failed'
+        final_code = DEFAULT_FAILURE_RETURNCODE
+        process_code = None
+        message = None
+
+        def cancelled():
+            return cancel_event is not None and cancel_event.is_set()
+
+        def observe(event, **payload):
+            if observer:
+                observer(dict(event=event, ordinal=ordinal, **payload))
+
         try:
-            for step in normalized_steps:
+            for ordinal, step in enumerate(normalized_steps, 1):
+                if cancelled():
+                    outcome = 'cancelled'
+                    break
                 current_output_path = step.output_path
                 current_output_path.parent.mkdir(parents=True, exist_ok=True)
-                current_output_path.write_text("", encoding="utf-8")
-
-                event_queue.put(
-                    RunEvent(
-                        type=EVENT_TYPE_PHASE,
-                        phase_label=step.label,
-                        output_path=str(current_output_path),
-                        line=f"\n=== {step.label} ===\n",
-                    )
-                )
-
+                current_output_path.write_text('', encoding='utf-8')
+                process_code = None
+                observe('step_started')
+                emit(RunEvent(type=EVENT_TYPE_PHASE, phase_label=step.label,
+                    output_path=str(current_output_path), line=f"\n=== {step.label} ===\n"))
                 if step.prepare is not None:
                     step.prepare()
-
-                with current_output_path.open("a", encoding="utf-8") as output_file:
-                    process = subprocess.Popen(
-                        list(step.command),
-                        cwd=str(step.cwd),
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        stdin=subprocess.DEVNULL,
-                        text=True,
-                        bufsize=1,
-                    )
+                if cancelled():
+                    outcome = 'cancelled'
+                    break
+                with current_output_path.open('a', encoding='utf-8') as output_file:
+                    options = {}
+                    if process_group:
+                        options.update(start_new_session=True, pass_fds=pass_fds)
+                    process = subprocess.Popen(list(step.command), cwd=str(step.cwd), stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, bufsize=1, **options)
                     context.process = process
-
+                    if observer:
+                        observe('process_started', pid=process.pid)
+                    if cancelled() and process_group:
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                     if process.stdout is None:
-                        raise RuntimeError("Quantum ESPRESSO process did not expose stdout.")
-
-                    for line in process.stdout:
+                        raise RuntimeError('Quantum ESPRESSO process did not expose stdout.')
+                    for line in output_lines(process):
                         output_file.write(line)
                         output_file.flush()
-                        event_queue.put(RunEvent(type=EVENT_TYPE_LINE, line=line))
-
-                    returncode = process.wait()
-                    if returncode != 0:
-                        event_queue.put(RunEvent(type=EVENT_TYPE_COMPLETE, returncode=returncode))
-                        return
-
+                        emit(RunEvent(type=EVENT_TYPE_LINE, line=line))
+                    process_code = process.wait()
+                    observe('process_exited', returncode=process_code)
                 if process.stdout is not None:
                     process.stdout.close()
                 context.process = None
                 process = None
-
+                if cancelled():
+                    outcome = 'cancelled'
+                    final_code = process_code if process_code else DEFAULT_FAILURE_RETURNCODE
+                    break
+                if process_code != 0:
+                    final_code = process_code
+                    message = f'Process exited with code {process_code}.'
+                    break
                 if step.validator is not None:
                     step.validator()
-
-            event_queue.put(RunEvent(type=EVENT_TYPE_COMPLETE, returncode=0))
+                observe('step_completed', returncode=process_code)
+            else:
+                outcome = 'completed'
+                final_code = 0
         except Exception as exc:
-            message = f"Failed to run Quantum ESPRESSO job: {exc}\n"
-            current_output_path.parent.mkdir(parents=True, exist_ok=True)
-            with current_output_path.open("a", encoding="utf-8") as output_file:
-                output_file.write(message)
-                output_file.flush()
-            event_queue.put(RunEvent(type=EVENT_TYPE_LINE, line=message))
-            event_queue.put(RunEvent(type=EVENT_TYPE_COMPLETE, returncode=DEFAULT_FAILURE_RETURNCODE))
+            message = f'Failed to run Quantum ESPRESSO job: {exc}\n'
+            try:
+                current_output_path.parent.mkdir(parents=True, exist_ok=True)
+                with current_output_path.open('a', encoding='utf-8') as output_file:
+                    output_file.write(message)
+            except OSError:
+                pass
+            emit(RunEvent(type=EVENT_TYPE_LINE, line=message))
         finally:
-            if process is not None and process.stdout is not None:
-                process.stdout.close()
+            if process is not None:
+                if process_group and process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()
+                    except ProcessLookupError:
+                        pass
+                if process.stdout is not None:
+                    process.stdout.close()
             context.process = None
+            try:
+                observe('complete', state=outcome, returncode=process_code, message=message)
+            finally:
+                emit(RunEvent(type=EVENT_TYPE_COMPLETE, returncode=final_code))
 
     worker_thread = threading.Thread(
         target=worker,

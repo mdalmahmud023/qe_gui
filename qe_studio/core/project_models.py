@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 6
 PROJECT_MARKER_VERSION = 1  # Container format; SQLite migrations are independent.
 PROJECT_FORMAT = "qe-studio-project"
 
@@ -79,3 +79,37 @@ class RecentProject:
     display_name: str
     last_opened_at: datetime
     available: bool
+
+
+@dataclass(frozen=True)
+class Calculation:
+    id: str
+    sequence: int
+    display_name: str
+    kind: str
+    origin: str
+    baseline_id: str
+    overrides_json: str
+    resolved_request_json: str
+    draft_revision: int
+    generated_revision: int | None
+    definition_hash: str | None
+    input_relpath: str | None
+    input_manifest_json: str
+    generator_json: str
+    frozen_at: str | None
+    duplicated_from_id: str | None
+    parent_run_id: str | None
+    notes: str
+    created_at: str
+    modified_at: str
+
+    @property
+    def label(self):
+        return f"{self.kind}_{self.sequence:03d}"
+
+    @property
+    def state(self):
+        if self.generated_revision is None:
+            return 'draft'
+        return 'input_generated' if self.generated_revision == self.draft_revision else 'input_outdated'

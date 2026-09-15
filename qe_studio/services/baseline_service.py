@@ -58,7 +58,7 @@ def resolve_baseline_settings(project, structure_id, pseudo_set_id, settings):
     return request, rendered, ctx
 
 
-def commit_baseline(project, structure_id, pseudo_set_id, settings, *, previous_baseline_id=None):
+def commit_baseline(project, structure_id, pseudo_set_id, settings, *, previous_baseline_id=None, _recommendation=None):
     request, rendered, _ = resolve_baseline_settings(project, structure_id, pseudo_set_id, settings)
     if previous_baseline_id:
         get_baseline(project, previous_baseline_id)
@@ -67,6 +67,10 @@ def commit_baseline(project, structure_id, pseudo_set_id, settings, *, previous_
         entry = BaselineRevision(str(uuid4()), sequence, structure_id, pseudo_set_id, previous_baseline_id,
                                  canonical_json(request), canonical_json(rendered), datetime.now(timezone.utc).isoformat())
         db.execute('INSERT INTO baselines VALUES (?,?,?,?,?,?,?,?)', tuple(entry.__dict__.values()))
+        if _recommendation:
+            result_id, fields, policy_version = _recommendation
+            db.execute('INSERT INTO baseline_recommendations VALUES (?,?,?,?,?)',
+                (entry.id, result_id, canonical_json(fields), policy_version, entry.created_at))
         touch_project(db, project)
     return entry
 
