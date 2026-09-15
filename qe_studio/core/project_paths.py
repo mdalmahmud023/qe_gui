@@ -61,6 +61,20 @@ class ProjectPaths(WorkspacePaths):
     def staging_dir(self) -> Path:
         return self.root_path / ".staging"
 
+    @property
+    def structures_dir(self) -> Path:
+        return self.root_path / "structures"
+
+    def resolve_relative(self, relative: str | Path) -> Path:
+        """Reject traversal and symlink escapes for project-owned scientific files."""
+        relative = Path(relative)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Project payload paths must be project-relative.")
+        result = self.root_path / relative
+        if not result.resolve().is_relative_to(self.root_path.resolve()):
+            raise ValueError("Project payload path leaves the project directory.")
+        return result
+
 
 def session_input_matches_workspace(state: Mapping[str, Any], paths: WorkspacePaths) -> bool:
     """Require recorded ownership before using a session input preview."""

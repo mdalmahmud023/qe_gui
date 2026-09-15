@@ -29,7 +29,7 @@ def _select(project: Project, store: WorkspaceStore) -> None:
 
 def render_manager() -> None:
     st.title("Projects")
-    st.caption("Create or open a local project. Scientific workflows remain in Legacy Workspace during Phase 1.")
+    st.caption("Create or open a local project. Projects support structure history and baselines. Calculations remain in Legacy Workspace.")
     st.button("Legacy Workspace", key=PREFIX + "legacy", on_click=request_context,
               args=(st.session_state, LEGACY))
     store = WorkspaceStore()
@@ -83,12 +83,21 @@ def render_overview(ctx) -> None:
     st.title(project.display_name)
     if project.description:
         st.write(project.description)
-    st.caption("Project overview · Scientific workflows are available in Legacy Workspace.")
+    st.caption("Project overview · Structure history and scientific baselines")
     st.write("Project UUID", project.id)
     st.write("Location", str(project.root_path))
     st.write("Created", project.created_at.isoformat())
     st.write("Modified", project.modified_at.isoformat())
     st.write("Schema version", str(project.schema_version))
+
+    st.write("Active structure", project.active_structure_id or "None")
+    st.write("Active baseline", project.active_baseline_id or "None")
+    if ctx.persistence_error:
+        st.error(ctx.persistence_error)
+    from ..storage.project_repository import pending_payloads
+    pending = pending_payloads(project)
+    if pending:
+        st.warning("Unregistered payloads from interrupted writes are preserved: " + ", ".join(pending))
 
     snapshot_key = widget_key(project.id, "edit_snapshot")
     snapshot = st.session_state.setdefault(snapshot_key, project)

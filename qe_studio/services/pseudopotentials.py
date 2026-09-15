@@ -22,7 +22,7 @@ from typing import Any
 
 import requests
 
-from ..core.structure_state import get_structure_signature, get_unique_elements, has_same_element_set
+from ..core.legacy_structure_identity import get_structure_signature, get_unique_elements, has_same_element_set
 
 
 DEFAULT_PSEUDO_CACHE_ROOT = Path("qe_runs") / "pseudopotentials" / "sssp"

@@ -361,6 +361,7 @@ def build_structure_viewer_html(
     settings: ViewerSettings | None = None,
     width: int | str = "100%",
     height: int = 520,
+    orientation_key: str = VIEWER_ORIENTATION_STORAGE_KEY,
 ) -> str:
     """Build static `py3Dmol` HTML for the active structure viewer."""
     viewer_settings = settings or ViewerSettings()
@@ -382,15 +383,15 @@ def build_structure_viewer_html(
     viewer.zoomTo()
     viewer.render()
     html = viewer._make_html()
-    return html + _build_view_persistence_script(viewer.uniqueid)
+    return html + _build_view_persistence_script(viewer.uniqueid, orientation_key)
 
 
-def _build_view_persistence_script(uniqueid: str | None) -> str:
+def _build_view_persistence_script(uniqueid: str | None, orientation_key: str = VIEWER_ORIENTATION_STORAGE_KEY) -> str:
     """Persist viewer orientation so rerenders keep the same rotation."""
     if not uniqueid:
         return ""
 
-    storage_key_json = json.dumps(VIEWER_ORIENTATION_STORAGE_KEY)
+    storage_key_json = json.dumps(orientation_key)
     return f"""
 <script>
 $3Dmolpromise.then(function() {{

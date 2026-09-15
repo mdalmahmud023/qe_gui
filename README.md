@@ -4,24 +4,44 @@ QE Studio is a Streamlit-based web GUI for Quantum ESPRESSO workflows — coveri
 
 ## Features
 
-### Projects (Phase 1)
+### Projects (Phase 2)
 
-The app opens with **Projects**, offering **Create Project**, **Open Existing**, and **Recent Projects**. Opened projects currently show an overview plus rename, description, and close controls. Select **Legacy Workspace** to use the existing Structure / Setup / Studies / Run / Analysis workflow and its `qe_runs` files. Phase 1 does not migrate or persist scientific data in projects.
+The app opens with **Projects**, offering **Create Project**, **Open Existing**, and **Recent Projects**. Opened projects have **Project**, **Structure**, and **Baseline** pages. Select **Legacy Workspace** for the existing Structure / Setup / Studies / Run / Analysis workflow and its `qe_runs` files. Project calculations, runs, studies, dependency tracking, and legacy migration are not part of Phase 2.
 
-A newly created project contains only:
+A newly created project contains `project.json`, `project.sqlite3`, and `.staging/`. Scientific directories appear only when records are committed:
 
 ```text
 My-project/
 ├── project.json
 ├── project.sqlite3
+├── structures/
+│   └── structure_001/
+│       ├── atoms.json
+│       ├── structure.cif
+│       ├── source.cif       # Original imported bytes, where applicable
+│       └── metadata.json
+├── pseudopotentials/
+│   └── set_001/
+│       ├── manifest.json
+│       └── files/
 └── .staging/
 ```
 
-The UUID stored in both identity files is authoritative. Display names may be duplicated; renaming a display name leaves the directory and UUID unchanged. After moving a directory, use **Open Existing** at its new location to update Recents. Creating a project never initializes over an existing directory. Independent copies sharing one UUID are not supported in this phase.
+**Structures:** import CIF/VASP/XSF/XYZ, use the manual builder, or choose a prototype. Preview first, then **Apply Structure** to commit an immutable version. Choose a committed parent, preview primitive/conventional/supercell changes, and **Apply Transformation** to create a child. The same parent stays selected until you explicitly select another version; repeated Apply clicks on the same preview reuse its committed child. **Set Active** is a separate action and persists across restarts. Changing controls or viewer orientation does not create history. Selecting another active structure clears the active baseline pointer but preserves every baseline revision.
 
-Project SQLite databases contain only `project` and `schema_migrations`. Recents live separately at `$XDG_DATA_HOME/qe-studio/workspace.sqlite3` (default `~/.local/share/qe-studio/workspace.sqlite3`); set `QE_STUDIO_WORKSPACE_DIR` to override that directory. Open Existing refers to the Streamlit host filesystem. Missing, corrupt, and unsupported project schemas show an error without falling back to another workspace.
+`atoms.json` is the authoritative full-precision, ordered ASE snapshot, including PBC, supported arrays, constraints, and metadata. CIF is an interchange representation. Structure hash version 1 hashes the canonical snapshot; the original geometry signature remains available for legacy comparison. Standardization preserves species-uniform site arrays and regenerates CIF source-site labels with recorded provenance. It rejects ambiguous site-specific arrays, constraints, or partial occupancies instead of silently losing them. Supercell transformations use the selected frozen parent, never a previous preview.
 
-Each browser tab keeps its own project selections and transient state. Context switching isolates Legacy Workspace structure/setup drafts and preserves its runner IDs without cancelling jobs. Project details reload from disk; conflicting edits in another tab require **Reload Project Details** before saving. Scientific persistence and durable execution remain later phases; browser refresh still resets transient legacy drafts.
+**Pseudopotentials and baselines:** resolve SSSP or fully relativistic SG15 UPFs into the reusable download cache, then **Commit Pseudopotential Set** to copy the selected bytes into the project. Each copy is SHA-256 verified; identical species-to-byte mappings reuse an existing set. The global project-mode cache defaults to `$XDG_CACHE_HOME/qe-studio/pseudopotentials` (`~/.cache/qe-studio/pseudopotentials`); `QE_STUDIO_CACHE_DIR` overrides its parent directory. Legacy Workspace retains its existing cache paths. Deleting the global cache does not affect committed project UPFs.
+
+Edit common physical and numerical defaults on **Baseline**, use **Preview Baseline** for validation, then **Commit Baseline Revision**. Each immutable revision references exact structure and pseudo-set IDs. **Set Active Baseline** restores that revision's structure and settings. The existing typed scientific validation remains in use; no QE input generation or execution is added to project mode.
+
+UUIDs, not names or directory paths, define identity. Display names can be duplicated; renaming a display name leaves the directory unchanged. After moving a project, use **Open Existing** at its new location to update Recents. Independent copies sharing one UUID remain unsupported. Authoritative payload paths are project-relative, so moved projects reload without the original cache or repository location.
+
+SQLite schema 2 contains only `project`, `schema_migrations`, `structures`, `pseudo_sets`, `pseudo_entries`, and `baselines`. Opening a valid Phase 1 project applies a transactional schema upgrade; the container marker format remains version 1. Scientific rows reject updates/deletes. JSON sidecars are snapshots, not editable authorities. Files are staged before publication; interrupted unregistered payloads are retained and reported in the overview for inspection, without inventing successful records.
+
+Recents live separately at `$XDG_DATA_HOME/qe-studio/workspace.sqlite3` (default `~/.local/share/qe-studio/workspace.sqlite3`); set `QE_STUDIO_WORKSPACE_DIR` to override that directory. Open Existing refers to the Streamlit host filesystem. Invalid/newer schemas show errors without falling back to another workspace.
+
+Each tab has independent selections and UUID-scoped project widgets. Switching projects clears transient project previews/editors and reloads committed active IDs and settings. Legacy drafts and runner IDs remain isolated in their session bank; switching does not cancel jobs. Browser refresh still resets transient drafts. Conflicting project-detail edits require **Reload Project Details** before saving.
 
 ### Structure
 - Import structure files through ASE-backed readers:
@@ -272,7 +292,7 @@ HISTORY.md
 
 ## Notes
 
-- Legacy page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). Legacy Workspace defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to supply another root. All three study types retain the legacy `convergence/cutoff` subdirectory. `build_project_context(project=opened_project)` instead exposes project identity and `ProjectPaths`, without discovering science or touching runtime state.
+- Legacy page storage paths come from `ProjectContext.paths` (`WorkspacePaths`). Legacy Workspace defaults to `qe_runs`; callers can use `build_project_context(Path("/path/to/workspace"))` to supply another root. All three study types retain the legacy `convergence/cutoff` subdirectory. `build_project_context(project=opened_project)` instead exposes project identity and `ProjectPaths`, loading committed structures and baselines without scanning for calculation artifacts or touching runtime state.
 - Pseudopotential resolution and cache clearing use the legacy workspace's `pseudopotentials` directory. Input previews and cached pseudopotential paths from another workspace are rejected. Explicit external QE scratch paths retain their legacy behavior.
 - The app stores source and active ASE `Atoms` objects in `st.session_state`; a hard browser refresh resets session state.
 - All generated inputs, logs, study manifests, and provenance metadata are disk-first under `qe_runs/`; pages reconstruct their state from disk after a refresh.

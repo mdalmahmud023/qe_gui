@@ -16,6 +16,8 @@ def connect(path: Path, *, create: bool = False, read_only: bool = False):
         connection.execute("PRAGMA busy_timeout = 5000")
         if not read_only:
             connection.execute("PRAGMA synchronous = FULL")
+        else:
+            connection.execute("BEGIN")  # Consistent reads during another tab's migration/write.
         yield connection
         if not read_only:
             connection.commit()

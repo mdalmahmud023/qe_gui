@@ -12,7 +12,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Current State
 
-- Phase 1 adds a Project Manager and identity-only project overviews. UUIDs, names, descriptions, timestamps and schema versions persist in a two-table project SQLite database; the machine-local recents index is separate. Project folders can move without changing identity. No scientific records are persisted or migrated into these projects yet.
+- Phase 2 adds project Structure and Baseline pages: immutable structure history, active structure selection, project-owned SHA-256 pseudopotential sets, and immutable baseline revisions. SQLite schema 2 upgrades valid Phase 1 projects transactionally; project marker format/UUIDs and separate Recents remain unchanged. No persistent calculations, runs, studies, dependency graph, or legacy migration is introduced.
 - Phase 0 workspace paths remain explicit. The five scientific pages are available through **Legacy Workspace**, using `qe_runs` by default. Transient domain state is banked per context within each browser session; switching does not cancel legacy jobs or expose legacy structure/setup state in project overviews.
 - Streamlit app entrypoint exists at `app.py` and acts as a shared app shell built on `st.Page(...)` and `st.navigation(...)`.
 - The app uses a wide layout and a **5-page workflow**:
@@ -73,6 +73,16 @@ When future work is done, append a new dated entry and keep the "Current State" 
 - `HISTORY.md`: persistent project context for humans and AI
 
 ## Implemented History
+
+### 2026-09-14 — Phase 2: structures, pseudopotentials, and baselines
+
+- Added immutable scientific tables and active project pointers. Structure snapshots retain full precision, order, PBC, supported arrays/constraints/metadata and original imported bytes; hash version 1 is distinct from legacy geometry comparison.
+- Added explicit import/build previews, Apply, transformation history, and Set Active. Primitive/conventional conversions validate site information; supercells start from the selected frozen parent. Viewer orientation is scoped by project/view and is not scientific history.
+- Split project-owned UPFs from the reusable cache. Computed SHA-256 bytes and species mappings identify deduplicated pseudo sets; committed sets survive cache deletion and folder moves.
+- Added baseline previews/revisions with exact structure/pseudo IDs and requested/rendered defaults, using the existing CalculationContext validator. Common editor defaults now live in a pure shared service; legacy scientific behavior remains intact.
+- Added transactional Phase 1 schema migration, restrictive references, SQL immutability triggers, staged payload publication, and visible preservation of interrupted writes. No scientific records are inferred from orphan files.
+- Extended tests for exact reopen, imported CIF lineage, preview-only changes, old-version adoption, UPF integrity, baseline immutability, project switching, concurrent operations, migration rollback, and real Streamlit actions with mocked downloads.
+- Final validation (2026-09-15): `.venv/bin/python -m pytest -q --tb=short` — **512 passed**, including all 483 prior tests and 29 Phase 2 tests; 32 spglib deprecation warnings. `git diff --check` passed. No real QE calculation or legacy-data migration was performed.
 
 ### 2026-09-14 — Phase 1: minimal project foundation
 
@@ -395,7 +405,7 @@ When future work is done, append a new dated entry and keep the "Current State" 
 
 ## Next Likely Steps
 
-- Project Phase 2: persist structure versions, project-owned pseudopotentials, and baselines on the proven identity and path foundations. Keep scientific services unchanged while adapting ownership.
+- Project Phase 3: introduce independent calculations and durable execution bound to immutable structure/pseudo/baseline records. Keep legacy execution available until those workflows are proven.
 - End-to-end validation: run a full Cutoff → K-Point → EOS workflow on a real structure and verify parsed energies, recommendations, and EOS fitting.
 - Add MPI support option for study runs (e.g., `mpirun -n N pw.x -in pw.in`).
 - Add anisotropic EOS scaling modes (e.g., uniaxial or biaxial strain).

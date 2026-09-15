@@ -6,7 +6,7 @@ from .core.project_context import build_project_context, initialize_job_summarie
 from .core.project_models import ProjectError
 from .core.project_session import ACTIVE_KEY, LEGACY, LOCATION_KEY, MANAGER, PREFIX, apply_pending_context
 from .core.workspace import QE_RUNS_DIR
-from .pages import ui_analysis, ui_projects, ui_run, ui_setup, ui_structure, ui_studies
+from .pages import ui_analysis, ui_project_structure, ui_project_baseline, ui_projects, ui_run, ui_setup, ui_structure, ui_studies
 from .services.project_service import open_project
 from .services.qe_runner import initialize_run_state
 
@@ -142,7 +142,11 @@ def main() -> None:
             return
         ctx = build_project_context(project=project)
         ui_projects.render_context_controls(project)
-        st.navigation([st.Page(lambda: ui_projects.render_overview(ctx), title="Project", default=True)], position="top").run()
+        st.navigation([
+            st.Page(lambda: ui_projects.render_overview(ctx), title="Project", default=True),
+            st.Page(lambda: ui_project_structure.render_page(ctx), title="Structure", url_path="structure"),
+            st.Page(lambda: ui_project_baseline.render_page(ctx), title="Baseline", url_path="baseline"),
+        ], position="top").run()
         return
 
     ui_projects.render_context_controls(legacy=True)

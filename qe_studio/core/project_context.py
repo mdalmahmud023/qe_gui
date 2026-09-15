@@ -6,7 +6,7 @@ from typing import Any
 
 import streamlit as st
 
-from .project_models import Project
+from .project_models import BaselineRevision, Project, StructureRecord
 from .project_paths import ProjectPaths, WorkspacePaths, session_input_matches_workspace
 from .state_keys import (
     ATOMS_STATE_KEY,
@@ -141,6 +141,9 @@ class ProjectContext:
     jobs: JobStatusSummary | None
     artifacts: ArtifactSummary | None
     project: Project | None = None
+    active_structure_record: StructureRecord | None = None
+    baseline: BaselineRevision | None = None
+    persistence_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.project is not None and Path(self.run_dir).resolve() != self.project.root_path:
@@ -240,10 +243,23 @@ def sync_active_job_summary_from_run_state() -> None:
 def build_project_context(run_dir: Path | None = None, *, project: Project | None = None) -> ProjectContext:
     """Opened identity, or legacy scientific summaries when no project is supplied."""
     if project is not None:
-        # Phase 1 projects are identity-only. Do not discover science or mutate
-        # runner state while building their overview, even with foreign session data.
+        from ..services.structure_service import get_structure, load_structure
+        from ..services.baseline_service import get_baseline
+        atoms = structure_record = baseline = None
+        error = None
+        try:
+            if project.active_structure_id:
+                structure_record = get_structure(project, project.active_structure_id)
+                atoms = load_structure(project, project.active_structure_id)
+            if project.active_baseline_id:
+                baseline = get_baseline(project, project.active_baseline_id)
+        except (ValueError, OSError) as exc:
+            error = str(exc)
+        # Project state comes from committed records, never the legacy session
+        # buffer. No artifact discovery or execution reconciliation in project mode.
         return ProjectContext(Path(run_dir) if run_dir is not None else project.root_path,
-                              None, None, None, None, None, None, None, None, project)
+                              atoms, None, None, None, None, None, None, None, project,
+                              structure_record, baseline, error)
     run_dir = QE_RUNS_DIR if run_dir is None else run_dir
     initialize_run_state(st.session_state)
     reconcile_run_state(st.session_state)

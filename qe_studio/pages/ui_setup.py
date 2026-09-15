@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..services.baseline_defaults import default_qe_parameters
+
 from dataclasses import dataclass
 import math
 from pathlib import Path
@@ -927,80 +929,6 @@ def _infer_saved_setting_source(
     if normalized in {"auto", "user"}:
         return normalized
     return "auto" if current_value == default_value else "user"
-
-
-def default_qe_parameters(
-    resolved_entries: dict | None = None,
-    atoms=None,
-) -> dict:
-    """Return physics-aware defaults for the QE input form. When ``atoms`` are available, uses :func:`~qe_studio.services.input_generator.make_default_context`
-    which applies chemistry-aware policies (occupations, smearing, k-grid) based
-    on the structure classification.
-    """
-    if atoms is not None:
-        try:
-            ctx = make_default_context(atoms, resolved_entries=resolved_entries)
-            return {
-                "calculation": "scf",
-                "prefix": ctx.control.requested_prefix,
-                "prefix_source": "auto",
-                "outdir": ctx.control.requested_outdir,
-                "outdir_source": "auto",
-                "ecutwfc": ctx.numerical.ecutwfc,
-                "ecutrho": ctx.numerical.ecutrho,
-                "occupations": ctx.physical.occupations,
-                "smearing": ctx.physical.smearing,
-                "degauss": ctx.physical.degauss,
-                "nspin": ctx.physical.nspin,
-                "spin_source": "auto",
-                "starting_magnetization": _default_starting_magnetization_state(ctx.physical.starting_magnetization),
-                "noncolin": ctx.physical.noncolin,
-                "lspinorb": ctx.physical.lspinorb,
-                "dftu_enabled": ctx.hubbard_u.enabled,
-                "hubbard_u": ctx.hubbard_u.to_metadata(species_order=ctx.species_order)["species_parameters"],
-                "vdw_method": ctx.vdw.normalized_method.value,
-                "k_points_grid": ctx.physical.k_points_grid,
-                "conv_thr": ctx.numerical.conv_thr,
-                "mixing_beta": ctx.numerical.mixing_beta,
-            }
-        except Exception:
-            pass
-
-    ecutwfc = 40.0
-    ecutrho = 160.0
-    k_grid = [4, 4, 4]
-
-    if resolved_entries:
-        try:
-            decision = select_cutoffs(resolved_entries)
-            ecutwfc = decision.ecutwfc_ry
-            ecutrho = decision.ecutrho_ry
-        except Exception:
-            pass
-
-    return {
-        "calculation": "scf",
-        "prefix": default_qe_prefix(atoms),
-        "prefix_source": "auto",
-        "outdir": DEFAULT_OUTDIR,
-        "outdir_source": "auto",
-        "ecutwfc": ecutwfc,
-        "ecutrho": ecutrho,
-        "occupations": "smearing",
-        "smearing": "gaussian",
-        "degauss": 0.01,
-        "nspin": 1,
-        "spin_source": "auto",
-        "starting_magnetization": {},
-        "noncolin": False,
-        "lspinorb": False,
-        "dftu_enabled": False,
-        "hubbard_u": {},
-        "vdw_method": VdwMethod.NONE.value,
-        "k_points_grid": k_grid,
-        "conv_thr": _DEFAULT_CONV_THR,
-        "mixing_beta": _DEFAULT_MIXING_BETA,
-    }
 
 
 def get_qe_parameters(resolved_entries: dict | None = None, atoms=None) -> dict:

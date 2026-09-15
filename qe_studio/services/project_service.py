@@ -10,10 +10,10 @@ import sqlite3
 import unicodedata
 from uuid import UUID, uuid4
 
-from ..core.project_models import PROJECT_FORMAT, PROJECT_SCHEMA_VERSION, Project, ProjectConflictError, ProjectError
+from ..core.project_models import PROJECT_FORMAT, PROJECT_SCHEMA_VERSION, PROJECT_MARKER_VERSION, Project, ProjectConflictError, ProjectError
 from ..core.project_paths import ProjectPaths
 from ..storage.database import connect
-from ..storage.migrations import initialize_project_schema, validate_project_schema
+from ..storage.migrations import initialize_project_schema, migrate_project_schema, validate_project_schema
 
 
 def _name(value: str) -> str:
@@ -43,20 +43,22 @@ def _project_from_row(row, root: Path) -> Project:
     if row is None:
         raise ProjectError("The project database has no identity record.")
     identifier = str(UUID(row["id"]))
-    if identifier != row["id"] or row["schema_version"] != PROJECT_SCHEMA_VERSION:
+    if identifier != row["id"] or row["schema_version"] not in (1, PROJECT_SCHEMA_VERSION):
         raise ProjectError("The project identity or schema version is invalid.")
     if not isinstance(row["description"], str):
         raise ProjectError("Project description must be text.")
     project = Project(identifier, _name(row["display_name"]), row["description"],
                       _timestamp(row["created_at"]), _timestamp(row["modified_at"]), root,
-                      row["schema_version"])
+                      row["schema_version"],
+                      row["active_structure_id"] if "active_structure_id" in row.keys() else None,
+                      row["active_baseline_id"] if "active_baseline_id" in row.keys() else None)
     if project.modified_at < project.created_at:
         raise ProjectError("Project modification time precedes its creation time.")
     return project
 
 
 def open_project(root: Path | str) -> Project:
-    """Read identity at its current location. Never create or migrate on open."""
+    """Read identity at its current location. Validate before applying known transactional database migrations."""
     paths = ProjectPaths(_root_path(root))
     try:
         if not paths.root_path.is_dir():
@@ -68,7 +70,7 @@ def open_project(root: Path | str) -> Project:
         marker = json.loads(paths.marker.read_text(encoding="utf-8"))
         if not isinstance(marker, dict) or marker.get("format") != PROJECT_FORMAT:
             raise ProjectError("This directory is not a QE Studio project.")
-        if marker.get("schema_version") != PROJECT_SCHEMA_VERSION:
+        if marker.get("schema_version") != PROJECT_MARKER_VERSION:
             raise ProjectError(f"Unsupported project marker schema {marker.get('schema_version')}; supported schema is 1.")
         if marker.get("database") != "project.sqlite3":
             raise ProjectError("The project marker must reference project.sqlite3.")
@@ -78,8 +80,14 @@ def open_project(root: Path | str) -> Project:
             if len(rows) != 1:
                 raise ProjectError("The project database must contain exactly one project.")
             project = _project_from_row(rows[0], paths.root_path)
+            if project.schema_version != connection.execute("PRAGMA user_version").fetchone()[0]:
+                raise ProjectError("Project schema version disagrees with the database.")
         if marker.get("project_id") != project.id:
             raise ProjectError("Project marker UUID does not match the database UUID.")
+        if project.schema_version < PROJECT_SCHEMA_VERSION:
+            with connect(paths.database) as connection:
+                migrate_project_schema(connection, datetime.now(timezone.utc).isoformat())
+            return open_project(paths.root_path)
         return project
     except ProjectError:
         raise
@@ -132,9 +140,9 @@ def create_project(parent: Path | str, display_name: str, description: str = "",
         now = datetime.now(timezone.utc).isoformat()
         with connect(paths.database, create=True) as connection:
             initialize_project_schema(connection, now)
-            connection.execute("INSERT INTO project VALUES (1, ?, ?, ?, ?, ?, ?)",
+            connection.execute("INSERT INTO project (singleton, id, display_name, description, created_at, modified_at, schema_version) VALUES (1, ?, ?, ?, ?, ?, ?)",
                                (identifier, display_name, description, now, now, PROJECT_SCHEMA_VERSION))
-        marker = {"format": PROJECT_FORMAT, "schema_version": PROJECT_SCHEMA_VERSION,
+        marker = {"format": PROJECT_FORMAT, "schema_version": PROJECT_MARKER_VERSION,
                   "project_id": identifier, "database": "project.sqlite3"}
         pending = paths.staging_dir / "project.json.tmp"
         pending.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
